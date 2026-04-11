@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+.installed.cfg
+lib/
+lib64/
+
+# Testing
+.tox/
+.nox/
+.cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+
+# Hatch / VCS versioning
+src/optixstuff/_version.py
+
+# Docs
+docs/_build/
+docs/_api/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# JAX cache
+/tmp/
