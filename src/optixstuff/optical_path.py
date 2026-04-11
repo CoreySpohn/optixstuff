@@ -1,6 +1,8 @@
-"""OpticalPath container — the universal hardware configuration."""
+"""OpticalPath container -- the universal hardware configuration."""
 
 from __future__ import annotations
+
+import functools
 
 import equinox as eqx
 
@@ -40,9 +42,8 @@ class OpticalPath(eqx.Module):
         Returns:
             Combined fractional throughput in [0, 1].
         """
-        import jax
-
-        throughputs = [
-            el.get_throughput(wavelength_nm) for el in self.attenuating_elements
-        ]
-        return jax.numpy.prod(jax.numpy.array(throughputs))
+        return functools.reduce(
+            lambda acc, el: acc * el.get_throughput(wavelength_nm),
+            self.attenuating_elements,
+            1.0,
+        )

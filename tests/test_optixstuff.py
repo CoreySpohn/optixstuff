@@ -26,6 +26,7 @@ class TestSimplePrimary:
 
     def test_is_equinox_module(self, simple_primary):
         import equinox as eqx
+
         assert isinstance(simple_primary, eqx.Module)
 
 

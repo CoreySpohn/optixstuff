@@ -6,7 +6,7 @@ import abc
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array
 
 
 class AbstractCoronagraph(eqx.Module):
@@ -51,9 +51,7 @@ class AbstractCoronagraph(eqx.Module):
         ...
 
     @abc.abstractmethod
-    def core_mean_intensity(
-        self, separation_lod: float, wavelength_nm: float
-    ) -> float:
+    def core_mean_intensity(self, separation_lod: float, wavelength_nm: float) -> float:
         """Mean stellar intensity within the photometric aperture.
 
         Args:
@@ -99,7 +97,9 @@ class AbstractCoronagraph(eqx.Module):
         Args:
             wavelength_nm: Wavelength in nanometres.
             pixel_scale_rad: Output pixel scale in radians/pixel.
-            npixels: Output array side length in pixels.
+            npixels: Output array side length in pixels. Must be a
+                Python int (not a JAX array) as it determines the
+                output shape at compile time.
 
         Returns:
             2D float array of shape (npixels, npixels).
@@ -120,7 +120,9 @@ class AbstractCoronagraph(eqx.Module):
             wavelength_nm: Wavelength in nanometres.
             separation_lod: Source separation in lambda/D units.
             pixel_scale_rad: Output pixel scale in radians/pixel.
-            npixels: Output array side length in pixels.
+            npixels: Output array side length in pixels. Must be a
+                Python int (not a JAX array) as it determines the
+                output shape at compile time.
 
         Returns:
             2D float array of shape (npixels, npixels).

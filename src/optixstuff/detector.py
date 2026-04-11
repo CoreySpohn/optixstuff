@@ -1,12 +1,9 @@
 """Detector abstractions."""
 
-from __future__ import annotations
-
 import abc
 
 import equinox as eqx
-import jax.numpy as jnp
-from jaxtyping import Array, Float
+from equinox import AbstractVar
 
 
 class AbstractDetector(eqx.Module):
@@ -15,6 +12,12 @@ class AbstractDetector(eqx.Module):
     Provides both scalar noise rates (for ETC use) and wavelength-dependent
     quantum efficiency (for simulation and IFS use).
     """
+
+    dark_current_rate: AbstractVar[float]
+    """Dark current rate in electrons/pixel/second."""
+
+    read_noise_electrons: AbstractVar[float]
+    """Read noise in electrons RMS per pixel per read."""
 
     @abc.abstractmethod
     def get_qe(self, wavelength_nm: float) -> float:
@@ -26,18 +29,6 @@ class AbstractDetector(eqx.Module):
         Returns:
             QE as a fraction in [0, 1].
         """
-        ...
-
-    @property
-    @abc.abstractmethod
-    def dark_current_rate(self) -> float:
-        """Dark current rate in electrons/pixel/second."""
-        ...
-
-    @property
-    @abc.abstractmethod
-    def read_noise_electrons(self) -> float:
-        """Read noise in electrons RMS per pixel per read."""
         ...
 
     @abc.abstractmethod
@@ -73,8 +64,8 @@ class SimpleDetector(AbstractDetector):
     """
 
     _qe: float
-    _dark_current_rate: float
-    _read_noise_electrons: float
+    dark_current_rate: float
+    read_noise_electrons: float
     cic_electrons: float
 
     def __init__(
@@ -84,24 +75,15 @@ class SimpleDetector(AbstractDetector):
         read_noise_electrons: float,
         cic_electrons: float = 0.0,
     ) -> None:
+        """Create a simple constant-QE detector."""
         self._qe = qe
-        self._dark_current_rate = dark_current_electrons_per_s
-        self._read_noise_electrons = read_noise_electrons
+        self.dark_current_rate = dark_current_electrons_per_s
+        self.read_noise_electrons = read_noise_electrons
         self.cic_electrons = cic_electrons
 
     def get_qe(self, wavelength_nm: float) -> float:
         """Return constant QE, ignoring wavelength."""
         return self._qe
-
-    @property
-    def dark_current_rate(self) -> float:
-        """Dark current rate in electrons/pixel/second."""
-        return self._dark_current_rate
-
-    @property
-    def read_noise_electrons(self) -> float:
-        """Read noise in electrons RMS per pixel per read."""
-        return self._read_noise_electrons
 
     def scalar_noise_rate(self, n_pix: float, t_photon: float) -> float:
         """Total noise variance rate for a photometric aperture.
@@ -117,6 +99,6 @@ class SimpleDetector(AbstractDetector):
         Returns:
             Noise variance rate in electrons^2/second.
         """
-        dark_variance_rate = self._dark_current_rate * n_pix
+        dark_variance_rate = self.dark_current_rate * n_pix
         cic_variance_rate = self.cic_electrons * n_pix / t_photon
         return dark_variance_rate + cic_variance_rate

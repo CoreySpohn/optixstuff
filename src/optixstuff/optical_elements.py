@@ -5,8 +5,7 @@ from __future__ import annotations
 import abc
 
 import equinox as eqx
-import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array
 
 
 class AbstractOpticalElement(eqx.Module):
@@ -71,11 +70,7 @@ class ConstantThroughputElement(AbstractUniformElement):
     """
 
     throughput: float
-    name: str
-
-    def __init__(self, throughput: float, name: str = "element") -> None:
-        self.throughput = throughput
-        self.name = name
+    name: str = "element"
 
     def get_throughput(self, wavelength_nm: float) -> float:
         """Return constant throughput, ignoring wavelength."""
