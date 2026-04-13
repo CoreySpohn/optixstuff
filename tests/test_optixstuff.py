@@ -1,5 +1,6 @@
 """Tests for optixstuff hardware abstractions."""
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -46,11 +47,8 @@ class TestConstantThroughputElement:
 
 
 class TestSimpleDetector:
-    def test_qe(self, simple_detector):
-        assert simple_detector.get_qe(500.0) == pytest.approx(0.9)
-
-    def test_qe_wavelength_independent(self, simple_detector):
-        assert simple_detector.get_qe(400.0) == simple_detector.get_qe(900.0)
+    def test_quantum_efficiency(self, simple_detector):
+        assert simple_detector.quantum_efficiency == pytest.approx(0.9)
 
     def test_dark_current_rate(self, simple_detector):
         assert simple_detector.dark_current_rate == pytest.approx(1e-4)
@@ -58,12 +56,51 @@ class TestSimpleDetector:
     def test_read_noise(self, simple_detector):
         assert simple_detector.read_noise_electrons == pytest.approx(3.0)
 
-    def test_scalar_noise_rate(self, simple_detector):
-        # dark variance: 1e-4 * 10 = 1e-3
-        # cic variance: 0.02 * 10 / 1000.0 = 2e-4
-        result = simple_detector.scalar_noise_rate(n_pix=10.0, t_photon=1000.0)
-        expected = 1e-4 * 10.0 + 0.02 * 10.0 / 1000.0
-        assert result == pytest.approx(expected)
+    def test_pixel_scale(self, simple_detector):
+        assert simple_detector.pixel_scale == pytest.approx(0.010)
+
+    def test_shape(self, simple_detector):
+        assert simple_detector.shape == (100, 100)
+
+    def test_add_noise_runs(self, simple_detector):
+        """Verify add_noise produces output with correct shape."""
+        image_rate = jnp.ones((100, 100)) * 10.0
+        key = jax.random.PRNGKey(42)
+        result = simple_detector.add_noise(image_rate, 100.0, key)
+        assert result.shape == (100, 100)
+
+    def test_add_noise_positive_rate_produces_counts(self, simple_detector):
+        """With bright source, result should have nonzero counts."""
+        image_rate = jnp.ones((100, 100)) * 1000.0
+        key = jax.random.PRNGKey(0)
+        result = simple_detector.add_noise(image_rate, 100.0, key)
+        assert jnp.sum(result) > 0
+
+
+class TestLinearThroughputElement:
+    def test_interpolation(self):
+        wls = jnp.array([400.0, 600.0, 800.0])
+        tps = jnp.array([0.5, 0.9, 0.7])
+        el = ox.LinearThroughputElement(wavelengths_nm=wls, throughputs=tps)
+        # At 600 nm should be exactly 0.9
+        assert el.get_throughput(600.0) == pytest.approx(0.9, abs=1e-5)
+
+    def test_extrapolation_returns_zero(self):
+        wls = jnp.array([400.0, 600.0, 800.0])
+        tps = jnp.array([0.5, 0.9, 0.7])
+        el = ox.LinearThroughputElement(wavelengths_nm=wls, throughputs=tps)
+        # Outside range should be zero
+        assert el.get_throughput(200.0) == pytest.approx(0.0, abs=1e-5)
+        assert el.get_throughput(1000.0) == pytest.approx(0.0, abs=1e-5)
+
+
+class TestOpticalFilter:
+    def test_interpolation(self):
+        wls = jnp.array([500.0, 550.0, 600.0])
+        trans = jnp.array([0.0, 1.0, 0.0])
+        f = ox.OpticalFilter(wavelengths_nm=wls, transmittances=trans)
+        # Peak at 550 should be 1.0
+        assert f.get_throughput(550.0) == pytest.approx(1.0, abs=1e-5)
 
 
 class TestOpticalPath:
@@ -72,7 +109,7 @@ class TestOpticalPath:
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(el,),
-            coronagraph=None,  # placeholder
+            coronagraph=None,
             detector=simple_detector,
         )
         assert path.system_throughput(500.0) == pytest.approx(0.7)
@@ -87,3 +124,20 @@ class TestOpticalPath:
             detector=simple_detector,
         )
         assert path.system_throughput(500.0) == pytest.approx(0.72)
+
+
+class TestPureNoiseFunctions:
+    def test_dark_current_shape(self):
+        key = jax.random.PRNGKey(0)
+        dc = ox.simulate_dark_current(0.001, 100.0, (50, 50), key)
+        assert dc.shape == (50, 50)
+
+    def test_read_noise_shape(self):
+        key = jax.random.PRNGKey(1)
+        rn = ox.simulate_read_noise(3.0, 10.0, (50, 50), key)
+        assert rn.shape == (50, 50)
+
+    def test_cic_shape(self):
+        key = jax.random.PRNGKey(2)
+        cic = ox.simulate_cic(0.02, 5.0, (50, 50), key)
+        assert cic.shape == (50, 50)

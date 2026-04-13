@@ -15,10 +15,13 @@ def simple_primary():
 def simple_detector():
     """A simple detector with typical HWO-like parameters."""
     return ox.SimpleDetector(
-        qe=0.9,
-        dark_current_electrons_per_s=1e-4,
+        pixel_scale=0.010,
+        shape=(100, 100),
+        quantum_efficiency=0.9,
+        dark_current_rate=1e-4,
         read_noise_electrons=3.0,
-        cic_electrons=0.02,
+        cic_rate=0.02,
+        frame_time=1000.0,
     )
 
 

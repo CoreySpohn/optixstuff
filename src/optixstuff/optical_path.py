@@ -1,7 +1,5 @@
 """OpticalPath container -- the universal hardware configuration."""
 
-from __future__ import annotations
-
 import functools
 
 import equinox as eqx

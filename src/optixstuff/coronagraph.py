@@ -1,11 +1,11 @@
 """Coronagraph abstractions."""
 
-from __future__ import annotations
-
 import abc
 
 import equinox as eqx
 import jax.numpy as jnp
+from equinox import AbstractVar
+from jax.typing import ArrayLike
 from jaxtyping import Array
 
 
@@ -15,22 +15,39 @@ class AbstractCoronagraph(eqx.Module):
     Provides both scalar performance curves (for ETC use) and 2D PSF
     generation (for image simulation). Implementations can be backed by
     pre-computed interpolation tables (yippy), physical wavefront
-    propagation (dLux), or analytical models.
+    propagation, or analytical models.
 
     All wavelength arguments are in nanometres throughout.
+    All separations are in lambda/D units.
     """
 
+    pixel_scale_lod: AbstractVar[float]
+    """Native pixel scale in lambda/D per pixel."""
+
+    IWA: AbstractVar[float]
+    """Inner working angle in lambda/D."""
+
+    OWA: AbstractVar[float]
+    """Outer working angle in lambda/D."""
+
     # ------------------------------------------------------------------
-    # Scalar interface — consumed by jaxEDITH and yield estimators
+    # Scalar interface -- consumed by jaxEDITH and yield estimators
     # ------------------------------------------------------------------
 
     @abc.abstractmethod
-    def throughput(self, separation_lod: float, wavelength_nm: float) -> float:
+    def throughput(
+        self,
+        separation_lod: ArrayLike,
+        wavelength_nm: ArrayLike,
+        *,
+        time_s: ArrayLike = 0.0,
+    ) -> ArrayLike:
         """Core (off-axis planet) throughput.
 
         Args:
-            separation_lod: Angular separation in lambda/D units.
+            separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometres.
+            time_s: Time since mission start in seconds.
 
         Returns:
             Fractional throughput in [0, 1].
@@ -38,12 +55,19 @@ class AbstractCoronagraph(eqx.Module):
         ...
 
     @abc.abstractmethod
-    def core_area(self, separation_lod: float, wavelength_nm: float) -> float:
+    def core_area(
+        self,
+        separation_lod: ArrayLike,
+        wavelength_nm: ArrayLike,
+        *,
+        time_s: ArrayLike = 0.0,
+    ) -> ArrayLike:
         """Photometric aperture area in (lambda/D)^2.
 
         Args:
-            separation_lod: Angular separation in lambda/D units.
+            separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometres.
+            time_s: Time since mission start in seconds.
 
         Returns:
             Core area in (lambda/D)^2.
@@ -51,12 +75,19 @@ class AbstractCoronagraph(eqx.Module):
         ...
 
     @abc.abstractmethod
-    def core_mean_intensity(self, separation_lod: float, wavelength_nm: float) -> float:
+    def core_mean_intensity(
+        self,
+        separation_lod: ArrayLike,
+        wavelength_nm: ArrayLike,
+        *,
+        time_s: ArrayLike = 0.0,
+    ) -> ArrayLike:
         """Mean stellar intensity within the photometric aperture.
 
         Args:
-            separation_lod: Angular separation in lambda/D units.
+            separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometres.
+            time_s: Time since mission start in seconds.
 
         Returns:
             Mean stellar leakage intensity in (lambda/D)^-2.
@@ -65,13 +96,18 @@ class AbstractCoronagraph(eqx.Module):
 
     @abc.abstractmethod
     def occulter_transmission(
-        self, separation_lod: float, wavelength_nm: float
-    ) -> float:
+        self,
+        separation_lod: ArrayLike,
+        wavelength_nm: ArrayLike,
+        *,
+        time_s: ArrayLike = 0.0,
+    ) -> ArrayLike:
         """Off-axis (sky/zodi) transmission through the occulter.
 
         Args:
-            separation_lod: Angular separation in lambda/D units.
+            separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometres.
+            time_s: Time since mission start in seconds.
 
         Returns:
             Fractional sky transmission in [0, 1].
@@ -79,13 +115,13 @@ class AbstractCoronagraph(eqx.Module):
         ...
 
     # ------------------------------------------------------------------
-    # Image interface — consumed by coronagraphoto and coronachrome
+    # Image interface -- consumed by coronagraphoto
     # ------------------------------------------------------------------
 
     @abc.abstractmethod
     def on_axis_psf(
         self,
-        wavelength_nm: float,
+        wavelength_nm: ArrayLike,
         pixel_scale_rad: float,
         npixels: int,
     ) -> Array:
@@ -109,8 +145,8 @@ class AbstractCoronagraph(eqx.Module):
     @abc.abstractmethod
     def off_axis_psf(
         self,
-        wavelength_nm: float,
-        separation_lod: float,
+        wavelength_nm: ArrayLike,
+        separation_lod: ArrayLike,
         pixel_scale_rad: float,
         npixels: int,
     ) -> Array:
@@ -118,7 +154,7 @@ class AbstractCoronagraph(eqx.Module):
 
         Args:
             wavelength_nm: Wavelength in nanometres.
-            separation_lod: Source separation in lambda/D units.
+            separation_lod: Source separation in lambda/D.
             pixel_scale_rad: Output pixel scale in radians/pixel.
             npixels: Output array side length in pixels. Must be a
                 Python int (not a JAX array) as it determines the
@@ -131,16 +167,15 @@ class AbstractCoronagraph(eqx.Module):
 
 
 class AbstractScalarOnlyCoronagraph(AbstractCoronagraph):
-    """Mixin for ETC-only coronagraph models that lack 2D PSF generation.
+    """Base for ETC-only coronagraph models that lack 2D PSF generation.
 
-    Stubs out the image interface with zero arrays so that the class
-    satisfies AbstractCoronagraph without requiring a full optical model.
-    Use this as a base when you only need the scalar performance curves.
+    Stubs out the image interface with zero arrays so the class satisfies
+    AbstractCoronagraph without requiring a full optical model.
     """
 
     def on_axis_psf(
         self,
-        wavelength_nm: float,
+        wavelength_nm: ArrayLike,
         pixel_scale_rad: float,
         npixels: int,
     ) -> Array:
@@ -149,8 +184,8 @@ class AbstractScalarOnlyCoronagraph(AbstractCoronagraph):
 
     def off_axis_psf(
         self,
-        wavelength_nm: float,
-        separation_lod: float,
+        wavelength_nm: ArrayLike,
+        separation_lod: ArrayLike,
         pixel_scale_rad: float,
         npixels: int,
     ) -> Array:
