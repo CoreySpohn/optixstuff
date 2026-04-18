@@ -209,3 +209,98 @@ class TestPureNoiseFunctions:
         key = jax.random.PRNGKey(2)
         cic = ox.simulate_cic(0.02, 5.0, (50, 50), key)
         assert cic.shape == (50, 50)
+
+
+class TestYippyCoronagraphExtras:
+    """Tests for create_psfs and psf_datacube delegation through to _backend.
+
+    These tests use a stubbed EqxCoronagraph-like object rather than
+    loading a real YIP to stay fast and self-contained.
+    """
+
+    def test_create_psfs_delegates(self):
+        """YippyCoronagraph.create_psfs should call self._backend.create_psfs."""
+        called = {}
+
+        class StubBackend:
+            pixel_scale_lod = 0.1
+            IWA = 3.0
+            OWA = 10.0
+            psf_shape = (51, 51)
+            sky_trans = jnp.zeros((51, 51))
+            psf_datacube = None
+
+            def create_psfs(self, x, y):
+                called["args"] = (x, y)
+                return jnp.zeros((len(x), 51, 51))
+
+            def throughput(self, s):
+                return 0.5
+
+            def core_area(self, s):
+                return 1.0
+
+            def core_mean_intensity(self, s):
+                return 1e-8
+
+            def occulter_transmission(self, s):
+                return 0.5
+
+            def stellar_intens(self, d):
+                return jnp.zeros((51, 51))
+
+            def create_psf(self, x, y, npix):
+                return jnp.zeros((npix, npix))
+
+            def noise_floor_ayo(self, s, ppf=30.0):
+                return 1e-9
+
+            def raw_contrast(self, s):
+                return 1e-10
+
+        coro = ox.YippyCoronagraph(backend=StubBackend())
+        x = jnp.array([1.0, 2.0])
+        y = jnp.array([0.0, 0.0])
+        result = coro.create_psfs(x, y)
+        assert result.shape == (2, 51, 51)
+        assert called["args"][0] is x
+
+    def test_psf_datacube_delegates(self):
+        """YippyCoronagraph.psf_datacube returns self._backend.psf_datacube."""
+        fake_cube = jnp.ones((3, 3, 51, 51))
+
+        class StubBackend:
+            pixel_scale_lod = 0.1
+            IWA = 3.0
+            OWA = 10.0
+            psf_shape = (51, 51)
+            sky_trans = jnp.zeros((51, 51))
+            psf_datacube = fake_cube
+            create_psfs = staticmethod(lambda x, y: None)
+
+            def throughput(self, s):
+                return 0.5
+
+            def core_area(self, s):
+                return 1.0
+
+            def core_mean_intensity(self, s):
+                return 1e-8
+
+            def occulter_transmission(self, s):
+                return 0.5
+
+            def stellar_intens(self, d):
+                return jnp.zeros((51, 51))
+
+            def create_psf(self, x, y, npix):
+                return jnp.zeros((npix, npix))
+
+            def noise_floor_ayo(self, s, ppf=30.0):
+                return 1e-9
+
+            def raw_contrast(self, s):
+                return 1e-10
+
+        coro = ox.YippyCoronagraph(backend=StubBackend())
+        assert coro.psf_datacube is fake_cube

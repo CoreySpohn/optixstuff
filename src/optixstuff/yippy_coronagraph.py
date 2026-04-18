@@ -165,3 +165,28 @@ class YippyCoronagraph(AbstractCoronagraph):
     def sky_trans(self) -> Array:
         """Full sky transmission map."""
         return self._backend.sky_trans
+
+    def create_psfs(self, x_lod: ArrayLike, y_lod: ArrayLike) -> Array:
+        """Batched off-axis PSFs at (x_lod, y_lod) source positions.
+
+        Delegates to the backend yippy create_psfs closure. Returns
+        a stack of PSF images, one per input source coordinate.
+
+        Args:
+            x_lod: Source x-coordinates in lambda/D, shape (K,).
+            y_lod: Source y-coordinates in lambda/D, shape (K,).
+
+        Returns:
+            PSF stack of shape (K, ny, nx) where (ny, nx) == self.psf_shape.
+        """
+        return self._backend.create_psfs(x_lod, y_lod)
+
+    @property
+    def psf_datacube(self) -> Array | None:
+        """Pre-computed quarter-symmetric PSF datacube from the backend.
+
+        Returns None if the backing EqxCoronagraph was not built
+        with ensure_psf_datacube=True. Consumers that need this for
+        disk convolution should construct the backend with the flag set.
+        """
+        return self._backend.psf_datacube
