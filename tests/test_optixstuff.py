@@ -76,6 +76,74 @@ class TestSimpleDetector:
         result = simple_detector.add_noise(image_rate, 100.0, key)
         assert jnp.sum(result) > 0
 
+    def test_add_source_electrons_runs(self, simple_detector):
+        """add_source_electrons produces (ny, nx) output for a bright source."""
+        image_rate = jnp.ones((100, 100)) * 100.0
+        key = jax.random.PRNGKey(0)
+        result = simple_detector.add_source_electrons(image_rate, 10.0, key)
+        assert result.shape == (100, 100)
+        assert jnp.all(result >= 0)
+
+    def test_add_source_electrons_applies_qe(self):
+        """Mean counts should equal rate * t * QE for a bright enough source."""
+        det = ox.SimpleDetector(
+            pixel_scale=0.010,
+            shape=(32, 32),
+            quantum_efficiency=0.5,
+            dark_current_rate=0.0,
+        )
+        image_rate = jnp.ones((32, 32)) * 10000.0
+        key = jax.random.PRNGKey(1)
+        result = det.add_source_electrons(image_rate, 10.0, key)
+        # Expected mean = 10000 * 10 * 0.5 = 50000; tolerance is loose for shot noise
+        assert jnp.isclose(float(jnp.mean(result)), 50000.0, rtol=0.02)
+
+    def test_add_noise_electrons_dark_only(self, simple_detector):
+        """SimpleDetector noise is dark current only -- no CIC, no read."""
+        key = jax.random.PRNGKey(2)
+        result = simple_detector.add_noise_electrons(1000.0, key)
+        assert result.shape == (100, 100)
+        # Dark rate is 1e-4 e/s/pix -> mean ~0.1 e/pix for t=1000s
+        assert float(jnp.mean(result)) < 1.0
+
+
+class TestDetector:
+    """Tests for the full Detector model (dark + CIC + read noise)."""
+
+    @pytest.fixture
+    def full_detector(self):
+        return ox.Detector(
+            pixel_scale=0.010,
+            shape=(64, 64),
+            quantum_efficiency=0.9,
+            dark_current_rate=1e-4,
+            read_noise_electrons=3.0,
+            cic_rate=0.02,
+            frame_time=100.0,
+        )
+
+    def test_add_source_electrons_shape(self, full_detector):
+        image_rate = jnp.ones((64, 64)) * 10.0
+        key = jax.random.PRNGKey(3)
+        result = full_detector.add_source_electrons(image_rate, 10.0, key)
+        assert result.shape == (64, 64)
+
+    def test_add_noise_electrons_shape(self, full_detector):
+        key = jax.random.PRNGKey(4)
+        result = full_detector.add_noise_electrons(100.0, key)
+        assert result.shape == (64, 64)
+
+    def test_add_noise_matches_manual_split_compose(self, full_detector):
+        """add_noise(image, t, k) is bit-identical to manually splitting the key
+        and composing add_source_electrons + add_noise_electrons."""
+        image_rate = jnp.ones((64, 64)) * 10.0
+        key = jax.random.PRNGKey(5)
+        combined = full_detector.add_noise(image_rate, 100.0, key)
+        key_src, key_noise = jax.random.split(key, 2)
+        src = full_detector.add_source_electrons(image_rate, 100.0, key_src)
+        noise = full_detector.add_noise_electrons(100.0, key_noise)
+        assert jnp.allclose(combined, src + noise)
+
 
 class TestLinearThroughputElement:
     def test_interpolation(self):
