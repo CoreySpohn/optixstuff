@@ -10,6 +10,7 @@ from optixstuff.detector import (
     simulate_dark_current,
     simulate_read_noise,
 )
+from optixstuff.exposure import Exposure
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -30,6 +31,7 @@ __all__ = [
     "AbstractUniformElement",
     "ConstantThroughputElement",
     "Detector",
+    "Exposure",
     "LinearThroughputElement",
     "OpticalFilter",
     "OpticalPath",
