@@ -24,12 +24,18 @@ class OpticalPath(eqx.Module):
             between the primary and coronagraph (mirrors, filters, etc.).
         coronagraph: Coronagraph performance model.
         detector: Focal-plane detector model.
+        n_channels: Number of parallel optical path copies (AYO hack).
+            Multiplicative factor; defaults to 1.0.
+        npix_multiplier: Pixel-count multiplier applied downstream.
+            Defaults to 1.0.
     """
 
     primary: AbstractPrimary
     attenuating_elements: tuple[AbstractOpticalElement, ...]
     coronagraph: AbstractCoronagraph
     detector: AbstractDetector
+    n_channels: float = 1.0
+    npix_multiplier: float = 1.0
 
     def system_throughput(self, wavelength_nm: float) -> float:
         """Total throughput of all attenuating elements.

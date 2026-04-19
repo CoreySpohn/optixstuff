@@ -193,6 +193,34 @@ class TestOpticalPath:
         )
         assert path.system_throughput(500.0) == pytest.approx(0.72)
 
+    def test_default_n_channels_and_npix_multiplier(
+        self, simple_primary, simple_detector
+    ):
+        el = ox.ConstantThroughputElement(throughput=0.7)
+        path = ox.OpticalPath(
+            primary=simple_primary,
+            attenuating_elements=(el,),
+            coronagraph=None,
+            detector=simple_detector,
+        )
+        assert path.n_channels == 1.0
+        assert path.npix_multiplier == 1.0
+
+    def test_custom_n_channels_and_npix_multiplier(
+        self, simple_primary, simple_detector
+    ):
+        el = ox.ConstantThroughputElement(throughput=0.7)
+        path = ox.OpticalPath(
+            primary=simple_primary,
+            attenuating_elements=(el,),
+            coronagraph=None,
+            detector=simple_detector,
+            n_channels=2.0,
+            npix_multiplier=3.0,
+        )
+        assert path.n_channels == 2.0
+        assert path.npix_multiplier == 3.0
+
 
 class TestPureNoiseFunctions:
     def test_dark_current_shape(self):
