@@ -24,10 +24,11 @@ class OpticalPath(eqx.Module):
             between the primary and coronagraph (mirrors, filters, etc.).
         coronagraph: Coronagraph performance model.
         detector: Focal-plane detector model.
-        n_channels: Number of parallel optical path copies (AYO hack).
-            Multiplicative factor; defaults to 1.0.
-        npix_multiplier: Pixel-count multiplier applied downstream.
-            Defaults to 1.0.
+        n_channels: Number of parallel identical optical-path copies
+            (AYO shorthand, multiplicative factor on count rates;
+            not a spectral channel count). Default 1.0.
+        npix_multiplier: IFS signal-spread multiplier on detector pixel
+            counts. Default 1.0.
     """
 
     primary: AbstractPrimary
