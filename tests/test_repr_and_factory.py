@@ -170,3 +170,55 @@ class TestFromDefaultSetup:
         # eqx.tree_at can walk it (sanity check that nothing is non-pytree).
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None
+
+    def test_accepts_yippy_eqx_coronagraph(self):
+        """A bare ``yippy.EqxCoronagraph`` is wrapped via ``YippyCoronagraph(backend=)``.
+
+        Catches the regression where any non-``AbstractCoronagraph`` /
+        non-path argument was unconditionally ``str()``-ified and fed
+        to ``YippyCoronagraph`` as a path.
+        """
+        from optixstuff.yippy_coronagraph import YippyCoronagraph
+
+        # Build a minimal yippy.EqxCoronagraph-shaped duck. We don't need
+        # yippy installed for this -- ``YippyCoronagraph(backend=...)``
+        # stores whatever it's given on ``_backend``, so any object that
+        # quacks works.
+        class _Duck:
+            pixel_scale_lod = 0.5
+            psf_shape = (32, 32)
+            IWA = 2.0
+            OWA = 30.0
+            psf_datacube = None
+            sky_trans = jnp.ones((32, 32))
+
+            def throughput(self, *args, **kwargs):
+                return 0.5
+
+            def core_area(self, *args, **kwargs):
+                return 1.0
+
+            def core_mean_intensity(self, *args, **kwargs):
+                return 1e-10
+
+            def occulter_transmission(self, *args, **kwargs):
+                return 1.0
+
+            def stellar_intens(self, diam_lod):
+                return jnp.ones(self.psf_shape)
+
+            def create_psf(self, *args, **kwargs):
+                return jnp.ones(self.psf_shape)
+
+            def create_psfs(self, x_lod, y_lod):
+                return jnp.zeros((x_lod.shape[0], *self.psf_shape))
+
+            def noise_floor_ayo(self, *args, **kwargs):
+                return 1e-10
+
+            def raw_contrast(self, *args, **kwargs):
+                return 1e-10
+
+        path = ox.OpticalPath.from_default_setup(_Duck())
+        assert isinstance(path.coronagraph, YippyCoronagraph)
+        assert isinstance(path.coronagraph._backend, _Duck)

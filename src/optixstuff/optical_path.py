@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import equinox as eqx
 
@@ -15,9 +15,6 @@ from optixstuff.optical_elements import (
     ConstantThroughputElement,
 )
 from optixstuff.primary import AbstractPrimary, SimplePrimary
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class OpticalPath(eqx.Module):
@@ -70,9 +67,13 @@ class OpticalPath(eqx.Module):
         parameters get sensible defaults that can be overridden.
 
         Args:
-            coronagraph: Either an :class:`AbstractCoronagraph` instance
-                (used as-is) or a YIP path/string (wrapped with
-                :class:`YippyCoronagraph`).
+            coronagraph: One of:
+                - an :class:`AbstractCoronagraph` instance (used as-is),
+                - a YIP path (str or :class:`pathlib.Path`, wrapped with
+                  :class:`YippyCoronagraph`),
+                - a ``yippy.EqxCoronagraph`` instance (wrapped via
+                  ``YippyCoronagraph(backend=...)`` so callers can keep
+                  using existing yippy code without rebuilding).
             diameter_m: Primary mirror diameter [m]. Default ``6.0`` (HWO
                 EAC1 baseline).
             obscuration: Linear central-obscuration fraction. Default 0.
@@ -94,10 +95,17 @@ class OpticalPath(eqx.Module):
         """
         if isinstance(coronagraph, AbstractCoronagraph):
             coro = coronagraph
-        else:
+        elif isinstance(coronagraph, (str, Path)):
             from optixstuff.yippy_coronagraph import YippyCoronagraph
 
             coro = YippyCoronagraph(str(coronagraph))
+        else:
+            # Anything else -- expected to be a ``yippy.EqxCoronagraph``
+            # or compatible backend. Defer the import so optixstuff stays
+            # decoupled from yippy at the type-check level.
+            from optixstuff.yippy_coronagraph import YippyCoronagraph
+
+            coro = YippyCoronagraph(backend=coronagraph)
 
         return cls(
             primary=SimplePrimary(diameter_m=diameter_m, obscuration=obscuration),
