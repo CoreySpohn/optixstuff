@@ -76,6 +76,13 @@ class ConstantThroughputElement(AbstractUniformElement):
         """Return constant throughput, ignoring wavelength."""
         return self.throughput
 
+    def __repr__(self) -> str:
+        """One-line summary of throughput value."""
+        return (
+            f"ConstantThroughputElement(name={self.name!r}, "
+            f"throughput={self.throughput:.3g})"
+        )
+
 
 @final
 class LinearThroughputElement(AbstractUniformElement):
@@ -101,6 +108,18 @@ class LinearThroughputElement(AbstractUniformElement):
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
         """Interpolate throughput at the requested wavelength."""
         return self.interp(wavelength_nm)
+
+    def __repr__(self) -> str:
+        """One-line summary of throughput-table extent and sample count."""
+        n = int(self.wavelengths_nm.shape[0])
+        wl_min = float(self.wavelengths_nm.min())
+        wl_max = float(self.wavelengths_nm.max())
+        t_min = float(self.throughputs.min())
+        t_max = float(self.throughputs.max())
+        return (
+            f"LinearThroughputElement(wl={wl_min:.0f}-{wl_max:.0f} nm, "
+            f"n={n}, throughput={t_min:.3g}-{t_max:.3g})"
+        )
 
 
 @final
@@ -130,3 +149,14 @@ class OpticalFilter(AbstractUniformElement):
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
         """Interpolate filter transmittance at the requested wavelength."""
         return self.interp(wavelength_nm)
+
+    def __repr__(self) -> str:
+        """One-line summary of filter passband and peak transmittance."""
+        n = int(self.wavelengths_nm.shape[0])
+        wl_min = float(self.wavelengths_nm.min())
+        wl_max = float(self.wavelengths_nm.max())
+        t_peak = float(self.transmittances.max())
+        return (
+            f"OpticalFilter(wl={wl_min:.0f}-{wl_max:.0f} nm, "
+            f"n={n}, peak T={t_peak:.3g})"
+        )

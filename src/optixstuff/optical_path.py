@@ -1,13 +1,23 @@
 """OpticalPath container -- the universal hardware configuration."""
 
+from __future__ import annotations
+
 import functools
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 
+from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
-from optixstuff.detector import AbstractDetector
-from optixstuff.optical_elements import AbstractOpticalElement
-from optixstuff.primary import AbstractPrimary
+from optixstuff.detector import AbstractDetector, SimpleDetector
+from optixstuff.optical_elements import (
+    AbstractOpticalElement,
+    ConstantThroughputElement,
+)
+from optixstuff.primary import AbstractPrimary, SimplePrimary
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class OpticalPath(eqx.Module):
@@ -38,6 +48,75 @@ class OpticalPath(eqx.Module):
     n_channels: float = 1.0
     npix_multiplier: float = 1.0
 
+    @classmethod
+    def from_default_setup(
+        cls,
+        coronagraph: AbstractCoronagraph | str | Path,
+        *,
+        diameter_m: float = 6.0,
+        obscuration: float = 0.0,
+        attenuating_throughput: float = 1.0,
+        detector_shape: tuple[int, int] = (512, 512),
+        pixel_scale_arcsec: float = 0.01,
+        quantum_efficiency: float = 0.9,
+        dark_current_rate: float = 0.0,
+        n_channels: float = 1.0,
+        npix_multiplier: float = 1.0,
+    ) -> OpticalPath:
+        """Build an OpticalPath with reasonable HWO-like defaults.
+
+        Convenience for notebook / dev-script work: spin up a working
+        ``OpticalPath`` by specifying only the coronagraph. All other
+        parameters get sensible defaults that can be overridden.
+
+        Args:
+            coronagraph: Either an :class:`AbstractCoronagraph` instance
+                (used as-is) or a YIP path/string (wrapped with
+                :class:`YippyCoronagraph`).
+            diameter_m: Primary mirror diameter [m]. Default ``6.0`` (HWO
+                EAC1 baseline).
+            obscuration: Linear central-obscuration fraction. Default 0.
+            attenuating_throughput: Combined throughput of the optical
+                chain (one :class:`ConstantThroughputElement`). Default
+                ``1.0`` -- a perfect path; override for realistic studies.
+            detector_shape: Detector ``(ny, nx)`` in pixels. Default
+                ``(512, 512)``.
+            pixel_scale_arcsec: Detector plate scale [arcsec/px]. Default
+                ``0.01``.
+            quantum_efficiency: Default ``0.9``.
+            dark_current_rate: Default ``0.0`` e-/s/px (perfect detector;
+                callers add realistic noise when needed).
+            n_channels: AYO parallel-path multiplier. Default ``1.0``.
+            npix_multiplier: IFS signal-spread multiplier. Default ``1.0``.
+
+        Returns:
+            A ready-to-use :class:`OpticalPath`.
+        """
+        if isinstance(coronagraph, AbstractCoronagraph):
+            coro = coronagraph
+        else:
+            from optixstuff.yippy_coronagraph import YippyCoronagraph
+
+            coro = YippyCoronagraph(str(coronagraph))
+
+        return cls(
+            primary=SimplePrimary(diameter_m=diameter_m, obscuration=obscuration),
+            attenuating_elements=(
+                ConstantThroughputElement(
+                    throughput=attenuating_throughput, name="optics"
+                ),
+            ),
+            coronagraph=coro,
+            detector=SimpleDetector(
+                pixel_scale=pixel_scale_arcsec,
+                shape=detector_shape,
+                quantum_efficiency=quantum_efficiency,
+                dark_current_rate=dark_current_rate,
+            ),
+            n_channels=n_channels,
+            npix_multiplier=npix_multiplier,
+        )
+
     def system_throughput(self, wavelength_nm: float) -> float:
         """Total throughput of all attenuating elements.
 
@@ -52,3 +131,22 @@ class OpticalPath(eqx.Module):
             self.attenuating_elements,
             1.0,
         )
+
+    def __repr__(self) -> str:
+        """Tree-shaped summary of every component."""
+        lines = [
+            (
+                f"OpticalPath(n_channels={self.n_channels:.3g}, "
+                f"npix_multiplier={self.npix_multiplier:.3g})"
+            ),
+            indent("primary: " + repr(self.primary)),
+        ]
+        if self.attenuating_elements:
+            lines.append("  attenuating_elements:")
+            for i, el in enumerate(self.attenuating_elements):
+                lines.append(indent(f"[{i}] {el!r}", prefix="    "))
+        else:
+            lines.append("  attenuating_elements: ()")
+        lines.append(indent("coronagraph: " + repr(self.coronagraph)))
+        lines.append(indent("detector: " + repr(self.detector)))
+        return "\n".join(lines)

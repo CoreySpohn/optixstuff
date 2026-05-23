@@ -291,6 +291,15 @@ class SimpleDetector(AbstractDetector):
         noise = self.readout_noise_electrons(exposure_time, key_noise)
         return source + noise
 
+    def __repr__(self) -> str:
+        """One-line summary of shape, plate scale, QE, and dark current."""
+        ny, nx = self.shape
+        return (
+            f"SimpleDetector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
+            f"QE={self.quantum_efficiency:.2f}, "
+            f"dark={self.dark_current_rate:.2g} e-/s/px)"
+        )
+
 
 @final
 class Detector(AbstractDetector):
@@ -377,3 +386,15 @@ class Detector(AbstractDetector):
         source = self.readout_source_electrons(image_rate, exposure_time, key_src)
         noise = self.readout_noise_electrons(exposure_time, key_noise)
         return source + noise
+
+    def __repr__(self) -> str:
+        """One-line summary of shape, plate scale, QE, and noise sources."""
+        ny, nx = self.shape
+        return (
+            f"Detector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
+            f"QE={self.quantum_efficiency:.2f}, "
+            f"dark={self.dark_current_rate:.2g} e-/s/px, "
+            f"RN={self.read_noise_electrons:.2g} e-/read, "
+            f"CIC={self.cic_rate:.2g} e-/frame, "
+            f"frame_time={self.frame_time:.3g} s)"
+        )

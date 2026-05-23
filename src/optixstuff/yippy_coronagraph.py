@@ -190,3 +190,13 @@ class YippyCoronagraph(AbstractCoronagraph):
         disk convolution should construct the backend with the flag set.
         """
         return self._backend.psf_datacube
+
+    def __repr__(self) -> str:
+        """One-line summary of YIP backend metadata."""
+        ny, nx = self._backend.psf_shape
+        return (
+            f"YippyCoronagraph(IWA={float(self.IWA):.3g}, "
+            f"OWA={float(self.OWA):.3g} lambda/D, "
+            f"pixel_scale={float(self.pixel_scale_lod):.3g} lambda/D/px, "
+            f"PSF {ny}x{nx})"
+        )

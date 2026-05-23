@@ -56,3 +56,12 @@ class SimplePrimary(AbstractPrimary):
         r = self._diameter_m / 2.0
         gross_area = jnp.pi * r**2
         return gross_area * (1.0 - self.obscuration**2) * self.shape_factor
+
+    def __repr__(self) -> str:
+        """One-line summary of diameter, obscuration, and effective area."""
+        return (
+            f"SimplePrimary(D={self._diameter_m:.3g} m, "
+            f"obs={self.obscuration:.3g}, "
+            f"shape_factor={self.shape_factor:.3g}, "
+            f"area={float(self.area_m2):.3g} m^2)"
+        )
