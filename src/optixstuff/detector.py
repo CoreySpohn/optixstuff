@@ -76,7 +76,7 @@ class AbstractDetector(eqx.Module):
         ...
 
     @abc.abstractmethod
-    def add_noise(
+    def readout(
         self,
         image_rate: Array,
         exposure_time: ArrayLike,
@@ -97,7 +97,7 @@ class AbstractDetector(eqx.Module):
         """
         ...
 
-    def add_source_electrons(
+    def readout_source_electrons(
         self,
         image_rate: Array,
         exposure_time: ArrayLike,
@@ -108,7 +108,7 @@ class AbstractDetector(eqx.Module):
         This is the source-dependent half of detector readout: photon
         arrival statistics and quantum-efficiency selection. Dark current,
         CIC, and read noise are handled separately by
-        :meth:`add_noise_electrons` so that multi-source exposures do not
+        :meth:`readout_noise_electrons` so that multi-source exposures do not
         double-count the source-independent noise floor.
 
         Args:
@@ -124,7 +124,7 @@ class AbstractDetector(eqx.Module):
         return jax.random.binomial(key_qe, inc_photons, self.quantum_efficiency)
 
     @abc.abstractmethod
-    def add_noise_electrons(
+    def readout_noise_electrons(
         self,
         exposure_time: ArrayLike,
         prng_key: Array,
@@ -133,7 +133,7 @@ class AbstractDetector(eqx.Module):
 
         Each call draws a fresh noise realization of shape ``self.shape``;
         consumers add exactly one such draw per exposure regardless of
-        how many sources were co-added via :meth:`add_source_electrons`.
+        how many sources were co-added via :meth:`readout_source_electrons`.
 
         Args:
             exposure_time: Exposure time in seconds.
@@ -269,7 +269,7 @@ class SimpleDetector(AbstractDetector):
         cic_variance_rate = self.cic_rate * n_pix / t_photon
         return dark_variance_rate + cic_variance_rate
 
-    def add_noise_electrons(
+    def readout_noise_electrons(
         self,
         exposure_time: ArrayLike,
         prng_key: Array,
@@ -279,7 +279,7 @@ class SimpleDetector(AbstractDetector):
             self.dark_current_rate, exposure_time, self.shape, prng_key
         )
 
-    def add_noise(
+    def readout(
         self,
         image_rate: Array,
         exposure_time: ArrayLike,
@@ -287,8 +287,8 @@ class SimpleDetector(AbstractDetector):
     ) -> Array:
         """Full detector readout: source electrons + dark current."""
         key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.add_source_electrons(image_rate, exposure_time, key_src)
-        noise = self.add_noise_electrons(exposure_time, key_noise)
+        source = self.readout_source_electrons(image_rate, exposure_time, key_src)
+        noise = self.readout_noise_electrons(exposure_time, key_noise)
         return source + noise
 
 
@@ -348,7 +348,7 @@ class Detector(AbstractDetector):
         cic_variance_rate = self.cic_rate * n_pix / t_photon
         return dark_variance_rate + cic_variance_rate
 
-    def add_noise_electrons(
+    def readout_noise_electrons(
         self,
         exposure_time: ArrayLike,
         prng_key: Array,
@@ -366,7 +366,7 @@ class Detector(AbstractDetector):
         )
         return dark + cic + read
 
-    def add_noise(
+    def readout(
         self,
         image_rate: Array,
         exposure_time: ArrayLike,
@@ -374,6 +374,6 @@ class Detector(AbstractDetector):
     ) -> Array:
         """Full detector readout: source electrons + all noise sources."""
         key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.add_source_electrons(image_rate, exposure_time, key_src)
-        noise = self.add_noise_electrons(exposure_time, key_noise)
+        source = self.readout_source_electrons(image_rate, exposure_time, key_src)
+        noise = self.readout_noise_electrons(exposure_time, key_noise)
         return source + noise
