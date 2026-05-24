@@ -7,7 +7,7 @@ YippyCoronagraph and OpticalPath work correctly with real data.
 import equinox as eqx
 import jax.numpy as jnp
 import pytest
-from yippy.datasets import fetch_coronagraph
+from yippy import fetch_yip
 
 import optixstuff as ox
 
@@ -20,7 +20,7 @@ import optixstuff as ox
 @pytest.fixture(scope="session")
 def yip_path():
     """Download the default AAVC coronagraph YIP via pooch."""
-    return fetch_coronagraph()
+    return fetch_yip("eac1_aavc_2d")
 
 
 @pytest.fixture(scope="session")
