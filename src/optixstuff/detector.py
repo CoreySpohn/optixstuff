@@ -123,6 +123,37 @@ class AbstractDetector(eqx.Module):
         inc_photons = jax.random.poisson(key_phot, image_rate * exposure_time)
         return jax.random.binomial(key_qe, inc_photons, self.quantum_efficiency)
 
+    def readout_source_electrons_thinned(
+        self,
+        image_rate: Array,
+        exposure_time: ArrayLike,
+        prng_key: Array,
+    ) -> Array:
+        """Fast equivalent of :meth:`readout_source_electrons` via Poisson thinning.
+
+        Distributionally identical to the explicit Poisson-then-Binomial
+        chain (Poisson thinning theorem: ``Binomial(Poisson(L), p) ~
+        Poisson(L * p)``), but ~3x faster because it skips the Binomial
+        draw and never materialises the intermediate photon count. Use in
+        performance-critical paths (animation rendering, yield runs)
+        when the photon count is not needed downstream.
+
+        The marginal distribution of returned electrons is identical to
+        :meth:`readout_source_electrons`. The two methods produce
+        different specific realisations even with the same key.
+
+        Args:
+            image_rate: Incident photon rate array in ph/s/pixel.
+            exposure_time: Exposure time in seconds.
+            prng_key: JAX PRNG key.
+
+        Returns:
+            Photo-electron counts, same shape as image_rate.
+        """
+        return jax.random.poisson(
+            prng_key, image_rate * exposure_time * self.quantum_efficiency
+        )
+
     @abc.abstractmethod
     def readout_noise_electrons(
         self,

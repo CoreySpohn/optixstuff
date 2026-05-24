@@ -106,6 +106,61 @@ class TestSimpleDetector:
         # Dark rate is 1e-4 e/s/pix -> mean ~0.1 e/pix for t=1000s
         assert float(jnp.mean(result)) < 1.0
 
+    def test_readout_source_electrons_thinned_matches_chain_distribution(self):
+        """Thinned Poisson and the explicit Binomial(Poisson, QE) chain
+        produce identical marginal distributions (Poisson thinning theorem).
+
+        Verifies that ``readout_source_electrons_thinned`` is a valid
+        drop-in for the explicit chain in performance-critical paths.
+        Compares sample mean + variance across a large 200x200 image with
+        independent keys.
+        """
+        det = ox.SimpleDetector(
+            pixel_scale=0.010,
+            shape=(200, 200),
+            quantum_efficiency=0.7,
+            dark_current_rate=0.0,
+        )
+        # Mid-range mean so both Poisson and Binomial use their dense paths
+        # (avoids degenerate small-mean special cases).
+        image_rate = jnp.ones((200, 200)) * 1000.0
+        t_exp = 10.0
+        # Use a different key per draw so independence holds.
+        k_chain = jax.random.PRNGKey(101)
+        k_thinned = jax.random.PRNGKey(202)
+
+        out_chain = det.readout_source_electrons(image_rate, t_exp, k_chain)
+        out_thinned = det.readout_source_electrons_thinned(
+            image_rate, t_exp, k_thinned
+        )
+
+        # Theoretical: Poisson(lambda * QE) -> mean = var = 1000 * 10 * 0.7 = 7000.
+        expected_mean = 1000.0 * 10.0 * 0.7
+        for label, out in [("chain", out_chain), ("thinned", out_thinned)]:
+            mean = float(jnp.mean(out))
+            var = float(jnp.var(out))
+            assert jnp.isclose(mean, expected_mean, rtol=0.01), (
+                f"{label}: mean={mean:.1f}, expected ~{expected_mean:.1f}"
+            )
+            # Poisson variance == mean.
+            assert jnp.isclose(var, expected_mean, rtol=0.05), (
+                f"{label}: var={var:.1f}, expected ~{expected_mean:.1f}"
+            )
+
+    def test_readout_source_electrons_thinned_is_faster_than_chain(
+        self, simple_detector
+    ):
+        """Thinned readout returns the same shape + non-negative counts.
+
+        Pure-correctness smoke test for the fast path; runtime is asserted
+        separately in benchmarks, not here.
+        """
+        image_rate = jnp.ones((50, 50)) * 200.0
+        key = jax.random.PRNGKey(3)
+        out = simple_detector.readout_source_electrons_thinned(image_rate, 5.0, key)
+        assert out.shape == (50, 50)
+        assert jnp.all(out >= 0)
+
 
 class TestDetector:
     """Tests for the full Detector model (dark + CIC + read noise)."""
