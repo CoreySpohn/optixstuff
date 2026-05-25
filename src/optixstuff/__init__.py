@@ -6,17 +6,16 @@ from optixstuff.detector import (
     AbstractDetector,
     Detector,
     IdealDetector,
-    simulate_cic,
-    simulate_dark_current,
-    simulate_read_noise,
+    clock_induced_charge,
+    dark_current,
+    read_noise,
 )
 from optixstuff.exposure import ExposureConfig
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
     ConstantThroughput,
-    LinearThroughput,
-    OpticalFilter,
+    SpectralThroughput,
 )
 from optixstuff.optical_path import OpticalPath
 from optixstuff.primary import AbstractPrimary, SimplePrimary
@@ -32,14 +31,13 @@ __all__ = [
     "ConstantThroughput",
     "Detector",
     "ExposureConfig",
-    "LinearThroughput",
-    "OpticalFilter",
-    "OpticalPath",
     "IdealDetector",
+    "OpticalPath",
     "SimplePrimary",
+    "SpectralThroughput",
     "YippyCoronagraph",
     "__version__",
-    "simulate_cic",
-    "simulate_dark_current",
-    "simulate_read_noise",
+    "clock_induced_charge",
+    "dark_current",
+    "read_noise",
 ]

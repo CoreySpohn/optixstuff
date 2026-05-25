@@ -34,14 +34,14 @@ def optical_path(yippy_coronagraph):
     """Full OpticalPath with primary, coronagraph, detector, and a filter."""
     primary = ox.SimplePrimary(diameter_m=6.0, obscuration=0.14)
     detector = ox.Detector(
-        pixel_scale=0.010,
+        pixel_scale_arcsec=0.010,
         shape=(100, 100),
         quantum_efficiency=0.9,
-        dark_current_rate=3e-5,
-        read_noise_electrons=0.0,
-        cic_rate=1.3e-3,
-        frame_time=1000.0,
-        read_time=1000.0,
+        dark_current_rate_e_per_s=3e-5,
+        read_noise_e=0.0,
+        clock_induced_charge_rate_e_per_frame=1.3e-3,
+        frame_time_s=1000.0,
+        read_time_s=1000.0,
         dqe=1.0,
     )
     optics_filter = ox.ConstantThroughput(throughput=0.5, name="optics")

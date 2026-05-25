@@ -46,19 +46,19 @@ class TestReprs:
 
     def test_full_detector(self):
         det = ox.Detector(
-            pixel_scale=0.010,
+            pixel_scale_arcsec=0.010,
             shape=(64, 64),
             quantum_efficiency=0.9,
-            dark_current_rate=1e-4,
-            read_noise_electrons=3.0,
-            cic_rate=0.02,
-            frame_time=100.0,
+            dark_current_rate_e_per_s=1e-4,
+            read_noise_e=3.0,
+            clock_induced_charge_rate_e_per_frame=0.02,
+            frame_time_s=100.0,
         )
         s = repr(det)
         assert s.startswith("Detector(")
         assert "RN=3" in s
         assert "CIC=0.02" in s
-        assert "frame_time=100" in s
+        assert "frame_time_s=100" in s
 
     def test_constant_throughput_element(self, throughput_element):
         s = repr(throughput_element)
@@ -67,24 +67,25 @@ class TestReprs:
         assert "throughput=0.8" in s
 
     def test_linear_throughput_element(self):
-        el = ox.LinearThroughput(
+        el = ox.SpectralThroughput(
             wavelengths_nm=jnp.array([400.0, 500.0, 600.0, 700.0]),
             throughputs=jnp.array([0.7, 0.8, 0.9, 0.85]),
         )
         s = repr(el)
-        assert "LinearThroughput" in s
+        assert "SpectralThroughput" in s
         assert "400-700 nm" in s
         assert "n=4" in s
 
-    def test_optical_filter(self):
-        f = ox.OpticalFilter(
+    def test_spectral_throughput_bandpass_shape(self):
+        f = ox.SpectralThroughput(
             wavelengths_nm=jnp.array([500.0, 550.0, 600.0]),
-            transmittances=jnp.array([0.1, 0.95, 0.1]),
+            throughputs=jnp.array([0.1, 0.95, 0.1]),
         )
         s = repr(f)
-        assert "OpticalFilter" in s
+        assert "SpectralThroughput" in s
         assert "500-600 nm" in s
-        assert "peak T=0.95" in s
+        assert "n=3" in s
+        assert "0.95" in s
 
     def test_optical_path_is_tree_shaped(self, simple_primary, simple_detector):
         path = ox.OpticalPath(
@@ -130,7 +131,7 @@ class TestFromDefaultSetup:
         # Defaults applied.
         assert path.primary.diameter_m == 6.0
         assert path.detector.shape == (512, 512)
-        assert path.detector.pixel_scale == 0.01
+        assert path.detector.pixel_scale_arcsec == 0.01
         assert path.detector.quantum_efficiency == 0.9
         assert path.n_channels == 1.0
         assert path.npix_multiplier == 1.0
@@ -144,16 +145,16 @@ class TestFromDefaultSetup:
             detector_shape=(256, 256),
             pixel_scale_arcsec=0.02,
             quantum_efficiency=0.95,
-            dark_current_rate=1e-3,
+            dark_current_rate_e_per_s=1e-3,
             n_channels=2.0,
             npix_multiplier=3.0,
         )
         assert path.primary.diameter_m == 8.0
         assert path.primary.obscuration == 0.1
         assert path.detector.shape == (256, 256)
-        assert path.detector.pixel_scale == 0.02
+        assert path.detector.pixel_scale_arcsec == 0.02
         assert path.detector.quantum_efficiency == 0.95
-        assert path.detector.dark_current_rate == 1e-3
+        assert path.detector.dark_current_rate_e_per_s == 1e-3
         assert path.n_channels == 2.0
         assert path.npix_multiplier == 3.0
         # Single attenuating element built with the overridden throughput.

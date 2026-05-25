@@ -51,13 +51,13 @@ class TestSimpleDetector:
         assert simple_detector.quantum_efficiency == pytest.approx(0.9)
 
     def test_dark_current_rate(self, simple_detector):
-        assert simple_detector.dark_current_rate == pytest.approx(1e-4)
+        assert simple_detector.dark_current_rate_e_per_s == pytest.approx(1e-4)
 
     def test_read_noise(self, simple_detector):
-        assert simple_detector.read_noise_electrons == pytest.approx(3.0)
+        assert simple_detector.read_noise_e == pytest.approx(3.0)
 
     def test_pixel_scale(self, simple_detector):
-        assert simple_detector.pixel_scale == pytest.approx(0.010)
+        assert simple_detector.pixel_scale_arcsec == pytest.approx(0.010)
 
     def test_shape(self, simple_detector):
         assert simple_detector.shape == (100, 100)
@@ -87,10 +87,10 @@ class TestSimpleDetector:
     def test_readout_source_electrons_applies_qe(self):
         """Mean counts should equal rate * t * QE for a bright enough source."""
         det = ox.IdealDetector(
-            pixel_scale=0.010,
+            pixel_scale_arcsec=0.010,
             shape=(32, 32),
             quantum_efficiency=0.5,
-            dark_current_rate=0.0,
+            dark_current_rate_e_per_s=0.0,
         )
         image_rate = jnp.ones((32, 32)) * 10000.0
         key = jax.random.PRNGKey(1)
@@ -116,10 +116,10 @@ class TestSimpleDetector:
         independent keys.
         """
         det = ox.IdealDetector(
-            pixel_scale=0.010,
+            pixel_scale_arcsec=0.010,
             shape=(200, 200),
             quantum_efficiency=0.7,
-            dark_current_rate=0.0,
+            dark_current_rate_e_per_s=0.0,
         )
         # Mid-range mean so both Poisson and Binomial use their dense paths
         # (avoids degenerate small-mean special cases).
@@ -168,13 +168,13 @@ class TestDetector:
     @pytest.fixture
     def full_detector(self):
         return ox.Detector(
-            pixel_scale=0.010,
+            pixel_scale_arcsec=0.010,
             shape=(64, 64),
             quantum_efficiency=0.9,
-            dark_current_rate=1e-4,
-            read_noise_electrons=3.0,
-            cic_rate=0.02,
-            frame_time=100.0,
+            dark_current_rate_e_per_s=1e-4,
+            read_noise_e=3.0,
+            clock_induced_charge_rate_e_per_frame=0.02,
+            frame_time_s=100.0,
         )
 
     def test_readout_source_electrons_shape(self, full_detector):
@@ -204,14 +204,14 @@ class TestLinearThroughputElement:
     def test_interpolation(self):
         wls = jnp.array([400.0, 600.0, 800.0])
         tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.LinearThroughput(wavelengths_nm=wls, throughputs=tps)
+        el = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=tps)
         # At 600 nm should be exactly 0.9
         assert el.get_throughput(600.0) == pytest.approx(0.9, abs=1e-5)
 
     def test_extrapolation_returns_zero(self):
         wls = jnp.array([400.0, 600.0, 800.0])
         tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.LinearThroughput(wavelengths_nm=wls, throughputs=tps)
+        el = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=tps)
         # Outside range should be zero
         assert el.get_throughput(200.0) == pytest.approx(0.0, abs=1e-5)
         assert el.get_throughput(1000.0) == pytest.approx(0.0, abs=1e-5)
@@ -221,7 +221,7 @@ class TestOpticalFilter:
     def test_interpolation(self):
         wls = jnp.array([500.0, 550.0, 600.0])
         trans = jnp.array([0.0, 1.0, 0.0])
-        f = ox.OpticalFilter(wavelengths_nm=wls, transmittances=trans)
+        f = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=trans)
         # Peak at 550 should be 1.0
         assert f.get_throughput(550.0) == pytest.approx(1.0, abs=1e-5)
 
@@ -280,18 +280,18 @@ class TestOpticalPath:
 class TestPureNoiseFunctions:
     def test_dark_current_shape(self):
         key = jax.random.PRNGKey(0)
-        dc = ox.simulate_dark_current(0.001, 100.0, (50, 50), key)
+        dc = ox.dark_current(0.001, 100.0, (50, 50), key)
         assert dc.shape == (50, 50)
 
     def test_read_noise_shape(self):
         key = jax.random.PRNGKey(1)
-        rn = ox.simulate_read_noise(3.0, 10.0, (50, 50), key)
+        rn = ox.read_noise(3.0, 10.0, (50, 50), key)
         assert rn.shape == (50, 50)
 
     def test_cic_shape(self):
         key = jax.random.PRNGKey(2)
-        cic = ox.simulate_cic(0.02, 5.0, (50, 50), key)
-        assert cic.shape == (50, 50)
+        clock_induced_charge = ox.clock_induced_charge(0.02, 5.0, (50, 50), key)
+        assert clock_induced_charge.shape == (50, 50)
 
 
 class TestYippyCoronagraphExtras:

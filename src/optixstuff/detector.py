@@ -20,25 +20,25 @@ class AbstractDetector(eqx.Module):
     must define the hardware parameters listed as ``AbstractVar`` fields.
     """
 
-    pixel_scale: AbstractVar[float]
+    pixel_scale_arcsec: AbstractVar[float]
     """Detector plate scale in arcsec/pixel."""
 
     quantum_efficiency: AbstractVar[float]
     """Baseline quantum efficiency as a fraction in [0, 1]."""
 
-    dark_current_rate: AbstractVar[float]
+    dark_current_rate_e_per_s: AbstractVar[float]
     """Dark current rate in electrons/pixel/second."""
 
-    read_noise_electrons: AbstractVar[float]
+    read_noise_e: AbstractVar[float]
     """Read noise in electrons RMS per pixel per read."""
 
-    cic_rate: AbstractVar[float]
+    clock_induced_charge_rate_e_per_frame: AbstractVar[float]
     """Clock-induced charge in electrons/pixel/frame."""
 
-    frame_time: AbstractVar[float]
+    frame_time_s: AbstractVar[float]
     """Integration time per frame/read in seconds."""
 
-    read_time: AbstractVar[float]
+    read_time_s: AbstractVar[float]
     """Time per read cycle in seconds (for RN^2/t_read in ETC)."""
 
     dqe: AbstractVar[float]
@@ -79,7 +79,7 @@ class AbstractDetector(eqx.Module):
     def readout(
         self,
         image_rate: Array,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Apply stochastic noise realization to a photon rate image.
@@ -89,7 +89,7 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: ExposureConfig time in seconds.
+            exposure_time_s: ExposureConfig time in seconds.
             prng_key: JAX PRNG key (required, no default).
 
         Returns:
@@ -100,7 +100,7 @@ class AbstractDetector(eqx.Module):
     def readout_source_electrons(
         self,
         image_rate: Array,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Poisson-sample incident photons and convert to electrons via QE.
@@ -113,20 +113,20 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: ExposureConfig time in seconds.
+            exposure_time_s: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
             Photo-electron counts, same shape as image_rate.
         """
         key_phot, key_qe = jax.random.split(prng_key, 2)
-        inc_photons = jax.random.poisson(key_phot, image_rate * exposure_time)
+        inc_photons = jax.random.poisson(key_phot, image_rate * exposure_time_s)
         return jax.random.binomial(key_qe, inc_photons, self.quantum_efficiency)
 
     def readout_source_electrons_thinned(
         self,
         image_rate: Array,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Fast equivalent of :meth:`readout_source_electrons` via Poisson thinning.
@@ -144,20 +144,20 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: ExposureConfig time in seconds.
+            exposure_time_s: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
             Photo-electron counts, same shape as image_rate.
         """
         return jax.random.poisson(
-            prng_key, image_rate * exposure_time * self.quantum_efficiency
+            prng_key, image_rate * exposure_time_s * self.quantum_efficiency
         )
 
     @abc.abstractmethod
     def readout_noise_electrons(
         self,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Source-independent detector noise (dark + CIC + read).
@@ -167,7 +167,7 @@ class AbstractDetector(eqx.Module):
         how many sources were co-added via :meth:`readout_source_electrons`.
 
         Args:
-            exposure_time: ExposureConfig time in seconds.
+            exposure_time_s: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
@@ -179,28 +179,28 @@ class AbstractDetector(eqx.Module):
 # -- Pure noise simulation functions -----------------------------------------
 
 
-def simulate_dark_current(
-    dark_current_rate: float,
-    exposure_time: ArrayLike,
+def dark_current(
+    dark_current_rate_e_per_s: float,
+    exposure_time_s: ArrayLike,
     shape: tuple[int, int],
     prng_key: Array,
 ) -> Array:
     """Draw dark current electrons from a Poisson distribution.
 
     Args:
-        dark_current_rate: Dark current rate in electrons/s/pixel.
-        exposure_time: ExposureConfig time in seconds.
+        dark_current_rate_e_per_s: Dark current rate in electrons/s/pixel.
+        exposure_time_s: ExposureConfig time in seconds.
         shape: Detector shape (ny, nx).
         prng_key: PRNG key.
 
     Returns:
         Dark current electrons, shape (ny, nx).
     """
-    return jax.random.poisson(prng_key, dark_current_rate * exposure_time, shape=shape)
+    return jax.random.poisson(prng_key, dark_current_rate_e_per_s * exposure_time_s, shape=shape)
 
 
-def simulate_cic(
-    cic_rate: float,
+def clock_induced_charge(
+    clock_induced_charge_rate_e_per_frame: float,
     num_frames: ArrayLike,
     shape: tuple[int, int],
     prng_key: Array,
@@ -208,7 +208,7 @@ def simulate_cic(
     """Draw clock-induced charge electrons from a Poisson distribution.
 
     Args:
-        cic_rate: CIC rate in electrons/pixel/frame.
+        clock_induced_charge_rate_e_per_frame: CIC rate in electrons/pixel/frame.
         num_frames: Number of frames (kept as float for JIT safety).
         shape: Detector shape (ny, nx).
         prng_key: PRNG key.
@@ -216,11 +216,11 @@ def simulate_cic(
     Returns:
         CIC electrons, shape (ny, nx).
     """
-    return jax.random.poisson(prng_key, cic_rate * num_frames, shape=shape)
+    return jax.random.poisson(prng_key, clock_induced_charge_rate_e_per_frame * num_frames, shape=shape)
 
 
-def simulate_read_noise(
-    read_noise: float,
+def read_noise(
+    read_noise_e: float,
     num_frames: ArrayLike,
     shape: tuple[int, int],
     prng_key: Array,
@@ -230,7 +230,7 @@ def simulate_read_noise(
     Total read noise sigma = sqrt(num_frames) * read_noise_per_read.
 
     Args:
-        read_noise: Read noise in electrons/pixel/read.
+        read_noise_e: Read noise in electrons/pixel/read.
         num_frames: Number of frames.
         shape: Detector shape (ny, nx).
         prng_key: PRNG key.
@@ -238,7 +238,7 @@ def simulate_read_noise(
     Returns:
         Read noise electrons, shape (ny, nx).
     """
-    sigma = read_noise * jnp.sqrt(num_frames)
+    sigma = read_noise_e * jnp.sqrt(num_frames)
     return sigma * jax.random.normal(prng_key, shape=shape)
 
 
@@ -253,37 +253,37 @@ class IdealDetector(AbstractDetector):
     QE variation is not important and CIC/read noise are negligible.
     """
 
-    pixel_scale: float
+    pixel_scale_arcsec: float
     quantum_efficiency: float
-    dark_current_rate: float
-    read_noise_electrons: float
-    cic_rate: float
-    frame_time: float
-    read_time: float
+    dark_current_rate_e_per_s: float
+    read_noise_e: float
+    clock_induced_charge_rate_e_per_frame: float
+    frame_time_s: float
+    read_time_s: float
     dqe: float
     shape: tuple[int, int] = eqx.field(static=True)
 
     def __init__(
         self,
-        pixel_scale: float,
+        pixel_scale_arcsec: float,
         shape: tuple[int, int],
         quantum_efficiency: float = 1.0,
-        dark_current_rate: float = 0.0,
-        read_noise_electrons: float = 0.0,
-        cic_rate: float = 0.0,
-        frame_time: float = 1.0,
-        read_time: float = 0.05,
+        dark_current_rate_e_per_s: float = 0.0,
+        read_noise_e: float = 0.0,
+        clock_induced_charge_rate_e_per_frame: float = 0.0,
+        frame_time_s: float = 1.0,
+        read_time_s: float = 0.05,
         dqe: float = 0.0,
     ) -> None:
         """Create a simple constant-QE detector."""
-        self.pixel_scale = pixel_scale
+        self.pixel_scale_arcsec = pixel_scale_arcsec
         self.shape = shape
         self.quantum_efficiency = quantum_efficiency
-        self.dark_current_rate = dark_current_rate
-        self.read_noise_electrons = read_noise_electrons
-        self.cic_rate = cic_rate
-        self.frame_time = frame_time
-        self.read_time = read_time
+        self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
+        self.read_noise_e = read_noise_e
+        self.clock_induced_charge_rate_e_per_frame = clock_induced_charge_rate_e_per_frame
+        self.frame_time_s = frame_time_s
+        self.read_time_s = read_time_s
         self.dqe = dqe
 
     def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
@@ -294,41 +294,41 @@ class IdealDetector(AbstractDetector):
         """Combined dark + CIC noise variance rate.
 
         Read noise is not included here as it scales per-read, not per-second.
-        Callers add (read_noise^2 * n_reads) / t_exp separately.
+        Callers add (read_noise_e^2 * n_reads) / t_exp separately.
         """
-        dark_variance_rate = self.dark_current_rate * n_pix
-        cic_variance_rate = self.cic_rate * n_pix / t_photon
+        dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
+        cic_variance_rate = self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
         return dark_variance_rate + cic_variance_rate
 
     def readout_noise_electrons(
         self,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Dark current only -- IdealDetector has no CIC or read noise."""
-        return simulate_dark_current(
-            self.dark_current_rate, exposure_time, self.shape, prng_key
+        return dark_current(
+            self.dark_current_rate_e_per_s, exposure_time_s, self.shape, prng_key
         )
 
     def readout(
         self,
         image_rate: Array,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Full detector readout: source electrons + dark current."""
         key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.readout_source_electrons(image_rate, exposure_time, key_src)
-        noise = self.readout_noise_electrons(exposure_time, key_noise)
+        source = self.readout_source_electrons(image_rate, exposure_time_s, key_src)
+        noise = self.readout_noise_electrons(exposure_time_s, key_noise)
         return source + noise
 
     def __repr__(self) -> str:
         """One-line summary of shape, plate scale, QE, and dark current."""
         ny, nx = self.shape
         return (
-            f"IdealDetector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
+            f"IdealDetector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
             f"QE={self.quantum_efficiency:.2f}, "
-            f"dark={self.dark_current_rate:.2g} e-/s/px)"
+            f"dark={self.dark_current_rate_e_per_s:.2g} e-/s/px)"
         )
 
 
@@ -340,42 +340,42 @@ class Detector(AbstractDetector):
     sources matter.  Uses Poisson statistics for dark/CIC and Gaussian
     for read noise, matching the coronagraphoto convention.
 
-    Warning: ``num_frames = jnp.ceil(exposure_time / frame_time)`` is
+    Warning: ``num_frames = jnp.ceil(exposure_time_s / frame_time_s)`` is
     kept as a float. Never cast it to int inside JIT -- that triggers a
-    ConcretizationTypeError when exposure_time is traced.
+    ConcretizationTypeError when exposure_time_s is traced.
     """
 
-    pixel_scale: float
+    pixel_scale_arcsec: float
     quantum_efficiency: float
-    dark_current_rate: float
-    read_noise_electrons: float
-    cic_rate: float
-    frame_time: float
-    read_time: float
+    dark_current_rate_e_per_s: float
+    read_noise_e: float
+    clock_induced_charge_rate_e_per_frame: float
+    frame_time_s: float
+    read_time_s: float
     dqe: float
     shape: tuple[int, int] = eqx.field(static=True)
 
     def __init__(
         self,
-        pixel_scale: float,
+        pixel_scale_arcsec: float,
         shape: tuple[int, int],
         quantum_efficiency: float = 1.0,
-        dark_current_rate: float = 0.0,
-        read_noise_electrons: float = 0.0,
-        cic_rate: float = 0.0,
-        frame_time: float = 1.0,
-        read_time: float = 0.05,
+        dark_current_rate_e_per_s: float = 0.0,
+        read_noise_e: float = 0.0,
+        clock_induced_charge_rate_e_per_frame: float = 0.0,
+        frame_time_s: float = 1.0,
+        read_time_s: float = 0.05,
         dqe: float = 0.0,
     ) -> None:
         """Create a full detector with all noise sources."""
-        self.pixel_scale = pixel_scale
+        self.pixel_scale_arcsec = pixel_scale_arcsec
         self.shape = shape
         self.quantum_efficiency = quantum_efficiency
-        self.dark_current_rate = dark_current_rate
-        self.read_noise_electrons = read_noise_electrons
-        self.cic_rate = cic_rate
-        self.frame_time = frame_time
-        self.read_time = read_time
+        self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
+        self.read_noise_e = read_noise_e
+        self.clock_induced_charge_rate_e_per_frame = clock_induced_charge_rate_e_per_frame
+        self.frame_time_s = frame_time_s
+        self.read_time_s = read_time_s
         self.dqe = dqe
 
     def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
@@ -384,48 +384,50 @@ class Detector(AbstractDetector):
 
     def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
         """Combined dark + CIC noise variance rate."""
-        dark_variance_rate = self.dark_current_rate * n_pix
-        cic_variance_rate = self.cic_rate * n_pix / t_photon
+        dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
+        cic_variance_rate = self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
         return dark_variance_rate + cic_variance_rate
 
     def readout_noise_electrons(
         self,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Dark current + CIC + read noise (source-independent)."""
         key_dark, key_cic, key_read = jax.random.split(prng_key, 3)
-        dark = simulate_dark_current(
-            self.dark_current_rate, exposure_time, self.shape, key_dark
+        dark_e = dark_current(
+            self.dark_current_rate_e_per_s, exposure_time_s, self.shape, key_dark
         )
         # num_frames stays as a traced float -- never cast to int
-        num_frames = jnp.ceil(exposure_time / self.frame_time)
-        cic = simulate_cic(self.cic_rate, num_frames, self.shape, key_cic)
-        read = simulate_read_noise(
-            self.read_noise_electrons, num_frames, self.shape, key_read
+        num_frames = jnp.ceil(exposure_time_s / self.frame_time_s)
+        cic_e = clock_induced_charge(
+            self.clock_induced_charge_rate_e_per_frame, num_frames, self.shape, key_cic
         )
-        return dark + cic + read
+        read_e = read_noise(
+            self.read_noise_e, num_frames, self.shape, key_read
+        )
+        return dark_e + cic_e + read_e
 
     def readout(
         self,
         image_rate: Array,
-        exposure_time: ArrayLike,
+        exposure_time_s: ArrayLike,
         prng_key: Array,
     ) -> Array:
         """Full detector readout: source electrons + all noise sources."""
         key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.readout_source_electrons(image_rate, exposure_time, key_src)
-        noise = self.readout_noise_electrons(exposure_time, key_noise)
+        source = self.readout_source_electrons(image_rate, exposure_time_s, key_src)
+        noise = self.readout_noise_electrons(exposure_time_s, key_noise)
         return source + noise
 
     def __repr__(self) -> str:
         """One-line summary of shape, plate scale, QE, and noise sources."""
         ny, nx = self.shape
         return (
-            f"Detector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
+            f"Detector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
             f"QE={self.quantum_efficiency:.2f}, "
-            f"dark={self.dark_current_rate:.2g} e-/s/px, "
-            f"RN={self.read_noise_electrons:.2g} e-/read, "
-            f"CIC={self.cic_rate:.2g} e-/frame, "
-            f"frame_time={self.frame_time:.3g} s)"
+            f"dark={self.dark_current_rate_e_per_s:.2g} e-/s/px, "
+            f"RN={self.read_noise_e:.2g} e-/read, "
+            f"CIC={self.clock_induced_charge_rate_e_per_frame:.2g} e-/frame, "
+            f"frame_time_s={self.frame_time_s:.3g} s)"
         )

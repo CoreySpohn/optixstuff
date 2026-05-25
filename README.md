@@ -1,28 +1,31 @@
 # optixstuff
 
-Flux-level optical system abstractions for the HWO direct imaging simulation suite.
+Shared hardware objects — with standard values — for the HWO direct-imaging
+simulation suite.
 
 ## What optixstuff is
 
-`optixstuff` is the **radiometric hardware layer** for HWO simulations. It operates on
-**flux** — photon rates, throughput fractions, and detector-level noise — providing the
-shared interfaces that simulation tools and exposure time calculators build on top of.
+`optixstuff` is a **thin shared dependency** that defines the observatory's
+hardware as composable JAX modules: primary aperture, throughput-affecting
+elements, coronagraph backend, detector. Its job is to be the single source of
+truth for the hardware configuration that downstream tools consume.
 
-The same `OpticalPath` object drives both scalar ETC calculations (`jaxEDITH`) and full
-2D image generation (`coronagraphoto`), ensuring that the hardware model is consistent
-across all downstream science products.
+Both [coronagraphoto](https://github.com/CoreySpohn/coronagraphoto)
+(2D image simulation) and [jaxEDITH](https://github.com/CoreySpohn/jaxedith)
+(exposure-time and yield calculations) import the same `OpticalPath` class and
+the same detector / throughput / primary types from optixstuff. Change a value
+here and both downstream tools pick it up on the next import.
 
 ## What optixstuff is *not*
 
-`optixstuff` does not model diffraction, wavefront propagation, or E-field interference.
-That level of physical optics belongs to tools like [dLux](https://github.com/LouisDesdoigts/dLux)
-and [HCIPy](https://github.com/ehpor/hcipy), which generate PSFs from first principles.
-
-`optixstuff` and these wavefront tools are **complementary**: dLux/HCIPy compute the PSFs,
-which are delivered as yield input packages (YIPs). `optixstuff` consumes those PSFs as
-flux patterns (via [yippy](https://github.com/CoreySpohn/yippy)) and composes them with
-the rest of the observatory — throughput chain, detector QE, noise — to produce
-science-level outputs.
+- **Not a wavefront tool.** Diffraction, E-field propagation, and PSFs-from-first-principles
+  belong to [dLux](https://github.com/LouisDesdoigts/dLux) and [HCIPy](https://github.com/ehpor/hcipy).
+- **Not a PSF interpolator.** That's [yippy](https://github.com/CoreySpohn/yippy)'s job;
+  optixstuff wraps a PSF backend via `YippyCoronagraph` but does not compute PSFs.
+- **Not a scene model.** Stars, planets, disks, and zodi live in
+  [skyscapes](https://github.com/CoreySpohn/skyscapes).
+- **Not a simulator.** Downstream tools (coronagraphoto, jaxEDITH) consume an
+  `OpticalPath` to produce images or count rates.
 
 ## Architecture
 

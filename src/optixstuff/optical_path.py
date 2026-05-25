@@ -56,7 +56,7 @@ class OpticalPath(eqx.Module):
         detector_shape: tuple[int, int] = (512, 512),
         pixel_scale_arcsec: float = 0.01,
         quantum_efficiency: float = 0.9,
-        dark_current_rate: float = 0.0,
+        dark_current_rate_e_per_s: float = 0.0,
         n_channels: float = 1.0,
         npix_multiplier: float = 1.0,
     ) -> OpticalPath:
@@ -85,7 +85,7 @@ class OpticalPath(eqx.Module):
             pixel_scale_arcsec: Detector plate scale [arcsec/px]. Default
                 ``0.01``.
             quantum_efficiency: Default ``0.9``.
-            dark_current_rate: Default ``0.0`` e-/s/px (perfect detector;
+            dark_current_rate_e_per_s: Default ``0.0`` e-/s/px (perfect detector;
                 callers add realistic noise when needed).
             n_channels: AYO parallel-path multiplier. Default ``1.0``.
             npix_multiplier: IFS signal-spread multiplier. Default ``1.0``.
@@ -116,10 +116,10 @@ class OpticalPath(eqx.Module):
             ),
             coronagraph=coro,
             detector=IdealDetector(
-                pixel_scale=pixel_scale_arcsec,
+                pixel_scale_arcsec=pixel_scale_arcsec,
                 shape=detector_shape,
                 quantum_efficiency=quantum_efficiency,
-                dark_current_rate=dark_current_rate,
+                dark_current_rate_e_per_s=dark_current_rate_e_per_s,
             ),
             n_channels=n_channels,
             npix_multiplier=npix_multiplier,

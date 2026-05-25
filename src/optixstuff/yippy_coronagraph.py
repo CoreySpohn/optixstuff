@@ -197,6 +197,6 @@ class YippyCoronagraph(AbstractCoronagraph):
         return (
             f"YippyCoronagraph(IWA={float(self.IWA):.3g}, "
             f"OWA={float(self.OWA):.3g} lambda/D, "
-            f"pixel_scale={float(self.pixel_scale_lod):.3g} lambda/D/px, "
+            f"pixel_scale_arcsec={float(self.pixel_scale_lod):.3g} lambda/D/px, "
             f"PSF {ny}x{nx})"
         )

@@ -85,12 +85,15 @@ class ConstantThroughput(AbstractUniformElement):
 
 
 @final
-class LinearThroughput(AbstractUniformElement):
-    """An optical element with linearly interpolated wavelength-dependent throughput.
+class SpectralThroughput(AbstractUniformElement):
+    """Wavelength-dependent throughput defined by sampled (wavelength, throughput) pairs.
 
-    Throughput is specified at a set of wavelengths and linearly
-    interpolated between them. Extrapolation returns zero outside the
-    defined wavelength range.
+    Linear interpolation between samples; throughput is zero outside
+    the defined wavelength range.
+
+    Represents any tabulated wavelength-dependent throughput in the
+    optical path: bandpass filters, dichroics, mirror reflectivity,
+    coating losses, ADCs, blocking filters, etc.
     """
 
     wavelengths_nm: Array
@@ -98,7 +101,7 @@ class LinearThroughput(AbstractUniformElement):
     interp: interpax.Interpolator1D
 
     def __init__(self, wavelengths_nm: Array, throughputs: Array) -> None:
-        """Create a throughput element from sampled wavelength/throughput pairs."""
+        """Create a spectral throughput element from sampled pairs."""
         self.wavelengths_nm = wavelengths_nm
         self.throughputs = throughputs
         self.interp = interpax.Interpolator1D(
@@ -117,46 +120,6 @@ class LinearThroughput(AbstractUniformElement):
         t_min = float(self.throughputs.min())
         t_max = float(self.throughputs.max())
         return (
-            f"LinearThroughput(wl={wl_min:.0f}-{wl_max:.0f} nm, "
+            f"SpectralThroughput(wl={wl_min:.0f}-{wl_max:.0f} nm, "
             f"n={n}, throughput={t_min:.3g}-{t_max:.3g})"
-        )
-
-
-@final
-class OpticalFilter(AbstractUniformElement):
-    """A bandpass filter with linearly interpolated transmittance.
-
-    Structurally identical to LinearThroughput but semantically
-    distinct -- represents a spectral bandpass selection rather than a
-    reflective coating or attenuator.
-    """
-
-    wavelengths_nm: Array
-    transmittances: Array
-    interp: interpax.Interpolator1D
-
-    def __init__(self, wavelengths_nm: Array, transmittances: Array) -> None:
-        """Create an optical filter from sampled wavelength/transmittance pairs."""
-        self.wavelengths_nm = wavelengths_nm
-        self.transmittances = transmittances
-        self.interp = interpax.Interpolator1D(
-            wavelengths_nm,
-            transmittances,
-            method="linear",
-            extrap=jnp.array([0.0, 0.0]),
-        )
-
-    def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Interpolate filter transmittance at the requested wavelength."""
-        return self.interp(wavelength_nm)
-
-    def __repr__(self) -> str:
-        """One-line summary of filter passband and peak transmittance."""
-        n = int(self.wavelengths_nm.shape[0])
-        wl_min = float(self.wavelengths_nm.min())
-        wl_max = float(self.wavelengths_nm.max())
-        t_peak = float(self.transmittances.max())
-        return (
-            f"OpticalFilter(wl={wl_min:.0f}-{wl_max:.0f} nm, "
-            f"n={n}, peak T={t_peak:.3g})"
         )
