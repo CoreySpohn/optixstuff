@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/CoreySpohn/optixstuff/compare/v1.0.1...v1.0.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* Add mermaid rendering to docs ([26e1cf0](https://github.com/CoreySpohn/optixstuff/commit/26e1cf0f8b43fe9ff16fe9c66e7bd877adf9ccd6))
+
 ## [1.0.1](https://github.com/CoreySpohn/optixstuff/compare/v1.0.0...v1.0.1) (2026-05-25)
 
 
