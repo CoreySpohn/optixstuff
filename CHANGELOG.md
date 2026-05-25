@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.0](https://github.com/CoreySpohn/optixstuff/compare/v0.2.0...v1.0.0) (2026-05-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* Docs and refactor to standardize function calls
+* SimpleDetector -> IdealDetector (clarifies that the class ignores wavelength-dependent QE and noise contributions); ConstantThroughputElement -> ConstantThroughput and LinearThroughputElement -> LinearThroughput (the Element suffix was redundant with the inheritance from AbstractUniformElement); AbstractScalarOnlyCoronagraph -> AbstractScalarCoronagraph (the Only qualifier was redundant); Exposure -> ExposureConfig (settings-struct role explicit). README ecosystem diagram replaced with Mermaid and sphinxcontrib-mermaid added to the docs build.
+
+### Features
+
+* Docs and refactor to standardize function calls ([5e5ab2c](https://github.com/CoreySpohn/optixstuff/commit/5e5ab2c28ac3d4dc387ba7eee7407740f95648c3))
+* rename detector/throughput classes and Exposure for naming consistency ([10beac7](https://github.com/CoreySpohn/optixstuff/commit/10beac7755e38c1743aa91931739453c9a5f50ed))
+
 ## [0.2.0](https://github.com/CoreySpohn/optixstuff/compare/v0.1.0...v0.2.0) (2026-05-24)
 
 
