@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/CoreySpohn/optixstuff/compare/v1.0.0...v1.0.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* Add readthedocs yaml file ([4f2380e](https://github.com/CoreySpohn/optixstuff/commit/4f2380e3e14cdecd40059bbec1a1d9d8c5684512))
+
 ## [1.0.0](https://github.com/CoreySpohn/optixstuff/compare/v0.2.0...v1.0.0) (2026-05-25)
 
 
