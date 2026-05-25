@@ -1,21 +1,21 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
-from optixstuff.coronagraph import AbstractCoronagraph, AbstractScalarOnlyCoronagraph
+from optixstuff.coronagraph import AbstractCoronagraph, AbstractScalarCoronagraph
 from optixstuff.detector import (
     AbstractDetector,
     Detector,
-    SimpleDetector,
+    IdealDetector,
     simulate_cic,
     simulate_dark_current,
     simulate_read_noise,
 )
-from optixstuff.exposure import Exposure
+from optixstuff.exposure import ExposureConfig
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
-    ConstantThroughputElement,
-    LinearThroughputElement,
+    ConstantThroughput,
+    LinearThroughput,
     OpticalFilter,
 )
 from optixstuff.optical_path import OpticalPath
@@ -27,15 +27,15 @@ __all__ = [
     "AbstractDetector",
     "AbstractOpticalElement",
     "AbstractPrimary",
-    "AbstractScalarOnlyCoronagraph",
+    "AbstractScalarCoronagraph",
     "AbstractUniformElement",
-    "ConstantThroughputElement",
+    "ConstantThroughput",
     "Detector",
-    "Exposure",
-    "LinearThroughputElement",
+    "ExposureConfig",
+    "LinearThroughput",
     "OpticalFilter",
     "OpticalPath",
-    "SimpleDetector",
+    "IdealDetector",
     "SimplePrimary",
     "YippyCoronagraph",
     "__version__",

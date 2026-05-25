@@ -1,4 +1,4 @@
-"""Exposure: physical parameters defining a single detector integration.
+"""ExposureConfig: physical parameters defining a single detector integration.
 
 Relocated from coronagraphoto so the same object can be consumed by
 both image-level (coronagraphoto) and analytic (jaxedith) code paths.
@@ -10,7 +10,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 
-class Exposure(eqx.Module):
+class ExposureConfig(eqx.Module):
     """The physical parameters defining a single detector integration.
 
     All fields can be scalars (for a single event) or vectors (for a
@@ -25,11 +25,11 @@ class Exposure(eqx.Module):
 
     @classmethod
     def in_axes(cls, **vectorized_axes):
-        """Helper to generate in_axes structure for JAX vmap over an Exposure.
+        """Helper to generate in_axes structure for JAX vmap over an ExposureConfig.
 
         Usage:
             # Vectorize over wavelength (axis 0), keep time constant
-            in_axes = Exposure.in_axes(central_wavelength_nm=0, bin_width_nm=0)
+            in_axes = ExposureConfig.in_axes(central_wavelength_nm=0, bin_width_nm=0)
         """
         spec_dict = {f.name: None for f in fields(cls)}
         spec_dict.update(vectorized_axes)

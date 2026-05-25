@@ -44,7 +44,7 @@ def optical_path(yippy_coronagraph):
         read_time=1000.0,
         dqe=1.0,
     )
-    optics_filter = ox.ConstantThroughputElement(throughput=0.5, name="optics")
+    optics_filter = ox.ConstantThroughput(throughput=0.5, name="optics")
     return ox.OpticalPath(
         primary=primary,
         coronagraph=yippy_coronagraph,

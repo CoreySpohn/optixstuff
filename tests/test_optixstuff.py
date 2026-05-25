@@ -86,7 +86,7 @@ class TestSimpleDetector:
 
     def test_readout_source_electrons_applies_qe(self):
         """Mean counts should equal rate * t * QE for a bright enough source."""
-        det = ox.SimpleDetector(
+        det = ox.IdealDetector(
             pixel_scale=0.010,
             shape=(32, 32),
             quantum_efficiency=0.5,
@@ -99,7 +99,7 @@ class TestSimpleDetector:
         assert jnp.isclose(float(jnp.mean(result)), 50000.0, rtol=0.02)
 
     def test_readout_noise_electrons_dark_only(self, simple_detector):
-        """SimpleDetector noise is dark current only -- no CIC, no read."""
+        """IdealDetector noise is dark current only -- no CIC, no read."""
         key = jax.random.PRNGKey(2)
         result = simple_detector.readout_noise_electrons(1000.0, key)
         assert result.shape == (100, 100)
@@ -115,7 +115,7 @@ class TestSimpleDetector:
         Compares sample mean + variance across a large 200x200 image with
         independent keys.
         """
-        det = ox.SimpleDetector(
+        det = ox.IdealDetector(
             pixel_scale=0.010,
             shape=(200, 200),
             quantum_efficiency=0.7,
@@ -204,14 +204,14 @@ class TestLinearThroughputElement:
     def test_interpolation(self):
         wls = jnp.array([400.0, 600.0, 800.0])
         tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.LinearThroughputElement(wavelengths_nm=wls, throughputs=tps)
+        el = ox.LinearThroughput(wavelengths_nm=wls, throughputs=tps)
         # At 600 nm should be exactly 0.9
         assert el.get_throughput(600.0) == pytest.approx(0.9, abs=1e-5)
 
     def test_extrapolation_returns_zero(self):
         wls = jnp.array([400.0, 600.0, 800.0])
         tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.LinearThroughputElement(wavelengths_nm=wls, throughputs=tps)
+        el = ox.LinearThroughput(wavelengths_nm=wls, throughputs=tps)
         # Outside range should be zero
         assert el.get_throughput(200.0) == pytest.approx(0.0, abs=1e-5)
         assert el.get_throughput(1000.0) == pytest.approx(0.0, abs=1e-5)
@@ -228,7 +228,7 @@ class TestOpticalFilter:
 
 class TestOpticalPath:
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
-        el = ox.ConstantThroughputElement(throughput=0.7)
+        el = ox.ConstantThroughput(throughput=0.7)
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(el,),
@@ -238,8 +238,8 @@ class TestOpticalPath:
         assert path.system_throughput(500.0) == pytest.approx(0.7)
 
     def test_system_throughput_two_elements(self, simple_primary, simple_detector):
-        el1 = ox.ConstantThroughputElement(throughput=0.8)
-        el2 = ox.ConstantThroughputElement(throughput=0.9)
+        el1 = ox.ConstantThroughput(throughput=0.8)
+        el2 = ox.ConstantThroughput(throughput=0.9)
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(el1, el2),
@@ -251,7 +251,7 @@ class TestOpticalPath:
     def test_default_n_channels_and_npix_multiplier(
         self, simple_primary, simple_detector
     ):
-        el = ox.ConstantThroughputElement(throughput=0.7)
+        el = ox.ConstantThroughput(throughput=0.7)
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(el,),
@@ -264,7 +264,7 @@ class TestOpticalPath:
     def test_custom_n_channels_and_npix_multiplier(
         self, simple_primary, simple_detector
     ):
-        el = ox.ConstantThroughputElement(throughput=0.7)
+        el = ox.ConstantThroughput(throughput=0.7)
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(el,),

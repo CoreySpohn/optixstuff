@@ -1,12 +1,12 @@
-"""Tests for optixstuff.Exposure."""
+"""Tests for optixstuff.ExposureConfig."""
 
 import jax
 import jax.numpy as jnp
-from optixstuff import Exposure
+from optixstuff import ExposureConfig
 
 
 def test_exposure_scalar_construction():
-    exp = Exposure(
+    exp = ExposureConfig(
         start_time_jd=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=jnp.asarray(500.0),
@@ -19,7 +19,7 @@ def test_exposure_scalar_construction():
 
 def test_exposure_vector_construction():
     wls = jnp.asarray([400.0, 500.0, 600.0])
-    exp = Exposure(
+    exp = ExposureConfig(
         start_time_jd=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=wls,
@@ -30,7 +30,7 @@ def test_exposure_vector_construction():
 
 
 def test_exposure_in_axes_helper():
-    spec = Exposure.in_axes(central_wavelength_nm=0, bin_width_nm=0)
+    spec = ExposureConfig.in_axes(central_wavelength_nm=0, bin_width_nm=0)
     assert spec.central_wavelength_nm == 0
     assert spec.bin_width_nm == 0
     assert spec.start_time_jd is None
@@ -39,7 +39,7 @@ def test_exposure_in_axes_helper():
 
 
 def test_exposure_is_pytree():
-    exp = Exposure(
+    exp = ExposureConfig(
         start_time_jd=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=jnp.asarray(500.0),

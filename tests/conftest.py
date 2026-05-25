@@ -14,7 +14,7 @@ def simple_primary():
 @pytest.fixture
 def simple_detector():
     """A simple detector with typical HWO-like parameters."""
-    return ox.SimpleDetector(
+    return ox.IdealDetector(
         pixel_scale=0.010,
         shape=(100, 100),
         quantum_efficiency=0.9,
@@ -28,4 +28,4 @@ def simple_detector():
 @pytest.fixture
 def throughput_element():
     """A constant 80% throughput optical element."""
-    return ox.ConstantThroughputElement(throughput=0.8, name="test_filter")
+    return ox.ConstantThroughput(throughput=0.8, name="test_filter")

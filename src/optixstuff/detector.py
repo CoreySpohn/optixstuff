@@ -89,7 +89,7 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: Exposure time in seconds.
+            exposure_time: ExposureConfig time in seconds.
             prng_key: JAX PRNG key (required, no default).
 
         Returns:
@@ -113,7 +113,7 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: Exposure time in seconds.
+            exposure_time: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
@@ -144,7 +144,7 @@ class AbstractDetector(eqx.Module):
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time: Exposure time in seconds.
+            exposure_time: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
@@ -167,7 +167,7 @@ class AbstractDetector(eqx.Module):
         how many sources were co-added via :meth:`readout_source_electrons`.
 
         Args:
-            exposure_time: Exposure time in seconds.
+            exposure_time: ExposureConfig time in seconds.
             prng_key: JAX PRNG key.
 
         Returns:
@@ -189,7 +189,7 @@ def simulate_dark_current(
 
     Args:
         dark_current_rate: Dark current rate in electrons/s/pixel.
-        exposure_time: Exposure time in seconds.
+        exposure_time: ExposureConfig time in seconds.
         shape: Detector shape (ny, nx).
         prng_key: PRNG key.
 
@@ -246,7 +246,7 @@ def simulate_read_noise(
 
 
 @final
-class SimpleDetector(AbstractDetector):
+class IdealDetector(AbstractDetector):
     """Detector with constant QE and minimal noise sources.
 
     Suitable for broadband imager studies where wavelength-dependent
@@ -305,7 +305,7 @@ class SimpleDetector(AbstractDetector):
         exposure_time: ArrayLike,
         prng_key: Array,
     ) -> Array:
-        """Dark current only -- SimpleDetector has no CIC or read noise."""
+        """Dark current only -- IdealDetector has no CIC or read noise."""
         return simulate_dark_current(
             self.dark_current_rate, exposure_time, self.shape, prng_key
         )
@@ -326,7 +326,7 @@ class SimpleDetector(AbstractDetector):
         """One-line summary of shape, plate scale, QE, and dark current."""
         ny, nx = self.shape
         return (
-            f"SimpleDetector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
+            f"IdealDetector({ny}x{nx} @ {self.pixel_scale:.3g} arcsec/px, "
             f"QE={self.quantum_efficiency:.2f}, "
             f"dark={self.dark_current_rate:.2g} e-/s/px)"
         )

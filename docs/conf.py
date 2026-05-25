@@ -14,6 +14,7 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
+    "sphinxcontrib.mermaid",
     "IPython.sphinxext.ipython_console_highlighting",
 ]
 

@@ -6,10 +6,10 @@ import equinox as eqx
 import jax.numpy as jnp
 
 import optixstuff as ox
-from optixstuff.coronagraph import AbstractScalarOnlyCoronagraph
+from optixstuff.coronagraph import AbstractScalarCoronagraph
 
 
-class _MockCoro(AbstractScalarOnlyCoronagraph):
+class _MockCoro(AbstractScalarCoronagraph):
     """Minimal scalar-only coronagraph for factory + repr tests."""
 
     pixel_scale_lod: float = 0.5
@@ -40,7 +40,7 @@ class TestReprs:
 
     def test_simple_detector(self, simple_detector):
         s = repr(simple_detector)
-        assert "SimpleDetector" in s
+        assert "IdealDetector" in s
         assert "100x100" in s
         assert "QE=0.90" in s
 
@@ -62,17 +62,17 @@ class TestReprs:
 
     def test_constant_throughput_element(self, throughput_element):
         s = repr(throughput_element)
-        assert "ConstantThroughputElement" in s
+        assert "ConstantThroughput" in s
         assert "test_filter" in s
         assert "throughput=0.8" in s
 
     def test_linear_throughput_element(self):
-        el = ox.LinearThroughputElement(
+        el = ox.LinearThroughput(
             wavelengths_nm=jnp.array([400.0, 500.0, 600.0, 700.0]),
             throughputs=jnp.array([0.7, 0.8, 0.9, 0.85]),
         )
         s = repr(el)
-        assert "LinearThroughputElement" in s
+        assert "LinearThroughput" in s
         assert "400-700 nm" in s
         assert "n=4" in s
 
@@ -90,8 +90,8 @@ class TestReprs:
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(
-                ox.ConstantThroughputElement(throughput=0.9, name="m1"),
-                ox.ConstantThroughputElement(throughput=0.8, name="m2"),
+                ox.ConstantThroughput(throughput=0.9, name="m1"),
+                ox.ConstantThroughput(throughput=0.8, name="m2"),
             ),
             coronagraph=_MockCoro(),
             detector=simple_detector,
@@ -125,7 +125,7 @@ class TestFromDefaultSetup:
         path = ox.OpticalPath.from_default_setup(_MockCoro())
         assert isinstance(path, ox.OpticalPath)
         assert isinstance(path.primary, ox.SimplePrimary)
-        assert isinstance(path.detector, ox.SimpleDetector)
+        assert isinstance(path.detector, ox.IdealDetector)
         assert len(path.attenuating_elements) == 1
         # Defaults applied.
         assert path.primary.diameter_m == 6.0

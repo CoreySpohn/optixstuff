@@ -62,7 +62,7 @@ class AbstractUniformElement(AbstractOpticalElement):
 
 
 @final
-class ConstantThroughputElement(AbstractUniformElement):
+class ConstantThroughput(AbstractUniformElement):
     """An optical element with wavelength-independent throughput.
 
     Useful for modeling simple attenuators, beamsplitters, or as a
@@ -79,13 +79,13 @@ class ConstantThroughputElement(AbstractUniformElement):
     def __repr__(self) -> str:
         """One-line summary of throughput value."""
         return (
-            f"ConstantThroughputElement(name={self.name!r}, "
+            f"ConstantThroughput(name={self.name!r}, "
             f"throughput={self.throughput:.3g})"
         )
 
 
 @final
-class LinearThroughputElement(AbstractUniformElement):
+class LinearThroughput(AbstractUniformElement):
     """An optical element with linearly interpolated wavelength-dependent throughput.
 
     Throughput is specified at a set of wavelengths and linearly
@@ -117,7 +117,7 @@ class LinearThroughputElement(AbstractUniformElement):
         t_min = float(self.throughputs.min())
         t_max = float(self.throughputs.max())
         return (
-            f"LinearThroughputElement(wl={wl_min:.0f}-{wl_max:.0f} nm, "
+            f"LinearThroughput(wl={wl_min:.0f}-{wl_max:.0f} nm, "
             f"n={n}, throughput={t_min:.3g}-{t_max:.3g})"
         )
 
@@ -126,7 +126,7 @@ class LinearThroughputElement(AbstractUniformElement):
 class OpticalFilter(AbstractUniformElement):
     """A bandpass filter with linearly interpolated transmittance.
 
-    Structurally identical to LinearThroughputElement but semantically
+    Structurally identical to LinearThroughput but semantically
     distinct -- represents a spectral bandpass selection rather than a
     reflective coating or attenuator.
     """

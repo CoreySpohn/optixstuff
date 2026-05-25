@@ -31,8 +31,8 @@ Built on [JAX](https://github.com/google/jax) and
 
 - **Abstract interfaces** — `AbstractPrimary`, `AbstractOpticalElement`,
   `AbstractCoronagraph`, `AbstractDetector`
-- **Concrete implementations** — `SimplePrimary`, `ConstantThroughputElement`,
-  `SimpleDetector`
+- **Concrete implementations** — `SimplePrimary`, `ConstantThroughput`,
+  `IdealDetector`
 - **Container** — `OpticalPath`, a composable hardware configuration passed to all
   simulators
 
@@ -43,29 +43,18 @@ time-dependent detector degradation) can use them without breaking the interface
 
 ### Ecosystem position
 
-```
-                          ┌───────────────────────────┐
-                          │  Physical optics           │
-                          │  (dLux, HCIPy, PROPER)     │
-                          │  E-fields → PSFs           │
-                          └──────────┬────────────────┘
-                                     │ YIP
-                          ┌──────────▼────────────────┐
-                          │  yippy                     │
-                          │  PSF interpolation         │
-                          └──────────┬────────────────┘
-                                     │ flux patterns
-              ┌──────────────────────▼────────────────────────┐
-              │                  optixstuff                    │
-              │  Telescope • Coronagraph • Detector • OpticalPath │
-              │  Throughput chains • QE • Noise rates          │
-              └────────┬──────────────────────┬───────────────┘
-                       │                      │
-            ┌──────────▼──────────┐ ┌────────▼───────────────┐
-            │  jaxEDITH           │ │  coronagraphoto         │
-            │  Scalar count rates │ │  2D image simulation    │
-            │  Exposure times     │ │  Multi-epoch scenes     │
-            └─────────────────────┘ └────────────────────────┘
+```mermaid
+flowchart TB
+    physopt["<b>Physical optics</b><br/>dLux · HCIPy · PROPER<br/>E-fields → PSFs"]
+    yippy["<b>yippy</b><br/>PSF interpolation"]
+    optix["<b>optixstuff</b><br/>Telescope · Coronagraph · Detector · OpticalPath<br/>Throughput chains · QE · Noise rates"]
+    jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
+    corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
+
+    physopt -- YIP --> yippy
+    yippy -- flux patterns --> optix
+    optix --> jaxedith
+    optix --> corono
 ```
 
 ## Installation

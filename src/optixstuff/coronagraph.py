@@ -166,7 +166,7 @@ class AbstractCoronagraph(eqx.Module):
         ...
 
 
-class AbstractScalarOnlyCoronagraph(AbstractCoronagraph):
+class AbstractScalarCoronagraph(AbstractCoronagraph):
     """Base for ETC-only coronagraph models that lack 2D PSF generation.
 
     Stubs out the image interface with zero arrays so the class satisfies

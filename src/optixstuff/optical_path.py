@@ -9,10 +9,10 @@ import equinox as eqx
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
-from optixstuff.detector import AbstractDetector, SimpleDetector
+from optixstuff.detector import AbstractDetector, IdealDetector
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
-    ConstantThroughputElement,
+    ConstantThroughput,
 )
 from optixstuff.primary import AbstractPrimary, SimplePrimary
 
@@ -78,7 +78,7 @@ class OpticalPath(eqx.Module):
                 EAC1 baseline).
             obscuration: Linear central-obscuration fraction. Default 0.
             attenuating_throughput: Combined throughput of the optical
-                chain (one :class:`ConstantThroughputElement`). Default
+                chain (one :class:`ConstantThroughput`). Default
                 ``1.0`` -- a perfect path; override for realistic studies.
             detector_shape: Detector ``(ny, nx)`` in pixels. Default
                 ``(512, 512)``.
@@ -110,12 +110,12 @@ class OpticalPath(eqx.Module):
         return cls(
             primary=SimplePrimary(diameter_m=diameter_m, obscuration=obscuration),
             attenuating_elements=(
-                ConstantThroughputElement(
+                ConstantThroughput(
                     throughput=attenuating_throughput, name="optics"
                 ),
             ),
             coronagraph=coro,
-            detector=SimpleDetector(
+            detector=IdealDetector(
                 pixel_scale=pixel_scale_arcsec,
                 shape=detector_shape,
                 quantum_efficiency=quantum_efficiency,
