@@ -45,3 +45,19 @@ def test_abstract_cannot_instantiate():
 
     with pytest.raises(TypeError):
         AbstractDisperser()
+
+
+def test_optical_path_accepts_disperser():
+    import dataclasses
+
+    from optixstuff import OpticalPath
+
+    fields = {f.name for f in dataclasses.fields(OpticalPath)}
+    assert "disperser" in fields
+
+
+def test_disperser_exported_from_package():
+    import optixstuff
+
+    assert hasattr(optixstuff, "AbstractDisperser")
+    assert hasattr(optixstuff, "LensletDisperser")
