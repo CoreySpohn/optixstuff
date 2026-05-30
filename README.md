@@ -10,11 +10,13 @@ hardware as composable JAX modules: primary aperture, throughput-affecting
 elements, coronagraph backend, detector. Its job is to be the single source of
 truth for the hardware configuration that downstream tools consume.
 
-Both [coronagraphoto](https://github.com/CoreySpohn/coronagraphoto)
-(2D image simulation) and [jaxEDITH](https://github.com/CoreySpohn/jaxedith)
+[coronagraphoto](https://github.com/CoreySpohn/coronagraphoto)
+(2D image simulation), [coronachrome](https://github.com/CoreySpohn/coronachrome)
+(lenslet-IFS dispersion + spectral extraction), and
+[jaxEDITH](https://github.com/CoreySpohn/jaxedith)
 (exposure-time and yield calculations) import the same `OpticalPath` class and
-the same detector / throughput / primary types from optixstuff. Change a value
-here and both downstream tools pick it up on the next import.
+the same detector / throughput / primary / disperser types from optixstuff.
+Change a value here and every downstream tool picks it up on the next import.
 
 ## What optixstuff is *not*
 
@@ -24,8 +26,8 @@ here and both downstream tools pick it up on the next import.
   optixstuff wraps a PSF backend via `YippyCoronagraph` but does not compute PSFs.
 - **Not a scene model.** Stars, planets, disks, and zodi live in
   [skyscapes](https://github.com/CoreySpohn/skyscapes).
-- **Not a simulator.** Downstream tools (coronagraphoto, jaxEDITH) consume an
-  `OpticalPath` to produce images or count rates.
+- **Not a simulator.** Downstream tools (coronagraphoto, coronachrome, jaxEDITH)
+  consume an `OpticalPath` to produce images, dispersed IFS frames, or count rates.
 
 ## Architecture
 
@@ -33,9 +35,9 @@ Built on [JAX](https://github.com/google/jax) and
 [Equinox](https://github.com/patrick-kidger/equinox), `optixstuff` provides:
 
 - **Abstract interfaces** — `AbstractPrimary`, `AbstractOpticalElement`,
-  `AbstractCoronagraph`, `AbstractDetector`
+  `AbstractCoronagraph`, `AbstractDetector`, `AbstractDisperser`
 - **Concrete implementations** — `SimplePrimary`, `ConstantThroughput`,
-  `IdealDetector`
+  `IdealDetector`, `Detector`, `LensletDisperser`
 - **Container** — `OpticalPath`, a composable hardware configuration passed to all
   simulators
 
@@ -53,11 +55,13 @@ flowchart TB
     optix["<b>optixstuff</b><br/>Telescope · Coronagraph · Detector · OpticalPath<br/>Throughput chains · QE · Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
+    coronachrome["<b>coronachrome</b><br/>Lenslet-IFS dispersion<br/>Spectral extraction"]
 
     physopt -- YIP --> yippy
     yippy -- flux patterns --> optix
     optix --> jaxedith
     optix --> corono
+    optix --> coronachrome
 ```
 
 ## Installation
