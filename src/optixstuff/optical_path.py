@@ -10,6 +10,7 @@ import equinox as eqx
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
 from optixstuff.detector import AbstractDetector, IdealDetector
+from optixstuff.disperser import AbstractDisperser
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     ConstantThroughput,
@@ -31,6 +32,7 @@ class OpticalPath(eqx.Module):
             between the primary and coronagraph (mirrors, filters, etc.).
         coronagraph: Coronagraph performance model.
         detector: Focal-plane detector model.
+        disperser: Optional IFS disperser descriptor; None for imaging mode.
         n_channels: Number of parallel identical optical-path copies
             (AYO shorthand, multiplicative factor on count rates;
             not a spectral channel count). Default 1.0.
@@ -42,6 +44,7 @@ class OpticalPath(eqx.Module):
     attenuating_elements: tuple[AbstractOpticalElement, ...]
     coronagraph: AbstractCoronagraph
     detector: AbstractDetector
+    disperser: AbstractDisperser | None = None
     n_channels: float = 1.0
     npix_multiplier: float = 1.0
 
@@ -110,9 +113,7 @@ class OpticalPath(eqx.Module):
         return cls(
             primary=SimplePrimary(diameter_m=diameter_m, obscuration=obscuration),
             attenuating_elements=(
-                ConstantThroughput(
-                    throughput=attenuating_throughput, name="optics"
-                ),
+                ConstantThroughput(throughput=attenuating_throughput, name="optics"),
             ),
             coronagraph=coro,
             detector=IdealDetector(

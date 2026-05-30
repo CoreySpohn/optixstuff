@@ -10,6 +10,7 @@ from optixstuff.detector import (
     dark_current,
     read_noise,
 )
+from optixstuff.disperser import AbstractDisperser, LensletDisperser
 from optixstuff.exposure import ExposureConfig
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
@@ -24,6 +25,7 @@ from optixstuff.yippy_coronagraph import YippyCoronagraph
 __all__ = [
     "AbstractCoronagraph",
     "AbstractDetector",
+    "AbstractDisperser",
     "AbstractOpticalElement",
     "AbstractPrimary",
     "AbstractScalarCoronagraph",
@@ -32,6 +34,7 @@ __all__ = [
     "Detector",
     "ExposureConfig",
     "IdealDetector",
+    "LensletDisperser",
     "OpticalPath",
     "SimplePrimary",
     "SpectralThroughput",
