@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/CoreySpohn/optixstuff/compare/v1.0.2...v1.1.0) (2026-05-30)
+
+
+### Features
+
+* add AbstractDisperser and LensletDisperser descriptors ([6e9cd21](https://github.com/CoreySpohn/optixstuff/commit/6e9cd210c3b6f9b8af3b4b8a72cc85e412288c39))
+* **detector:** add per-pixel noise_variance (shot + dark + CIC + read) ([f983b0d](https://github.com/CoreySpohn/optixstuff/commit/f983b0dc628e6a2ef8f6489a396c18ff2fff173a))
+* **optical_path:** add optional disperser descriptor field ([06e486e](https://github.com/CoreySpohn/optixstuff/commit/06e486e31daaa15773d91f2b586ad7ec16359db5))
+
 ## [1.0.2](https://github.com/CoreySpohn/optixstuff/compare/v1.0.1...v1.0.2) (2026-05-25)
 
 
