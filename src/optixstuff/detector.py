@@ -1,6 +1,5 @@
 """Detector abstractions and concrete implementations."""
 
-
 import abc
 from typing import final
 
@@ -154,6 +153,37 @@ class AbstractDetector(eqx.Module):
             prng_key, image_rate * exposure_time_s * self.quantum_efficiency
         )
 
+    def noise_variance(self, image_rate: Array, exposure_time_s: ArrayLike) -> Array:
+        """Deterministic per-pixel total noise variance in electrons^2.
+
+        The expected variance at each pixel for an incident photon-rate image
+        -- the deterministic companion to :meth:`readout`. Combines source shot
+        noise (Poisson on detected electrons) with the source-independent floor
+        (dark current, clock-induced charge, read noise)::
+
+            N = QE * rate * t
+                + dark_rate * t
+                + CIC_rate * n_frames
+                + read_noise^2 * n_frames
+
+        with ``n_frames = ceil(t / frame_time_s)``. Use ``1 / noise_variance(...)``
+        as inverse-variance weights for least-squares spectral extraction or its
+        GLS covariance, where the shot term carries the wavelength dependence.
+
+        Args:
+            image_rate: Incident photon rate [ph/s/pixel], any shape.
+            exposure_time_s: Exposure time in seconds.
+
+        Returns:
+            Per-pixel noise variance [electrons^2], same shape as image_rate.
+        """
+        n_frames = jnp.ceil(exposure_time_s / self.frame_time_s)
+        shot = self.quantum_efficiency * image_rate * exposure_time_s
+        dark = self.dark_current_rate_e_per_s * exposure_time_s
+        cic = self.clock_induced_charge_rate_e_per_frame * n_frames
+        read = self.read_noise_e**2 * n_frames
+        return shot + dark + cic + read
+
     @abc.abstractmethod
     def readout_noise_electrons(
         self,
@@ -196,7 +226,9 @@ def dark_current(
     Returns:
         Dark current electrons, shape (ny, nx).
     """
-    return jax.random.poisson(prng_key, dark_current_rate_e_per_s * exposure_time_s, shape=shape)
+    return jax.random.poisson(
+        prng_key, dark_current_rate_e_per_s * exposure_time_s, shape=shape
+    )
 
 
 def clock_induced_charge(
@@ -216,7 +248,9 @@ def clock_induced_charge(
     Returns:
         CIC electrons, shape (ny, nx).
     """
-    return jax.random.poisson(prng_key, clock_induced_charge_rate_e_per_frame * num_frames, shape=shape)
+    return jax.random.poisson(
+        prng_key, clock_induced_charge_rate_e_per_frame * num_frames, shape=shape
+    )
 
 
 def read_noise(
@@ -281,7 +315,9 @@ class IdealDetector(AbstractDetector):
         self.quantum_efficiency = quantum_efficiency
         self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
         self.read_noise_e = read_noise_e
-        self.clock_induced_charge_rate_e_per_frame = clock_induced_charge_rate_e_per_frame
+        self.clock_induced_charge_rate_e_per_frame = (
+            clock_induced_charge_rate_e_per_frame
+        )
         self.frame_time_s = frame_time_s
         self.read_time_s = read_time_s
         self.dqe = dqe
@@ -297,7 +333,9 @@ class IdealDetector(AbstractDetector):
         Callers add (read_noise_e^2 * n_reads) / t_exp separately.
         """
         dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
-        cic_variance_rate = self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
+        cic_variance_rate = (
+            self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
+        )
         return dark_variance_rate + cic_variance_rate
 
     def readout_noise_electrons(
@@ -373,7 +411,9 @@ class Detector(AbstractDetector):
         self.quantum_efficiency = quantum_efficiency
         self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
         self.read_noise_e = read_noise_e
-        self.clock_induced_charge_rate_e_per_frame = clock_induced_charge_rate_e_per_frame
+        self.clock_induced_charge_rate_e_per_frame = (
+            clock_induced_charge_rate_e_per_frame
+        )
         self.frame_time_s = frame_time_s
         self.read_time_s = read_time_s
         self.dqe = dqe
@@ -385,7 +425,9 @@ class Detector(AbstractDetector):
     def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
         """Combined dark + CIC noise variance rate."""
         dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
-        cic_variance_rate = self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
+        cic_variance_rate = (
+            self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
+        )
         return dark_variance_rate + cic_variance_rate
 
     def readout_noise_electrons(
@@ -403,9 +445,7 @@ class Detector(AbstractDetector):
         cic_e = clock_induced_charge(
             self.clock_induced_charge_rate_e_per_frame, num_frames, self.shape, key_cic
         )
-        read_e = read_noise(
-            self.read_noise_e, num_frames, self.shape, key_read
-        )
+        read_e = read_noise(self.read_noise_e, num_frames, self.shape, key_read)
         return dark_e + cic_e + read_e
 
     def readout(
