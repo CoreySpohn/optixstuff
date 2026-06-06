@@ -53,6 +53,14 @@ class LensletDisperser(AbstractDisperser):
     which reads these fields. Scalar/ETC methods derive from
     ``dispersion_coeffs`` + ``pix_per_reselt`` so the dispersion model is the
     single source of truth.
+
+    ``psflet_params[0]`` is the PSFlet core width in detector pixels (Gaussian
+    ``sigma`` or Moffat ``alpha``); any trailing entries are dimensionless shape
+    parameters (e.g. Moffat ``beta``). ``psflet_ref_nm`` is the wavelength at
+    which that core width is specified: a diffraction-limited spot scales as
+    ``lambda f / D``, so at fixed pixel scale coronachrome scales the core width
+    by ``lambda / psflet_ref_nm`` per wavelength (the shape parameters do not
+    scale).
     """
 
     pitch_m: float
@@ -62,6 +70,7 @@ class LensletDisperser(AbstractDisperser):
     pix_per_reselt: float
     dispersion_coeffs: Array = eqx.field(converter=jnp.asarray)
     psflet_params: Array = eqx.field(converter=jnp.asarray)
+    psflet_ref_nm: float
     grid_kind: str = eqx.field(static=True)
     n_lenslets: int = eqx.field(static=True)
     psflet_kind: str = eqx.field(static=True)

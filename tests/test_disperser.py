@@ -15,6 +15,7 @@ def _lenslet():
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
         psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
         grid_kind="square",
         n_lenslets=8,
         psflet_kind="gaussian",
@@ -24,6 +25,11 @@ def _lenslet():
 
 def test_is_abstract_disperser():
     assert isinstance(_lenslet(), AbstractDisperser)
+
+
+def test_psflet_ref_nm_roundtrips():
+    """psflet_ref_nm (wavelength at which psflet_params[0] is set) round-trips."""
+    assert float(_lenslet().psflet_ref_nm) == 660.0
 
 
 def test_spectral_sampling_returns_config():
