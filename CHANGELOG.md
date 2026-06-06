@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/CoreySpohn/optixstuff/compare/v1.1.0...v1.2.0) (2026-06-06)
+
+
+### Features
+
+* Add reference wavelength for the psflets ([a2fe241](https://github.com/CoreySpohn/optixstuff/commit/a2fe241ee778ef54c4832e68950fe5268f8a8b1c))
+
 ## [1.1.0](https://github.com/CoreySpohn/optixstuff/compare/v1.0.2...v1.1.0) (2026-05-30)
 
 
