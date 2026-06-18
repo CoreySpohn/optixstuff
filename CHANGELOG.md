@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/CoreySpohn/optixstuff/compare/v1.1.0...v1.2.0) (2026-06-18)
+
+
+### Features
+
+* Add reference wavelength for the psflets ([a2fe241](https://github.com/CoreySpohn/optixstuff/commit/a2fe241ee778ef54c4832e68950fe5268f8a8b1c))
+* **disperser:** wavelength-dependent throughput via composed optical element ([c902c88](https://github.com/CoreySpohn/optixstuff/commit/c902c88ae08447e5dfbc868cbcc51a254098877e))
+
 ## [1.1.0](https://github.com/CoreySpohn/optixstuff/compare/v1.0.2...v1.1.0) (2026-05-30)
 
 
