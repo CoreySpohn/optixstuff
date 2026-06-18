@@ -12,6 +12,8 @@ import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
 
+from optixstuff.optical_elements import AbstractOpticalElement, ConstantThroughput
+
 
 class AbstractDisperser(eqx.Module):
     """Interface for a dispersing IFS element (lenslet array, slicer, MSA).
@@ -75,7 +77,7 @@ class LensletDisperser(AbstractDisperser):
     n_lenslets: int = eqx.field(static=True)
     psflet_kind: str = eqx.field(static=True)
     detector_shape: tuple[int, int] = eqx.field(static=True)
-    throughput_value: float = 1.0
+    throughput_element: AbstractOpticalElement = ConstantThroughput(1.0)
 
     def _dispersion_px(self, wavelength_nm):
         """Spectral-axis detector offset [px] for the wavelength(s)."""
@@ -101,7 +103,12 @@ class LensletDisperser(AbstractDisperser):
         return span + self.psflet_params[0]
 
     def throughput(self, wavelength_nm):
-        """Constant throughput in v1."""
-        return self.throughput_value * jnp.ones_like(
-            jnp.asarray(wavelength_nm, dtype=float)
-        )
+        """Disperser optical throughput in [0, 1], shaped like wavelength_nm.
+
+        Delegates to the composed throughput element (ConstantThroughput by
+        default; SpectralThroughput for a tabulated blaze/transmission curve) and
+        broadcasts to the wavelength shape so the output shape is canonical
+        regardless of the backing element.
+        """
+        w = jnp.asarray(wavelength_nm, dtype=float)
+        return self.throughput_element.get_throughput(w) * jnp.ones_like(w)

@@ -46,6 +46,12 @@ def test_throughput_default_unity():
     assert jnp.allclose(_lenslet().throughput(660.0), 1.0)
 
 
+def test_throughput_default_shape_matches_wavelength():
+    """Default-throughput output is shaped like the (array) wavelength input."""
+    lam = jnp.array([500.0, 700.0])
+    assert _lenslet().throughput(lam).shape == lam.shape
+
+
 def test_abstract_cannot_instantiate():
     import pytest
 
@@ -67,3 +73,33 @@ def test_disperser_exported_from_package():
 
     assert hasattr(optixstuff, "AbstractDisperser")
     assert hasattr(optixstuff, "LensletDisperser")
+
+
+def test_throughput_spectral_curve():
+    """A SpectralThroughput-backed disperser returns the interpolated curve,
+    shaped like the wavelength input."""
+    from optixstuff import SpectralThroughput
+
+    curve = SpectralThroughput(
+        jnp.array([500.0, 700.0, 900.0]), jnp.array([0.2, 0.8, 0.5])
+    )
+    d = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([100.0, 0.0]),
+        psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
+        grid_kind="square",
+        n_lenslets=8,
+        psflet_kind="gaussian",
+        detector_shape=(256, 256),
+        throughput_element=curve,
+    )
+    lam = jnp.array([500.0, 700.0, 900.0])
+    t = d.throughput(lam)
+    assert t.shape == lam.shape  # array in -> array out
+    assert jnp.allclose(t, jnp.array([0.2, 0.8, 0.5]), atol=1e-6)  # sample points
+    assert jnp.allclose(d.throughput(600.0), 0.5, atol=1e-6)  # linear midpoint
