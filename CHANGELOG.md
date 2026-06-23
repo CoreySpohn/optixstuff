@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/CoreySpohn/optixstuff/compare/v1.2.0...v1.3.0) (2026-06-23)
+
+
+### Features
+
+* Add Zenodo citation ([0028643](https://github.com/CoreySpohn/optixstuff/commit/0028643e1f4079db6543a1fc43ddf353b7df226b))
+
 ## [1.2.0](https://github.com/CoreySpohn/optixstuff/compare/v1.1.0...v1.2.0) (2026-06-18)
 
 
