@@ -1,0 +1,27 @@
+{
+  "upload_type": "software",
+  "creators": [
+    {
+      "orcid": "0000-0002-3138-0240",
+      "affiliation": "NASA Goddard Space Flight Center, Greenbelt, MD",
+      "name": "Spohn, Corey"
+    }
+  ],
+  "license": "MIT",
+  "title": "optixstuff",
+  "description": "optixstuff is an open-source JAX library providing hardware abstractions, the telescope aperture and detector models, for the Habitable Worlds Observatory direct imaging simulation suite.",
+  "keywords": [
+    "telescope",
+    "detector",
+    "Habitable Worlds Observatory",
+    "direct imaging",
+    "JAX"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/CoreySpohn/optixstuff",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}
