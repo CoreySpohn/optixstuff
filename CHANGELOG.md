@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/CoreySpohn/optixstuff/compare/v1.3.0...v1.4.0) (2026-06-23)
+
+
+### Miscellaneous Chores
+
+* release 1.4.0 ([39c1d25](https://github.com/CoreySpohn/optixstuff/commit/39c1d25741f3aaa47984d32e0e6c7917933a59ba))
+
 ## [1.3.0](https://github.com/CoreySpohn/optixstuff/compare/v1.2.0...v1.3.0) (2026-06-23)
 
 
