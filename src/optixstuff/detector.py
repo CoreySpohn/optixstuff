@@ -4,6 +4,7 @@ import abc
 from typing import final
 
 import equinox as eqx
+import interpax
 import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
@@ -392,6 +393,7 @@ class Detector(AbstractDetector):
     read_time_s: float
     dqe: float
     shape: tuple[int, int] = eqx.field(static=True)
+    _qe_interp: interpax.Interpolator1D | None
 
     def __init__(
         self,
@@ -404,8 +406,16 @@ class Detector(AbstractDetector):
         frame_time_s: float = 1.0,
         read_time_s: float = 0.05,
         dqe: float = 0.0,
+        qe_curve: tuple[ArrayLike, ArrayLike] | None = None,
     ) -> None:
-        """Create a full detector with all noise sources."""
+        """Create a full detector with all noise sources.
+
+        Supplying ``qe_curve`` as a ``(wavelengths_nm, qe)`` pair makes
+        :meth:`get_qe` interpolate it (linear, zero outside the measured range)
+        for wavelength-dependent throughput/ETC use; the scalar
+        ``quantum_efficiency`` remains the operating-point QE used by the
+        per-call (monochromatic) readout path.
+        """
         self.pixel_scale_arcsec = pixel_scale_arcsec
         self.shape = shape
         self.quantum_efficiency = quantum_efficiency
@@ -417,10 +427,26 @@ class Detector(AbstractDetector):
         self.frame_time_s = frame_time_s
         self.read_time_s = read_time_s
         self.dqe = dqe
+        if qe_curve is None:
+            self._qe_interp = None
+        else:
+            wavelengths_nm, qe = qe_curve
+            self._qe_interp = interpax.Interpolator1D(
+                jnp.asarray(wavelengths_nm),
+                jnp.asarray(qe),
+                method="linear",
+                extrap=jnp.array([0.0, 0.0]),
+            )
 
     def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Return constant QE, ignoring wavelength."""
-        return self.quantum_efficiency
+        """Quantum efficiency at a wavelength.
+
+        Interpolates the ``qe_curve`` if one was supplied (linear, zero outside
+        the measured range); otherwise returns the scalar ``quantum_efficiency``.
+        """
+        if self._qe_interp is None:
+            return self.quantum_efficiency
+        return self._qe_interp(wavelength_nm)
 
     def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
         """Combined dark + CIC noise variance rate."""
@@ -463,9 +489,14 @@ class Detector(AbstractDetector):
     def __repr__(self) -> str:
         """One-line summary of shape, plate scale, QE, and noise sources."""
         ny, nx = self.shape
+        qe_str = (
+            "spectral"
+            if self._qe_interp is not None
+            else f"{self.quantum_efficiency:.2f}"
+        )
         return (
             f"Detector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
-            f"QE={self.quantum_efficiency:.2f}, "
+            f"QE={qe_str}, "
             f"dark={self.dark_current_rate_e_per_s:.2g} e-/s/px, "
             f"RN={self.read_noise_e:.2g} e-/read, "
             f"CIC={self.clock_induced_charge_rate_e_per_frame:.2g} e-/frame, "
