@@ -36,8 +36,10 @@ Built on [JAX](https://github.com/google/jax) and
 
 - **Abstract interfaces** — `AbstractPrimary`, `AbstractOpticalElement`,
   `AbstractCoronagraph`, `AbstractDetector`, `AbstractDisperser`
-- **Concrete implementations** — `SimplePrimary`, `ConstantThroughput`,
-  `IdealDetector`, `Detector`, `LensletDisperser`
+- **Concrete implementations** — `SimplePrimary`, `SegmentedPrimary` (carries
+  hex segment geometry for a diffraction backend), `ConstantThroughput`,
+  `IdealDetector`, `Detector` (with optional wavelength-dependent QE),
+  `LensletDisperser`
 - **Container** — `OpticalPath`, a composable hardware configuration passed to all
   simulators
 
