@@ -20,6 +20,7 @@ from optixstuff.optical_elements import (
 )
 from optixstuff.optical_path import OpticalPath
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
+from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.yippy_coronagraph import YippyCoronagraph
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "AbstractOpticalElement",
     "AbstractPrimary",
     "AbstractScalarCoronagraph",
+    "AbstractSpeckleField",
     "AbstractUniformElement",
     "ConstantThroughput",
     "Detector",

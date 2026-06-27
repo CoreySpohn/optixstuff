@@ -16,6 +16,7 @@ from optixstuff.optical_elements import (
     ConstantThroughput,
 )
 from optixstuff.primary import AbstractPrimary, SimplePrimary
+from optixstuff.speckle import AbstractSpeckleField
 
 
 class OpticalPath(eqx.Module):
@@ -38,6 +39,9 @@ class OpticalPath(eqx.Module):
             not a spectral channel count). Default 1.0.
         npix_multiplier: IFS signal-spread multiplier on detector pixel
             counts. Default 1.0.
+        speckle: Optional time-varying speckle field (the stochastic
+            wavefront-error residual on top of the deterministic
+            coronagraph leakage floor); None for a perfect-wavefront path.
     """
 
     primary: AbstractPrimary
@@ -47,6 +51,7 @@ class OpticalPath(eqx.Module):
     disperser: AbstractDisperser | None = None
     n_channels: float = 1.0
     npix_multiplier: float = 1.0
+    speckle: AbstractSpeckleField | None = None
 
     @classmethod
     def from_default_setup(
@@ -62,6 +67,7 @@ class OpticalPath(eqx.Module):
         dark_current_rate_e_per_s: float = 0.0,
         n_channels: float = 1.0,
         npix_multiplier: float = 1.0,
+        speckle: AbstractSpeckleField | None = None,
     ) -> OpticalPath:
         """Build an OpticalPath with reasonable HWO-like defaults.
 
@@ -92,6 +98,8 @@ class OpticalPath(eqx.Module):
                 callers add realistic noise when needed).
             n_channels: AYO parallel-path multiplier. Default ``1.0``.
             npix_multiplier: IFS signal-spread multiplier. Default ``1.0``.
+            speckle: Optional speckle field attached to the path. Default
+                ``None`` -- a perfect-wavefront path.
 
         Returns:
             A ready-to-use :class:`OpticalPath`.
@@ -124,6 +132,7 @@ class OpticalPath(eqx.Module):
             ),
             n_channels=n_channels,
             npix_multiplier=npix_multiplier,
+            speckle=speckle,
         )
 
     def system_throughput(self, wavelength_nm: float) -> float:
@@ -158,4 +167,6 @@ class OpticalPath(eqx.Module):
             lines.append("  attenuating_elements: ()")
         lines.append(indent("coronagraph: " + repr(self.coronagraph)))
         lines.append(indent("detector: " + repr(self.detector)))
+        if self.speckle is not None:
+            lines.append(indent("speckle: " + repr(self.speckle)))
         return "\n".join(lines)
