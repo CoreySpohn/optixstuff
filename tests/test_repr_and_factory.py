@@ -108,7 +108,9 @@ class TestReprs:
         assert any(line.startswith("  coronagraph:") for line in lines)
         assert any(line.startswith("  detector:") for line in lines)
 
-    def test_optical_path_empty_attenuating_chain(self, simple_primary, simple_detector):
+    def test_optical_path_empty_attenuating_chain(
+        self, simple_primary, simple_detector
+    ):
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(),
@@ -173,7 +175,7 @@ class TestFromDefaultSetup:
         assert leaves is not None
 
     def test_accepts_yippy_eqx_coronagraph(self):
-        """A bare ``yippy.EqxCoronagraph`` is wrapped via ``YippyCoronagraph(backend=)``.
+        """A bare ``yippy.EqxCoronagraph`` is wrapped via the ``backend`` kwarg.
 
         Catches the regression where any non-``AbstractCoronagraph`` /
         non-path argument was unconditionally ``str()``-ified and fed

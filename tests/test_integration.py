@@ -11,7 +11,6 @@ from yippy import fetch_yip
 
 import optixstuff as ox
 
-
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures (data downloaded once per test run)
 # ---------------------------------------------------------------------------
