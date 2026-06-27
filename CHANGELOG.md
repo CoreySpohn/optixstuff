@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/CoreySpohn/optixstuff/compare/v1.4.0...v1.5.0) (2026-06-27)
+
+
+### Features
+
+* **detector:** wavelength-dependent QE via optional qe_curve ([bf7bc6f](https://github.com/CoreySpohn/optixstuff/commit/bf7bc6f8272ff2d011551f3b1b78243c8ada5572))
+* **primary:** add SegmentedPrimary carrying hex segment geometry ([fe7cab9](https://github.com/CoreySpohn/optixstuff/commit/fe7cab9bb6153874b029ead7d2cc888ca9e8709b))
+
 ## [1.4.0](https://github.com/CoreySpohn/optixstuff/compare/v1.3.0...v1.4.0) (2026-06-23)
 
 
