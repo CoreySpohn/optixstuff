@@ -19,7 +19,7 @@ from optixstuff.optical_elements import (
     SpectralThroughput,
 )
 from optixstuff.optical_path import OpticalPath
-from optixstuff.primary import AbstractPrimary, SimplePrimary
+from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.yippy_coronagraph import YippyCoronagraph
 
 __all__ = [
@@ -36,6 +36,7 @@ __all__ = [
     "IdealDetector",
     "LensletDisperser",
     "OpticalPath",
+    "SegmentedPrimary",
     "SimplePrimary",
     "SpectralThroughput",
     "YippyCoronagraph",
