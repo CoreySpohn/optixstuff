@@ -8,13 +8,12 @@ it is an instrument effect, not an astrophysical scene source -- it lives on
 :class:`optixstuff.OpticalPath`, next to the coronagraph, rather than in the
 skyscapes scene.
 
-The unifying generator (EFOR / Pogorelyuk / Manojkumar; see the
-coronagraphoto-rasti speckle design) is ``I(t) = |E_nom + G eps(t)|^2``,
-where ``E_nom`` is the static coherent residual field (``|E_nom|^2`` is the
+The standard linear speckle model is ``I(t) = |E_nom + G eps(t)|^2``, where
+``E_nom`` is the static coherent residual field (``|E_nom|^2`` is the
 deterministic floor), ``G`` maps wavefront-error modes to the focal-plane
 field, and ``eps(t)`` are the drifting mode coefficients. Concrete fields
 differ only in how they source ``G`` and ``eps`` (analytic, replayed
-library cubes, fitted reduced-order, or learned); they share the
+intensity cubes, fitted reduced-order, or learned); they share the
 :class:`AbstractSpeckleField` contract below.
 """
 
