@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/CoreySpohn/optixstuff/compare/v1.5.0...v1.6.0) (2026-06-28)
+
+
+### Features
+
+* **speckle:** add AbstractSpeckleField interface and OpticalPath.speckle ([fb7b501](https://github.com/CoreySpohn/optixstuff/commit/fb7b501a2b105350786f757c7c5c761f8bfef2b0))
+
 ## [1.5.0](https://github.com/CoreySpohn/optixstuff/compare/v1.4.0...v1.5.0) (2026-06-27)
 
 
