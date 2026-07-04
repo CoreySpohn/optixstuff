@@ -63,6 +63,17 @@ class LensletDisperser(AbstractDisperser):
     ``lambda f / D``, so at fixed pixel scale coronachrome scales the core width
     by ``lambda / psflet_ref_nm`` per wavelength (the shape parameters do not
     scale).
+
+    ``sky_pitch_lod`` is the lenslet pitch projected on sky, in lambda/D at the
+    same reference wavelength as the focal-plane grid it is compared against
+    (only the ratio to the focal-plane plate scale ever enters, so any
+    consistent angular unit works). It makes the spatial sampling an instrument
+    property: the render layer derives focal-plane pixels per lenslet from it
+    instead of taking a free knob. ``None`` means unspecified.
+
+    ``psflet_pack_path`` is a reference to a frozen PSFlet template pack file
+    (used with ``psflet_kind="template"``), the way ``throughput_element``
+    carries the blaze curve: config only, the render layer loads it.
     """
 
     pitch_m: float
@@ -78,6 +89,8 @@ class LensletDisperser(AbstractDisperser):
     psflet_kind: str = eqx.field(static=True)
     detector_shape: tuple[int, int] = eqx.field(static=True)
     throughput_element: AbstractOpticalElement = ConstantThroughput(1.0)
+    sky_pitch_lod: float | None = None
+    psflet_pack_path: str | None = eqx.field(static=True, default=None)
 
     def _dispersion_px(self, wavelength_nm):
         """Spectral-axis detector offset [px] for the wavelength(s)."""

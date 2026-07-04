@@ -5,9 +5,9 @@ import jax.numpy as jnp
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
 
 
-def _lenslet():
+def _lenslet(**overrides):
     # crispy WFIRST660-like: npixperdlam=2, R=50 -> linear coeff 100
-    return LensletDisperser(
+    kwargs = dict(
         pitch_m=174e-6,
         pixsize_m=13e-6,
         angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
@@ -21,6 +21,8 @@ def _lenslet():
         psflet_kind="gaussian",
         detector_shape=(256, 256),
     )
+    kwargs.update(overrides)
+    return LensletDisperser(**kwargs)
 
 
 def test_is_abstract_disperser():
@@ -73,6 +75,25 @@ def test_disperser_exported_from_package():
 
     assert hasattr(optixstuff, "AbstractDisperser")
     assert hasattr(optixstuff, "LensletDisperser")
+
+
+def test_sky_pitch_lod_defaults_none():
+    """The on-sky lenslet pitch is optional config; None means unspecified."""
+    assert _lenslet().sky_pitch_lod is None
+
+
+def test_sky_pitch_lod_roundtrips():
+    assert float(_lenslet(sky_pitch_lod=0.5).sky_pitch_lod) == 0.5
+
+
+def test_psflet_pack_path_defaults_none():
+    """The PSFlet template pack reference is optional config; None means unset."""
+    assert _lenslet().psflet_pack_path is None
+
+
+def test_psflet_pack_path_roundtrips():
+    d = _lenslet(psflet_kind="template", psflet_pack_path="psflets.npz")
+    assert d.psflet_pack_path == "psflets.npz"
 
 
 def test_throughput_spectral_curve():
