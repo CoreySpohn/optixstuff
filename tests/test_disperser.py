@@ -77,13 +77,14 @@ def test_disperser_exported_from_package():
     assert hasattr(optixstuff, "LensletDisperser")
 
 
-def test_sky_pitch_lod_defaults_none():
+def test_sky_pitch_arcsec_defaults_none():
     """The on-sky lenslet pitch is optional config; None means unspecified."""
-    assert _lenslet().sky_pitch_lod is None
+    assert _lenslet().sky_pitch_arcsec is None
 
 
-def test_sky_pitch_lod_roundtrips():
-    assert float(_lenslet(sky_pitch_lod=0.5).sky_pitch_lod) == 0.5
+def test_sky_pitch_arcsec_roundtrips():
+    """The pitch is a plain angle on sky, no reference wavelength involved."""
+    assert float(_lenslet(sky_pitch_arcsec=0.078).sky_pitch_arcsec) == 0.078
 
 
 def test_psflet_pack_path_defaults_none():
