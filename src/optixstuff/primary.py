@@ -100,6 +100,8 @@ class SegmentedPrimary(AbstractPrimary):
     _diameter_m: float
     _area_m2: float
     segment_gap_m: float
+    segment_point_to_point_m: float | None
+    inscribed_diameter_m: float | None
     n_rings: int = eqx.field(static=True)
     n_segments: int = eqx.field(static=True)
     segment_shape: str = eqx.field(static=True)
@@ -112,11 +114,15 @@ class SegmentedPrimary(AbstractPrimary):
         n_segments: int,
         segment_gap_m: float,
         segment_shape: str = "hexagon",
+        segment_point_to_point_m: float | None = None,
+        inscribed_diameter_m: float | None = None,
     ) -> None:
         """Create a segmented hex primary from its geometry."""
         self._diameter_m = diameter_m
         self._area_m2 = area_m2
         self.segment_gap_m = segment_gap_m
+        self.segment_point_to_point_m = segment_point_to_point_m
+        self.inscribed_diameter_m = inscribed_diameter_m
         self.n_rings = n_rings
         self.n_segments = n_segments
         self.segment_shape = segment_shape
@@ -133,21 +139,38 @@ class SegmentedPrimary(AbstractPrimary):
 
     @property
     def segment_flat_to_flat_m(self) -> float:
-        """Segment flat-to-flat size in metres for the circumscribing layout."""
+        """Segment flat-to-flat size in metres.
+
+        Exact (``point_to_point * sqrt(3) / 2``) when the segment size is
+        given; otherwise the legacy circumscribing approximation
+        ``diameter / (2 n_rings + 1)``.
+        """
+        if self.segment_point_to_point_m is not None:
+            return self.segment_point_to_point_m * jnp.sqrt(3.0) / 2.0
         return self._diameter_m / (2 * self.n_rings + 1)
 
     @property
+    def segment_pitch_m(self) -> float:
+        """Centre-to-centre distance of adjacent segments (flat-to-flat + gap)."""
+        return self.segment_flat_to_flat_m + self.segment_gap_m
+
+    @property
     def segment_centres_m(self):
-        """``(n_segments, 2)`` array of segment centre (x, y) positions in metres."""
+        """``(n_segments, 2)`` segment centre (x, y) positions in metres.
+
+        A flat-top hexagonal lattice (flats up, points along x), the
+        convention of the HWO EAC baseline pupils: the centre segment is
+        first, and adjacent centres are one ``segment_pitch_m`` apart.
+        """
         if self.segment_shape != "hexagon":
             msg = f"segment_centres_m undefined for shape {self.segment_shape!r}"
             raise NotImplementedError(msg)
         axial = _hex_axial_coords(self.n_rings)
-        spacing = self.segment_flat_to_flat_m + self.segment_gap_m
+        pitch = self.segment_pitch_m
         qs = jnp.array([q for q, _ in axial])
         rs = jnp.array([r for _, r in axial])
-        xs = spacing * (qs + rs / 2.0)
-        ys = spacing * (jnp.sqrt(3.0) / 2.0) * rs
+        xs = pitch * (jnp.sqrt(3.0) / 2.0) * (qs + rs)
+        ys = pitch * (rs - qs) / 2.0
         return jnp.stack([xs, ys], axis=-1)
 
     def __repr__(self) -> str:
