@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.0.0](https://github.com/CoreySpohn/optixstuff/compare/v1.5.0...v2.0.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **disperser:** sky_pitch_arcsec replaces sky_pitch_lod -- the cube grid is fixed-angle, so the pitch is a plain angle
+
+### Features
+
+* **disperser:** sky_pitch_lod + psflet_pack_path descriptor fields ([d2ae639](https://github.com/CoreySpohn/optixstuff/commit/d2ae6392a5f24a2c3b43413149dd7e89b7125600))
+* **primary:** exact segment geometry -- optional segment_point_to_point_m and inscribed_diameter_m, segment_pitch_m, flat-top segment_centres_m matching the HWO EAC baseline pupils ([4c5b4b7](https://github.com/CoreySpohn/optixstuff/commit/4c5b4b71843450339c2a330d74833a5b53a5431d))
+* **speckle:** add AbstractSpeckleField interface and OpticalPath.speckle ([fb7b501](https://github.com/CoreySpohn/optixstuff/commit/fb7b501a2b105350786f757c7c5c761f8bfef2b0))
+
+
+### Code Refactoring
+
+* **disperser:** sky_pitch_arcsec replaces sky_pitch_lod -- the cube grid is fixed-angle, so the pitch is a plain angle ([31041e2](https://github.com/CoreySpohn/optixstuff/commit/31041e2b85402b083ce2e7913100cfc2919452f3))
+
 ## [1.5.0](https://github.com/CoreySpohn/optixstuff/compare/v1.4.0...v1.5.0) (2026-06-27)
 
 
