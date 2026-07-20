@@ -1,7 +1,12 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
-from optixstuff.coronagraph import AbstractCoronagraph, AbstractScalarCoronagraph
+from optixstuff.coronagraph import (
+    AbstractCoronagraph,
+    AbstractScalarCoronagraph,
+    AbstractTableCoronagraph,
+    MultiBandCoronagraph,
+)
 from optixstuff.detector import (
     AbstractDetector,
     Detector,
@@ -31,12 +36,14 @@ __all__ = [
     "AbstractPrimary",
     "AbstractScalarCoronagraph",
     "AbstractSpeckleField",
+    "AbstractTableCoronagraph",
     "AbstractUniformElement",
     "ConstantThroughput",
     "Detector",
     "ExposureConfig",
     "IdealDetector",
     "LensletDisperser",
+    "MultiBandCoronagraph",
     "OpticalPath",
     "SegmentedPrimary",
     "SimplePrimary",

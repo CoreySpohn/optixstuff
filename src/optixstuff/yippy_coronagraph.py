@@ -1,23 +1,26 @@
 """YippyCoronagraph -- AbstractCoronagraph backed by a yippy EqxCoronagraph."""
 
-
 from typing import final
 
 from jax.typing import ArrayLike
 from jaxtyping import Array
 from yippy import EqxCoronagraph
 
-from optixstuff.coronagraph import AbstractCoronagraph
+from optixstuff.coronagraph import AbstractTableCoronagraph
 
 
 @final
-class YippyCoronagraph(AbstractCoronagraph):
+class YippyCoronagraph(AbstractTableCoronagraph):
     """Coronagraph performance model backed by a yippy YIP interpolation table.
 
-    Wraps a yippy ``EqxCoronagraph`` via composition, adapting its methods
-    to the ``AbstractCoronagraph`` interface.  The ``_backend`` field is
-    itself an ``eqx.Module``, so its internal JAX arrays flow through
-    ``filter_jit`` and ``filter_grad`` normally.
+    Wraps a yippy ``EqxCoronagraph`` via composition: the scalar curves
+    adapt the backend's interpolation tables, and the native-grid table
+    SPI (``stellar_intens`` / ``create_psfs`` / ``sky_trans`` /
+    ``psf_shape`` / ``psf_datacube``) delegates to the backend, from
+    which :class:`AbstractTableCoronagraph` serves the sampling-explicit
+    image contract.  The ``_backend`` field is itself an ``eqx.Module``,
+    so its internal JAX arrays flow through ``filter_jit`` and
+    ``filter_grad`` normally.
 
     Construction mirrors ``EqxCoronagraph`` -- pass either a YIP path or
     an existing ``EqxCoronagraph`` instance::
@@ -133,7 +136,7 @@ class YippyCoronagraph(AbstractCoronagraph):
         """
         return self._backend.create_psf(separation_lod, 0.0, npixels)
 
-    # -- Convenience methods (not on AbstractCoronagraph) ------------------
+    # -- Convenience methods and the table SPI ----------------------------
 
     def noise_floor_ayo(
         self,
