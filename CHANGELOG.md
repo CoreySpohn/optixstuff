@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/CoreySpohn/optixstuff/compare/v2.0.0...v3.0.0) (2026-07-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **coronagraph:** sampling-explicit image contract -- wavelength-explicit stellar_map/source_psfs/background_transmission/extended_scene, table SPI base, MultiBandCoronagraph
+
+### Features
+
+* **coronagraph:** sampling-explicit image contract -- wavelength-explicit stellar_map/source_psfs/background_transmission/extended_scene, table SPI base, MultiBandCoronagraph ([76c578b](https://github.com/CoreySpohn/optixstuff/commit/76c578be46ee79281dbb24ef44e3af4708fd7155))
+
 ## [2.0.0](https://github.com/CoreySpohn/optixstuff/compare/v1.5.0...v2.0.0) (2026-07-10)
 
 
