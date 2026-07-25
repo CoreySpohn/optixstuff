@@ -20,6 +20,8 @@ intensity cubes, fitted reduced-order, or learned); they share the
 import abc
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 from equinox import AbstractVar
 from jax.typing import ArrayLike
 from jaxtyping import Array
@@ -83,3 +85,60 @@ class AbstractSpeckleField(eqx.Module):
             2D float contrast-delta array on the native coronagraph plane.
         """
         ...
+
+    def realize_average(
+        self,
+        *,
+        wavelength_nm: ArrayLike,
+        exposure_s: ArrayLike,
+        start_time_s: ArrayLike = 0.0,
+        n_sub: int = 8,
+    ) -> Array:
+        """Speckle contrast delta averaged over an exposure.
+
+        :meth:`realize` is instantaneous, but a detector integrates. Averaging
+        matters because the map is QUADRATIC in the drifting coefficients:
+        the mean of the realized maps is not the map of the mean coefficients,
+        so an instantaneous sample is a biased stand-in for an exposure
+        whenever the field decorrelates on the exposure timescale. This
+        evaluates :meth:`realize` at ``n_sub`` sub-exposure midpoints and
+        averages, which is exact in the limit of many sub-steps and
+        second-order accurate at finite ``n_sub``.
+
+        How many sub-steps are enough, and how much the average suppresses
+        the speckle variance relative to a snapshot, are both set by how many
+        independent realizations the exposure spans. A generator that knows
+        its own temporal statistics can say so in closed form (see
+        ``physicaloptix.SpeckleProcess.exposure_neff``); when the exposure is
+        short against the decorrelation time, one sub-step is already right
+        and this reduces to :meth:`realize` at the exposure midpoint.
+
+        Args:
+            wavelength_nm: Wavelength in nanometres.
+            exposure_s: Exposure length in seconds.
+            start_time_s: Exposure start, in seconds since ``epoch_jd``.
+            n_sub: Number of sub-exposure samples. Must be at least 1.
+
+        Returns:
+            2D float contrast-delta array, averaged over the exposure.
+
+        Raises:
+            ValueError: If ``n_sub`` is not a positive integer.
+        """
+        if int(n_sub) < 1 or int(n_sub) != n_sub:
+            raise ValueError(f"n_sub must be a positive integer, got {n_sub}")
+        n_sub = int(n_sub)
+        start = jnp.asarray(start_time_s, dtype=float)
+        step = jnp.asarray(exposure_s, dtype=float) / n_sub
+
+        def sample(index):
+            return self.realize(
+                wavelength_nm=wavelength_nm, time_s=start + (index + 0.5) * step
+            )
+
+        # Accumulate rather than stacking: one map is held at a time, so a
+        # large native grid does not cost n_sub copies.
+        def accumulate(index, total):
+            return total + sample(index)
+
+        return jax.lax.fori_loop(1, n_sub, accumulate, sample(0)) / n_sub
