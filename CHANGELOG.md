@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.0.0](https://github.com/CoreySpohn/optixstuff/compare/v3.0.0...v4.0.0) (2026-07-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* American spelling throughout, rename segment_centres_m to segment_centers_m
+
+### Features
+
+* **speckle:** exposure-averaged realization on the speckle-field contract ([d163bf6](https://github.com/CoreySpohn/optixstuff/commit/d163bf6a0a821b1d31bed46925ef63a4c19145de))
+
+
+### Bug Fixes
+
+* American spelling throughout, rename segment_centres_m to segment_centers_m ([ccf79e1](https://github.com/CoreySpohn/optixstuff/commit/ccf79e14d8aee487d1dcabd2cf08b4a3893b2a36))
+
 ## [3.0.0](https://github.com/CoreySpohn/optixstuff/compare/v2.0.0...v3.0.0) (2026-07-20)
 
 
