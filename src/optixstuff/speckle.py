@@ -59,12 +59,14 @@ class AbstractSpeckleField(eqx.Module):
         wavelength_nm: ArrayLike,
         time_s: ArrayLike = 0.0,
     ) -> Array:
-        """Speckle contrast *delta* at a given time and wavelength.
+        """Speckle flux-fraction *delta* at a given time and wavelength.
 
         Returns the wavefront-error-induced excess over the deterministic
         coronagraphic floor -- i.e. ``I(t) - |E_nom|^2``, expanded as
-        ``2 Re(E_nom* . G eps(t)) + |G eps(t)|^2``, in contrast units
-        (fraction of the host-star flux per pixel). It must not include the
+        ``2 Re(E_nom* . G eps(t)) + |G eps(t)|^2``, as per-pixel flux
+        fractions (the fraction of pre-coronagraph host-star flux landing in
+        each pixel, the same units a YIP ``stellar_intens`` map carries --
+        NOT peak-referenced contrast). It must not include the
         ``|E_nom|^2`` floor itself: ``star_rate`` already applies that via
         the YIP ``stellar_intens`` map, so re-emitting it here would double
         count. An incoherent-halo implementation returns only the strictly
