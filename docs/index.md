@@ -6,7 +6,7 @@ direct-imaging simulation suite.
 `optixstuff` is a **thin shared dependency** that defines the
 observatory's hardware as composable JAX modules: primary aperture,
 throughput-affecting elements, coronagraph backend, detector. It does
-not simulate, retrieve, or analyse anything in its own right; its job
+not simulate, retrieve, or analyze anything in its own right; its job
 is to be the single source of truth for the hardware configuration
 that downstream tools consume.
 

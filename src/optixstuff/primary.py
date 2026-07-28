@@ -14,17 +14,17 @@ class AbstractPrimary(eqx.Module):
     """
 
     diameter_m: AbstractVar[float]
-    """Primary mirror diameter in metres."""
+    """Primary mirror diameter in meters."""
 
     area_m2: AbstractVar[float]
-    """Effective collecting area in square metres."""
+    """Effective collecting area in square meters."""
 
 
 class SimplePrimary(AbstractPrimary):
     """A simple circular primary mirror with a central obscuration.
 
     Args:
-        diameter_m: Primary mirror diameter in metres.
+        diameter_m: Primary mirror diameter in meters.
         obscuration: Linear obscuration fraction (0 = no obscuration).
         shape_factor: Fraction of unobscured area that is collecting
             (accounts for struts, segment gaps, etc.). Default 1.0.
@@ -47,12 +47,12 @@ class SimplePrimary(AbstractPrimary):
 
     @property
     def diameter_m(self) -> float:
-        """Primary mirror diameter in metres."""
+        """Primary mirror diameter in meters."""
         return self._diameter_m
 
     @property
     def area_m2(self) -> float:
-        """Effective collecting area in square metres."""
+        """Effective collecting area in square meters."""
         r = self._diameter_m / 2.0
         gross_area = jnp.pi * r**2
         return gross_area * (1.0 - self.obscuration**2) * self.shape_factor
@@ -68,9 +68,9 @@ class SimplePrimary(AbstractPrimary):
 
 
 def _hex_axial_coords(n_rings: int) -> list[tuple[int, int]]:
-    """Axial (q, r) centres of a hex-packed n-ring layout.
+    """Axial (q, r) centers of a hex-packed n-ring layout.
 
-    Yields ``1 + 3 n (n + 1)`` coordinates, centre first.
+    Yields ``1 + 3 n (n + 1)`` coordinates, center first.
     """
     coords = [(0, 0)]
     for q in range(-n_rings, n_rings + 1):
@@ -89,11 +89,11 @@ class SegmentedPrimary(AbstractPrimary):
     DESCRIBES the geometry; it does not propagate wavefronts.
 
     Args:
-        diameter_m: Circumscribing diameter in metres.
-        area_m2: Effective collecting area in square metres (gap/fill corrected).
-        n_rings: Number of segment rings around the centre segment.
+        diameter_m: Circumscribing diameter in meters.
+        area_m2: Effective collecting area in square meters (gap/fill corrected).
+        n_rings: Number of segment rings around the center segment.
         n_segments: Total segment count (``1 + 3 n (n + 1)`` for a full layout).
-        segment_gap_m: Inter-segment optical gap in metres.
+        segment_gap_m: Inter-segment optical gap in meters.
         segment_shape: Segment shape; only ``"hexagon"`` is supported today.
     """
 
@@ -129,17 +129,17 @@ class SegmentedPrimary(AbstractPrimary):
 
     @property
     def diameter_m(self) -> float:
-        """Circumscribing diameter in metres."""
+        """Circumscribing diameter in meters."""
         return self._diameter_m
 
     @property
     def area_m2(self) -> float:
-        """Effective collecting area in square metres."""
+        """Effective collecting area in square meters."""
         return self._area_m2
 
     @property
     def segment_flat_to_flat_m(self) -> float:
-        """Segment flat-to-flat size in metres.
+        """Segment flat-to-flat size in meters.
 
         Exact (``point_to_point * sqrt(3) / 2``) when the segment size is
         given; otherwise the legacy circumscribing approximation
@@ -151,19 +151,19 @@ class SegmentedPrimary(AbstractPrimary):
 
     @property
     def segment_pitch_m(self) -> float:
-        """Centre-to-centre distance of adjacent segments (flat-to-flat + gap)."""
+        """Center-to-center distance of adjacent segments (flat-to-flat + gap)."""
         return self.segment_flat_to_flat_m + self.segment_gap_m
 
     @property
-    def segment_centres_m(self):
-        """``(n_segments, 2)`` segment centre (x, y) positions in metres.
+    def segment_centers_m(self):
+        """``(n_segments, 2)`` segment center (x, y) positions in meters.
 
         A flat-top hexagonal lattice (flats up, points along x), the
-        convention of the HWO EAC baseline pupils: the centre segment is
-        first, and adjacent centres are one ``segment_pitch_m`` apart.
+        convention of the HWO EAC baseline pupils: the center segment is
+        first, and adjacent centers are one ``segment_pitch_m`` apart.
         """
         if self.segment_shape != "hexagon":
-            msg = f"segment_centres_m undefined for shape {self.segment_shape!r}"
+            msg = f"segment_centers_m undefined for shape {self.segment_shape!r}"
             raise NotImplementedError(msg)
         axial = _hex_axial_coords(self.n_rings)
         pitch = self.segment_pitch_m

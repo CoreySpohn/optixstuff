@@ -139,7 +139,7 @@ class OpticalPath(eqx.Module):
         """Total throughput of all attenuating elements.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
 
         Returns:
             Combined fractional throughput in [0, 1].

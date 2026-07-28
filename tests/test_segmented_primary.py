@@ -31,18 +31,18 @@ class TestSegmentedPrimary:
         assert float(p.diameter_m) == pytest.approx(10.033)
         assert float(p.area_m2) == pytest.approx(65.16)
 
-    def test_segment_centres_count_matches_n_segments(self):
+    def test_segment_centers_count_matches_n_segments(self):
         p = _eac5_like()
-        centres = p.segment_centres_m
-        assert centres.shape == (37, 2)
+        centers = p.segment_centers_m
+        assert centers.shape == (37, 2)
 
     def test_n_segments_matches_ring_formula(self):
         p = _eac5_like()
         assert p.n_segments == 1 + 3 * p.n_rings * (p.n_rings + 1)
 
-    def test_centre_segment_at_origin(self):
-        centres = _eac5_like().segment_centres_m
-        assert jnp.allclose(centres[0], jnp.zeros(2))
+    def test_center_segment_at_origin(self):
+        centers = _eac5_like().segment_centers_m
+        assert jnp.allclose(centers[0], jnp.zeros(2))
 
     def test_flat_to_flat(self):
         p = _eac5_like()
@@ -50,8 +50,8 @@ class TestSegmentedPrimary:
 
     def test_segments_fit_within_diameter(self):
         p = _eac5_like()
-        r = jnp.linalg.norm(p.segment_centres_m, axis=1)
-        # every segment centre is inside the circumscribing radius
+        r = jnp.linalg.norm(p.segment_centers_m, axis=1)
+        # every segment center is inside the circumscribing radius
         assert float(r.max()) < p.diameter_m / 2.0
 
     def test_is_pytree_jittable(self):
@@ -59,7 +59,7 @@ class TestSegmentedPrimary:
         area = eqx.filter_jit(lambda q: q.area_m2)(p)
         assert float(area) == pytest.approx(65.16)
 
-    def test_non_hexagon_centres_raise(self):
+    def test_non_hexagon_centers_raise(self):
         p = ox.SegmentedPrimary(
             diameter_m=8.0,
             area_m2=40.0,
@@ -69,4 +69,4 @@ class TestSegmentedPrimary:
             segment_shape="keystone",
         )
         with pytest.raises(NotImplementedError):
-            _ = p.segment_centres_m
+            _ = p.segment_centers_m

@@ -112,7 +112,7 @@ from coronagraphoto import star_readout, planet_readout
 
 keys = jax.random.split(jax.random.PRNGKey(0), 6)
 
-# Sources (Poisson realisations of the count rates)
+# Sources (Poisson realizations of the count rates)
 star_e   = star_readout(star, optical_path, keys[0], ...)
 planet_e = planet_readout(planet, optical_path, keys[1], ...)
 

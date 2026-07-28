@@ -186,7 +186,7 @@ take only detector-side parameters (rates, frame time, shape) and
 return additive noise arrays meant to be summed onto a scene-source
 readout. Splitting the responsibilities:
 
-- coronagraphoto's `*_readout` family = Poisson-realised source counts
+- coronagraphoto's `*_readout` family = Poisson-realized source counts
   (depends on a `Scene`)
 - optixstuff's noise primitives = additive hardware noise contributions
   (independent of any `Scene`)

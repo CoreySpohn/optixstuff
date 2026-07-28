@@ -40,11 +40,11 @@ class TestSegmentGeometry:
         np.testing.assert_allclose(eac1_like.segment_pitch_m, f2f + 0.004)
 
     def test_segment_centers_layout(self, eac1_like):
-        centers = np.asarray(eac1_like.segment_centres_m)
+        centers = np.asarray(eac1_like.segment_centers_m)
         assert centers.shape == (19, 2)
         # Center segment first, at the origin.
         np.testing.assert_allclose(centers[0], [0.0, 0.0])
-        # Flat-top lattice: six nearest neighbours at one pitch.
+        # Flat-top lattice: six nearest neighbors at one pitch.
         radii = np.hypot(centers[:, 0], centers[:, 1])
         ring1 = np.sort(radii)[1:7]
         np.testing.assert_allclose(ring1, eac1_like.segment_pitch_m, rtol=1e-12)
@@ -63,9 +63,9 @@ class TestSegmentGeometry:
             n_segments=37,
             segment_gap_m=0.012,
         )
-        # Without a measured segment size the centres fall back to the
+        # Without a measured segment size the centers fall back to the
         # legacy approximate pitch and still evaluate.
-        assert primary.segment_centres_m.shape == (37, 2)
+        assert primary.segment_centers_m.shape == (37, 2)
 
     def test_centers_are_a_jax_array(self, eac1_like):
-        assert isinstance(eac1_like.segment_centres_m, jnp.ndarray)
+        assert isinstance(eac1_like.segment_centers_m, jnp.ndarray)

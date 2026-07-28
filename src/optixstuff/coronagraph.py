@@ -67,7 +67,7 @@ class AbstractCoronagraph(eqx.Module):
     which serves the image contract from native-grid tables), physical
     wavefront propagation, or analytical models.
 
-    All wavelength arguments are in nanometres throughout.
+    All wavelength arguments are in nanometers throughout.
     All separations and pixel scales are in lambda/D units -- the
     contract is dimensionless optics; angle conversions are the
     telescope primary's business.
@@ -98,7 +98,7 @@ class AbstractCoronagraph(eqx.Module):
 
         Args:
             separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
 
         Returns:
@@ -118,7 +118,7 @@ class AbstractCoronagraph(eqx.Module):
 
         Args:
             separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
 
         Returns:
@@ -138,7 +138,7 @@ class AbstractCoronagraph(eqx.Module):
 
         Args:
             separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
 
         Returns:
@@ -158,7 +158,7 @@ class AbstractCoronagraph(eqx.Module):
 
         Args:
             separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
 
         Returns:
@@ -189,7 +189,7 @@ class AbstractCoronagraph(eqx.Module):
         the diameter axis this signature lacks.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             pixel_scale_rad: Output pixel scale in radians/pixel.
             npixels: Output array side length in pixels. Must be a
                 Python int (not a JAX array) as it determines the
@@ -211,7 +211,7 @@ class AbstractCoronagraph(eqx.Module):
         """Off-axis PSF at a given angular separation.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             separation_lod: Source separation in lambda/D.
             pixel_scale_rad: Output pixel scale in radians/pixel.
             npixels: Output array side length in pixels. Must be a
@@ -242,7 +242,7 @@ class AbstractCoronagraph(eqx.Module):
         """On-axis stellar leakage map at the requested sampling.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             stellar_diam_lod: Stellar angular diameter in lambda/D.
             pixel_scale_lod: Target pixel scale in lambda/D per pixel.
             shape: Target array shape (ny, nx).
@@ -266,7 +266,7 @@ class AbstractCoronagraph(eqx.Module):
         """Off-axis point-source PSFs at the requested sampling.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             x_lod: Source x-coordinates in lambda/D, shape (K,).
             y_lod: Source y-coordinates in lambda/D, shape (K,).
             pixel_scale_lod: Target pixel scale in lambda/D per pixel.
@@ -289,7 +289,7 @@ class AbstractCoronagraph(eqx.Module):
         """Per-pixel transmission map for a spatially uniform background.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             pixel_scale_lod: Target pixel scale in lambda/D per pixel.
             shape: Target array shape (ny, nx).
 
@@ -317,7 +317,7 @@ class AbstractCoronagraph(eqx.Module):
                 output carries the same units per target pixel.
             map_pixel_scale_lod: Pixel scale of ``scene_map`` in
                 lambda/D per pixel.
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             pixel_scale_lod: Target pixel scale in lambda/D per pixel.
             shape: Target array shape (ny, nx).
             rotation_deg: CCW rotation applied when mapping the scene
@@ -626,7 +626,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         """Build a multi-band stack.
 
         Args:
-            band_centers_nm: Band center wavelengths in nanometres, one
+            band_centers_nm: Band center wavelengths in nanometers, one
                 per band.
             bands: The per-band ``AbstractCoronagraph`` models, aligned
                 with ``band_centers_nm``.

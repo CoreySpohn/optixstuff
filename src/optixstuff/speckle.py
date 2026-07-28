@@ -35,7 +35,7 @@ class AbstractSpeckleField(eqx.Module):
     or a learned generator. All produce a coronagraph-plane contrast map
     through :meth:`realize`.
 
-    All wavelength arguments are in nanometres; ``time_s`` is seconds since
+    All wavelength arguments are in nanometers; ``time_s`` is seconds since
     mission start. The returned map is on the field's native coronagraph
     plane at :attr:`pixel_scale_lod`; the caller resamples it to the
     detector grid (as for the coronagraph ``stellar_intens`` map).
@@ -80,7 +80,7 @@ class AbstractSpeckleField(eqx.Module):
         / roll sequence.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
 
         Returns:
@@ -116,7 +116,7 @@ class AbstractSpeckleField(eqx.Module):
         and this reduces to :meth:`realize` at the exposure midpoint.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
             exposure_s: Exposure length in seconds.
             start_time_s: Exposure start, in seconds since ``epoch_jd``.
             n_sub: Number of sub-exposure samples. Must be at least 1.

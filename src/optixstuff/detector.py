@@ -52,7 +52,7 @@ class AbstractDetector(eqx.Module):
         """Quantum efficiency at a given wavelength.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
 
         Returns:
             QE as a fraction in [0, 1].
@@ -140,7 +140,7 @@ class AbstractDetector(eqx.Module):
 
         The marginal distribution of returned electrons is identical to
         :meth:`readout_source_electrons`. The two methods produce
-        different specific realisations even with the same key.
+        different specific realizations even with the same key.
 
         Args:
             image_rate: Incident photon rate array in ph/s/pixel.

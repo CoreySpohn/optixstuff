@@ -1,6 +1,5 @@
 """Optical element abstractions (throughput, filters, field stops)."""
 
-
 import abc
 from typing import final
 
@@ -27,7 +26,7 @@ class AbstractOpticalElement(eqx.Module):
         """Fractional throughput at a given wavelength.
 
         Args:
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
 
         Returns:
             Scalar throughput in [0, 1].
@@ -40,7 +39,7 @@ class AbstractOpticalElement(eqx.Module):
 
         Args:
             arr: Input photon rate array [ph/s/pixel].
-            wavelength_nm: Wavelength in nanometres.
+            wavelength_nm: Wavelength in nanometers.
 
         Returns:
             Attenuated photon rate array, same shape as arr.
@@ -79,14 +78,13 @@ class ConstantThroughput(AbstractUniformElement):
     def __repr__(self) -> str:
         """One-line summary of throughput value."""
         return (
-            f"ConstantThroughput(name={self.name!r}, "
-            f"throughput={self.throughput:.3g})"
+            f"ConstantThroughput(name={self.name!r}, throughput={self.throughput:.3g})"
         )
 
 
 @final
 class SpectralThroughput(AbstractUniformElement):
-    """Wavelength-dependent throughput defined by sampled (wavelength, throughput) pairs.
+    """Wavelength-dependent throughput from sampled (wavelength, throughput) pairs.
 
     Linear interpolation between samples; throughput is zero outside
     the defined wavelength range.
