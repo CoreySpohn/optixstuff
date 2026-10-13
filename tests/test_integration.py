@@ -100,7 +100,7 @@ class TestYippyCoronagraph:
         (lambda/D)^2 that the contract promises. A value reported per pixel
         would come back smaller by the pixel area in (lambda/D)^2, a factor of
         16 at 0.25 lambda/D pixels. The tolerance covers the difference between
-        a one-pixel ring and the reader's radial bins, a few percent.
+        a one-pixel ring and the reader's radial bins, under 10 percent.
         """
         coro = yippy_coronagraph
         pixel_lod = coro.pixel_scale_lod
@@ -116,6 +116,22 @@ class TestYippyCoronagraph:
 
         got = float(coro.core_mean_intensity(separation_lod, 500.0))
         assert got == pytest.approx(expected, rel=0.1)
+
+    @pytest.mark.parametrize("separation_lod", [6.0, 10.0])
+    def test_noise_floor_ayo_matches_core_mean_intensity(
+        self, yippy_coronagraph, separation_lod
+    ):
+        """The AYO noise floor is the core mean intensity over the ppf.
+
+        Both are per (lambda/D)^2 on the same object, so a caller can multiply
+        either by the core area. A floor left per pixel would come back low by
+        the pixel area in (lambda/D)^2.
+        """
+        coro = yippy_coronagraph
+        ppf = 30.0
+        floor = float(coro.noise_floor_ayo(separation_lod, ppf))
+        cmi = float(coro.core_mean_intensity(separation_lod, 500.0))
+        assert floor == pytest.approx(cmi / ppf, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
