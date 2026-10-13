@@ -136,6 +136,13 @@ class AbstractCoronagraph(eqx.Module):
     ) -> ArrayLike:
         """Mean stellar intensity within the photometric aperture.
 
+        The fraction of the star's incident light per unit solid angle, in
+        (lambda/D)^-2, averaged over the aperture (azimuthally, for a
+        tabulated curve). It does not depend on any pixel grid: multiplied by
+        :meth:`core_area` it is the fraction of the star's light that leaks
+        into the photometric aperture. A backend that tabulates the fraction
+        per pixel divides by the pixel's solid angle in (lambda/D)^2.
+
         Args:
             separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometers.
