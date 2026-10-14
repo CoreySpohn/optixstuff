@@ -1,0 +1,14 @@
+# Experimental, pinned JAX/Triton API combination. GPU validation is pending.
+jax[cuda12]==0.10.2
+jax-triton==0.3.1
+triton==3.6.0
+equinox==0.13.8
+interpax==0.3.14
+numpy==2.2.6
+scipy==1.14.1
+optax==0.2.8
+blackjax==1.6.2
+numpyro==0.21.0
+jaxns==2.6.9
+astropy==8.0.0
+pytest==9.1.1

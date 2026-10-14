@@ -32,7 +32,8 @@ class _TableCoronagraph(AbstractTableCoronagraph):
     sky_trans: jnp.ndarray = None
     psf_datacube: object = None
 
-    def __init__(self, sky_value=1.0, datacube=None):
+    def __init__(self, sky_value=1.0, datacube=None, disk_convolution_backend="jax"):
+        self.disk_convolution_backend = disk_convolution_backend
         self.sky_trans = jnp.full((_SIZE, _SIZE), sky_value)
         self.psf_datacube = datacube
 

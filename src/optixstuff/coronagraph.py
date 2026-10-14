@@ -1,6 +1,7 @@
 """Coronagraph abstractions."""
 
 import abc
+import importlib
 
 import equinox as eqx
 import jax
@@ -357,6 +358,27 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
     # AbstractVar members may be satisfied by a dataclass field or a
     # property (a concrete base property would shadow subclass fields).
 
+    disk_convolution_backend: str = eqx.field(default="jax", kw_only=True)
+    """Extended-scene contraction: ``jax``, ``jax-batched``, or ``triton``.
+
+    ``reference`` runs the experimental derivative rules using JAX for testing.
+    This ordinary string leaf is static under ``eqx.filter_jit`` and can be
+    replaced with ``eqx.tree_at`` before building a fit.
+    """
+
+    def __check_init__(self):
+        """Reject unknown contraction backends before tracing a simulation."""
+        if self.disk_convolution_backend not in (
+            "jax",
+            "jax-batched",
+            "triton",
+            "reference",
+        ):
+            raise ValueError(
+                "disk_convolution_backend must be "
+                "jax, jax-batched, triton, or reference"
+            )
+
     psf_shape: AbstractVar[tuple]
     """Native map shape (ny, nx) shared by the table members."""
 
@@ -507,7 +529,20 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
             rotation_deg,
         )
         n_src_y, n_src_x = datacube.shape[:2]
-        if (n_src_y, n_src_x) == (ny, nx):
+        if self.disk_convolution_backend != "jax":
+            convolution = importlib.import_module(
+                "optixstuff.experimental.disk_convolution"
+            )
+            native = convolution.convolve_disk(
+                src,
+                datacube,
+                backend=(
+                    "jax"
+                    if self.disk_convolution_backend == "jax-batched"
+                    else self.disk_convolution_backend
+                ),
+            )
+        elif (n_src_y, n_src_x) == (ny, nx):
             native = jnp.einsum("ij,ijxy->xy", src, datacube)
         elif (n_src_y, n_src_x) == (ny // 2 + 1, nx // 2 + 1):
             native = _convolve_quadrants(src, datacube)

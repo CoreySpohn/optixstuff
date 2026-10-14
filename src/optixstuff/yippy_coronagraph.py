@@ -36,6 +36,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         yip_path: str | None = None,
         *,
         backend: EqxCoronagraph | None = None,
+        disk_convolution_backend: str = "jax",
         **kwargs,
     ) -> None:
         """Create a YippyCoronagraph from a YIP path or existing backend.
@@ -43,8 +44,12 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         Args:
             yip_path: Path to a Yield Input Package directory.
             backend: Pre-built EqxCoronagraph.  Takes precedence over yip_path.
+            disk_convolution_backend: ``jax``, ``jax-batched``, or ``triton`` for
+                extended scenes. Triton supports derivatives of the source
+                with a fixed PSF cube; it requires the optional GPU extra.
             **kwargs: Forwarded to ``EqxCoronagraph`` when building from yip_path.
         """
+        self.disk_convolution_backend = disk_convolution_backend
         if backend is not None:
             self._backend = backend
         elif yip_path is not None:
