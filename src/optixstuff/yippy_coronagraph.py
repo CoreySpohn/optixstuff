@@ -99,8 +99,14 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         *,
         time_s: ArrayLike = 0.0,
     ) -> ArrayLike:
-        """Mean stellar leakage from the YIP interpolation table."""
-        return self._backend.core_mean_intensity(separation_lod)
+        """Mean stellar leakage per (lambda/D)^2 from the YIP interpolation table.
+
+        yippy tabulates the fraction of the star's light per pixel, so the
+        value is divided by the pixel's solid angle, ``pixel_scale_lod**2``,
+        to meet the contract of :meth:`AbstractCoronagraph.core_mean_intensity`.
+        """
+        per_pixel = self._backend.core_mean_intensity(separation_lod)
+        return per_pixel / self._backend.pixel_scale_lod**2
 
     def occulter_transmission(
         self,
@@ -143,13 +149,17 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         separation_lod: ArrayLike,
         ppf: float = 30.0,
     ) -> ArrayLike:
-        """AYO noise floor: core_mean_intensity / ppf.
+        """AYO noise floor per (lambda/D)^2: ``core_mean_intensity / ppf``.
 
-        This is a convenience passthrough to the backend. Not part of the
+        Same units as :meth:`core_mean_intensity`, so multiplying by
+        :meth:`core_area` gives the floor as a fraction of the star's light.
+        yippy's own ``noise_floor_ayo`` is per pixel and is divided by the
+        pixel's solid angle, ``pixel_scale_lod**2``. Not part of the
         AbstractCoronagraph contract -- downstream ETCs should compute
         noise floors as pure functions.
         """
-        return self._backend.noise_floor_ayo(separation_lod, ppf)
+        per_pixel = self._backend.noise_floor_ayo(separation_lod, ppf)
+        return per_pixel / self._backend.pixel_scale_lod**2
 
     def raw_contrast(self, separation_lod: ArrayLike) -> ArrayLike:
         """Raw contrast from the YIP interpolation table."""
