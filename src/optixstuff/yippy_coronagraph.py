@@ -98,14 +98,24 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         wavelength_nm: ArrayLike,
         *,
         time_s: ArrayLike = 0.0,
+        stellar_diam_lod: ArrayLike = 0.0,
     ) -> ArrayLike:
         """Mean stellar leakage per (lambda/D)^2 from the YIP interpolation table.
 
         yippy tabulates the fraction of the star's light per pixel, so the
         value is divided by the pixel's solid angle, ``pixel_scale_lod**2``,
         to meet the contract of :meth:`AbstractCoronagraph.core_mean_intensity`.
+        The backend interpolates over the stellar diameter axis when present;
+        otherwise it accepts and ignores the diameter.
+
+        Args:
+            separation_lod: Angular separation in lambda/D.
+            wavelength_nm: Wavelength in nanometers (accepted and ignored).
+            time_s: Time since mission start in seconds (accepted and ignored).
+            stellar_diam_lod: Stellar angular diameter in lambda/D at the
+                queried wavelength; 0 means a point star.
         """
-        per_pixel = self._backend.core_mean_intensity(separation_lod)
+        per_pixel = self._backend.core_mean_intensity(separation_lod, stellar_diam_lod)
         return per_pixel / self._backend.pixel_scale_lod**2
 
     def occulter_transmission(
@@ -148,6 +158,8 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         self,
         separation_lod: ArrayLike,
         ppf: float = 30.0,
+        *,
+        stellar_diam_lod: ArrayLike = 0.0,
     ) -> ArrayLike:
         """AYO noise floor per (lambda/D)^2: ``core_mean_intensity / ppf``.
 
@@ -157,8 +169,20 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         pixel's solid angle, ``pixel_scale_lod**2``. Not part of the
         AbstractCoronagraph contract -- downstream ETCs should compute
         noise floors as pure functions.
+
+        Division by ``ppf`` precedes the pixel-area conversion to preserve
+        point-source rounding exactly.
+
+        Args:
+            separation_lod: Angular separation in lambda/D.
+            ppf: Post-processing noise suppression factor.
+            stellar_diam_lod: Stellar angular diameter in lambda/D at the
+                queried wavelength; 0 means a point star. Accepted and ignored
+                when the backend has no diameter model.
         """
-        per_pixel = self._backend.noise_floor_ayo(separation_lod, ppf)
+        per_pixel = (
+            self._backend.core_mean_intensity(separation_lod, stellar_diam_lod) / ppf
+        )
         return per_pixel / self._backend.pixel_scale_lod**2
 
     def raw_contrast(self, separation_lod: ArrayLike) -> ArrayLike:

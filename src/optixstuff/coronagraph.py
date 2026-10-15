@@ -133,6 +133,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm: ArrayLike,
         *,
         time_s: ArrayLike = 0.0,
+        stellar_diam_lod: ArrayLike = 0.0,
     ) -> ArrayLike:
         """Mean stellar intensity within the photometric aperture.
 
@@ -147,6 +148,9 @@ class AbstractCoronagraph(eqx.Module):
             separation_lod: Angular separation in lambda/D.
             wavelength_nm: Wavelength in nanometers.
             time_s: Time since mission start in seconds.
+            stellar_diam_lod: Stellar angular diameter in lambda/D at the
+                queried wavelength; 0 means a point star. Implementations
+                without a diameter model accept and ignore it.
 
         Returns:
             Mean stellar leakage intensity in (lambda/D)^-2.
@@ -345,7 +349,10 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
     ``psf_datacube``) -- and serves the sampling-explicit image contract
     from it with flux-conserving resamples to the requested target grid.
     Scalar performance curves remain the subclass's business (a table
-    backend interpolates its own curve tables).
+    backend interpolates its own curve tables). Subclasses implementing
+    ``core_mean_intensity`` use ``stellar_diam_lod`` when their curve
+    tables provide a diameter axis; otherwise they accept and ignore it.
+    The image-map SPI does not prescribe a scalar curve table format.
 
     The tables are monochromatic by construction (a YIP is a per-band
     file), so the served maps ignore ``wavelength_nm`` beyond the
@@ -531,6 +538,9 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
     model that carries native-grid tables -- subclass
     :class:`AbstractTableCoronagraph` instead, or the image pipeline
     will silently render zeros.
+
+    Subclasses implementing ``core_mean_intensity`` accept and ignore
+    ``stellar_diam_lod`` unless they provide a stellar diameter model.
     """
 
     def on_axis_psf(
@@ -694,10 +704,15 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             separation_lod, wavelength_nm, time_s=time_s
         )
 
-    def core_mean_intensity(self, separation_lod, wavelength_nm, *, time_s=0.0):
-        """Mean stellar leakage from the nearest band."""
+    def core_mean_intensity(
+        self, separation_lod, wavelength_nm, *, time_s=0.0, stellar_diam_lod=0.0
+    ):
+        """Mean stellar leakage from the nearest band at the given diameter."""
         return self.band(wavelength_nm).core_mean_intensity(
-            separation_lod, wavelength_nm, time_s=time_s
+            separation_lod,
+            wavelength_nm,
+            time_s=time_s,
+            stellar_diam_lod=stellar_diam_lod,
         )
 
     def occulter_transmission(self, separation_lod, wavelength_nm, *, time_s=0.0):
