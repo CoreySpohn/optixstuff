@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.0.0](https://github.com/CoreySpohn/optixstuff/compare/v3.0.0...v4.0.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **coronagraph:** AbstractCoronagraph.core_mean_intensity implementations must accept the keyword-only stellar_diam_lod argument.
+* **coronagraph:** YippyCoronagraph.core_mean_intensity and noise_floor_ayo now return values per (lambda/D)^2, the AbstractCoronagraph contract, instead of yippy's per-pixel fraction of the star's light; both grow by 1/pixel_scale_lod**2 (16x at 0.25 lambda/D pixels). Multiply either by core_area for the fraction in the aperture, and stop dividing by pixel_scale_lod**2 downstream.
+* American spelling throughout, rename segment_centres_m to segment_centers_m
+
+### Features
+
+* **coronagraph:** add stellar_diam_lod to core_mean_intensity and noise floor ([8cd9749](https://github.com/CoreySpohn/optixstuff/commit/8cd97496c3434ea7bd4effaf2b6f2f1fb095a294))
+* **speckle:** exposure-averaged realization on the speckle-field contract ([d163bf6](https://github.com/CoreySpohn/optixstuff/commit/d163bf6a0a821b1d31bed46925ef63a4c19145de))
+
+
+### Bug Fixes
+
+* American spelling throughout, rename segment_centres_m to segment_centers_m ([ccf79e1](https://github.com/CoreySpohn/optixstuff/commit/ccf79e14d8aee487d1dcabd2cf08b4a3893b2a36))
+* **coronagraph:** report the yippy AYO noise floor per (lambda/D)^2 ([3add7c7](https://github.com/CoreySpohn/optixstuff/commit/3add7c7c79f8153cfafa0a7409b0ed497c001ee4))
+* **coronagraph:** report yippy core mean intensity per (lambda/D)^2 ([dc55aaa](https://github.com/CoreySpohn/optixstuff/commit/dc55aaaca375bb5e45b34d93df0ff9ad5c16fbd5))
+
 ## [3.0.0](https://github.com/CoreySpohn/optixstuff/compare/v2.0.0...v3.0.0) (2026-07-20)
 
 
