@@ -11,6 +11,9 @@ from yippy import fetch_yip
 
 import optixstuff as ox
 
+# Public YIP downloads and backend setup belong in the nightly tier.
+pytestmark = pytest.mark.slow
+
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures (data downloaded once per test run)
 # ---------------------------------------------------------------------------

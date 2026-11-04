@@ -167,6 +167,8 @@ def test_yippy_diameter_jit_and_vmap(diameter_coro, method):
     _assert_diameter_traces(diameter_coro, jnp.asarray([0.0, 0.01, 0.1]), method)
 
 
+# The cached-YIP checks run nightly; the quick tier uses synthetic backends.
+@pytest.mark.slow
 def test_cached_yip_point_source_regression(cached_diameter_coro):
     coro = cached_diameter_coro
     sep = jnp.asarray([3.0, 5.0, 10.0])
@@ -185,6 +187,7 @@ def test_cached_yip_point_source_regression(cached_diameter_coro):
 @pytest.mark.parametrize(
     "separation_lod, fraction", [(3.0, 0.25), (5.0, 0.5), (7.0, 0.75)]
 )
+@pytest.mark.slow
 def test_cached_yip_matches_backend(cached_diameter_coro, separation_lod, fraction):
     coro = cached_diameter_coro
     low, high = coro._backend._diam_knot_range
@@ -200,6 +203,7 @@ def test_cached_yip_matches_backend(cached_diameter_coro, separation_lod, fracti
     )
 
 
+@pytest.mark.slow
 def test_cached_yip_extended_star_increases_leakage(cached_diameter_coro):
     coro = cached_diameter_coro
     low, high = coro._backend._diam_knot_range
@@ -210,12 +214,14 @@ def test_cached_yip_extended_star_increases_leakage(cached_diameter_coro):
 
 
 @pytest.mark.parametrize("method", ["core_mean_intensity", "noise_floor_ayo"])
+@pytest.mark.slow
 def test_cached_yip_diameter_jit_and_vmap(cached_diameter_coro, method):
     low, high = cached_diameter_coro._backend._diam_knot_range
     diameters = jnp.asarray([0.0, low + 0.25 * (high - low), low + 0.75 * (high - low)])
     _assert_diameter_traces(cached_diameter_coro, diameters, method)
 
 
+@pytest.mark.slow
 def test_cached_yip_matches_raw_table_at_knots(cached_diameter_coro):
     coro = cached_diameter_coro
     table = coro._backend._core_mean_intensity_interp_2d

@@ -130,9 +130,7 @@ class TestSimpleDetector:
         k_thinned = jax.random.PRNGKey(202)
 
         out_chain = det.readout_source_electrons(image_rate, t_exp, k_chain)
-        out_thinned = det.readout_source_electrons_thinned(
-            image_rate, t_exp, k_thinned
-        )
+        out_thinned = det.readout_source_electrons_thinned(image_rate, t_exp, k_thinned)
 
         # Theoretical: Poisson(lambda * QE) -> mean = var = 1000 * 10 * 0.7 = 7000.
         expected_mean = 1000.0 * 10.0 * 0.7
@@ -177,6 +175,8 @@ class TestDetector:
             frame_time_s=100.0,
         )
 
+    # The detector source-readout kernel can need more than 5 s to compile cold.
+    @pytest.mark.medium
     def test_readout_source_electrons_shape(self, full_detector):
         image_rate = jnp.ones((64, 64)) * 10.0
         key = jax.random.PRNGKey(3)
