@@ -1,0 +1,5 @@
+# Unreleased sibling libraries, applied as uv overrides so each is installed at a pinned main
+# commit whatever version bounds other packages declare (a breaking change waiting for its
+# release tag reports the old major version). Move a pin deliberately; drop it once PyPI covers it.
+hwoutils @ git+https://github.com/CoreySpohn/hwoutils@48027a7a13d8a21e24ed0a93376f308fd551340a
+yippy @ git+https://github.com/HabitableWorldsObservatory/yippy@df53e4463a903bc54418886de4ced4606c23b8a6
