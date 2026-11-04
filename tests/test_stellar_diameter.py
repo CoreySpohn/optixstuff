@@ -58,7 +58,7 @@ def cached_diameter_coro(tmp_path_factory):
         else:
             continue
         backend = EqxCoronagraph(target)
-        if backend._has_2d_core_intensity:
+        if backend._core_intensity_varies_with_diameter:
             return YippyCoronagraph(backend=backend)
     pytest.skip(f"No cached public YIP with a stellar-diameter axis in {root}")
 
