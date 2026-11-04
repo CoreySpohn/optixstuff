@@ -77,6 +77,7 @@ class OpticalPath(eqx.Module):
 
         Args:
             coronagraph: One of:
+
                 - an :class:`AbstractCoronagraph` instance (used as-is),
                 - a YIP path (str or :class:`pathlib.Path`, wrapped with
                   :class:`YippyCoronagraph`),

@@ -12,6 +12,7 @@ extensions = [
     "myst_nb",
     "autoapi.extension",
     "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
@@ -29,20 +30,22 @@ intersphinx_mapping = {
     "coronalyze": ("https://coronalyze.readthedocs.io/en/latest/", None),
 }
 
-templates_path = ["_templates"]
+templates_path = []
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-language = "Python"
+language = "en"
 
 autoapi_dirs = ["../src"]
-autoapi_ignore = ["**/*version.py"]
+# Parse the generated version module so AutoAPI can resolve __version__.
 autodoc_typehints = "description"
+# AutoAPI already indexes fields; Napoleon should render their descriptions only.
+napoleon_use_ivar = True
 
 myst_enable_extensions = ["amsmath", "dollarmath"]
 myst_fence_as_directive = ["mermaid"]
 
 html_theme = "sphinx_book_theme"
-html_static_path = ["_static"]
+html_static_path = []
 master_doc = "index"
 html_title = "optixstuff"
 html_sidebars = {"posts/*": ["sbt-sidebar-nav.html"]}

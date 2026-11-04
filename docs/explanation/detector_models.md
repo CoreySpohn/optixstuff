@@ -67,6 +67,8 @@ budget. Use `Detector` whenever you want realistic noise.
 Three standalone functions for direct noise simulation:
 
 ```python
+import jax
+
 from optixstuff import (
     dark_current,
     clock_induced_charge,
@@ -105,7 +107,9 @@ source-readout contributions from coronagraphoto.
 
 ## Composing a realistic frame
 
-```python
+This example requires a configured optical path, scene sources, and exposure parameters.
+
+```python notest
 import jax
 from optixstuff import dark_current, clock_induced_charge, read_noise
 from coronagraphoto import star_readout, planet_readout

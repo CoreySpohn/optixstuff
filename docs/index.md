@@ -49,7 +49,9 @@ flowchart TB
 
 ## Quick start
 
-```python
+This example requires a user-supplied YIP directory.
+
+```python notest
 from optixstuff import (
     OpticalPath, SimplePrimary, IdealDetector,
     ConstantThroughput, SpectralThroughput,
@@ -120,5 +122,5 @@ explanation/detector_models
 :caption: API Reference
 :hidden:
 
-autoapi/optixstuff/index
+autoapi/index
 ```

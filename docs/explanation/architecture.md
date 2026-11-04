@@ -93,7 +93,9 @@ The `OpticalPath` holds a `tuple[AbstractOpticalElement, ...]` whose
 effective throughput is the product of every element's
 `get_throughput(wavelength_nm)`:
 
-```python
+This example requires measured throughput curves and a configured coronagraph and detector.
+
+```python notest
 path = OpticalPath(
     primary=SimplePrimary(diameter_m=6.0),
     attenuating_elements=(
@@ -130,6 +132,8 @@ the wavelength input). High-fidelity implementations can use them
 without breaking the API:
 
 ```python
+from optixstuff import AbstractDetector
+
 class WavelengthDependentQE(AbstractDetector):
     def get_qe(self, wavelength_nm):
         return self._qe_interp(wavelength_nm)   # real wavelength dep
@@ -153,6 +157,11 @@ changes.
 hardware configuration:
 
 ```python
+import equinox as eqx
+from optixstuff import (
+    AbstractPrimary, AbstractOpticalElement, AbstractCoronagraph, AbstractDetector,
+)
+
 class OpticalPath(eqx.Module):
     primary: AbstractPrimary
     attenuating_elements: tuple[AbstractOpticalElement, ...]
@@ -175,7 +184,7 @@ science-level outputs.
 
 optixstuff exposes three noise primitives at the module level:
 
-```python
+```text
 dark_current(rate, exposure_time_s, shape, prng_key) -> Array
 clock_induced_charge(rate, num_frames, shape, prng_key) -> Array
 read_noise(noise_e, num_frames, shape, prng_key) -> Array
@@ -193,7 +202,9 @@ readout. Splitting the responsibilities:
 
 Both compose into a complete frame:
 
-```python
+This example requires a configured optical path, scene sources, and exposure parameters.
+
+```python notest
 source_e = star_readout(star, optical_path, key1, ...)
 dark_e   = dark_current(detector.dark_current_rate_e_per_s,
                                   exposure_time_s, detector.shape, key2)
