@@ -222,18 +222,40 @@ def test_cached_yip_diameter_jit_and_vmap(cached_diameter_coro, method):
 
 
 @pytest.mark.slow
-def test_cached_yip_matches_raw_table_at_knots(cached_diameter_coro):
+def test_cached_yip_matches_raw_table_at_knots(cached_diameter_coro, tmp_path_factory):
+    from yippy import Coronagraph
+
     coro = cached_diameter_coro
-    table = coro._backend._core_mean_intensity_interp_2d
-    sep_knots, diam_knots, values = table.x, table.y, table.f
-    n_sep, n_diam = values.shape
-    points = [(n_sep // 4, 1), (n_sep // 2, n_diam // 2), (3 * n_sep // 4, n_diam - 1)]
-    for i, j in points:
-        assert diam_knots[j] > 0.0
-        np.testing.assert_allclose(
-            coro.core_mean_intensity(
-                sep_knots[i], 550.0, stellar_diam_lod=diam_knots[j]
-            ),
-            values[i, j] / coro.pixel_scale_lod**2,
-            rtol=1e-6,
+    (scratch,) = tmp_path_factory.getbasetemp().glob("stellar_diameter_yip[0-9]*")
+    # The fixture stops at the first multi-diameter package, so it is the last
+    # package copied in catalog order. Reuse that copy without fetching data.
+    yip_dirs = [scratch / name for name in CATALOG if (scratch / name).is_dir()]
+    reference = Coronagraph(yip_dirs[-1])
+    diam_knots = np.asarray(reference.stellar_intens.diams.value)
+    nonzero = np.flatnonzero(diam_knots > 0.0)
+    assert len(nonzero) >= 3
+    points = zip((3.0, 5.0, 10.0), nonzero[[0, len(nonzero) // 2, -1]], strict=True)
+    for sep, j in points:
+        diameter = float(diam_knots[j])
+        actual = float(coro.core_mean_intensity(sep, 550.0, stellar_diam_lod=diameter))
+        expected = reference.core_mean_intensity(sep, stellar_diam=diameter) / (
+            coro.pixel_scale_lod**2
         )
+        # Conftest leaves x64 disabled: JAX float32 and the NumPy float64
+        # spline differ by up to 7.51e-7 here. Keep rtol=1e-6 and no atol
+        # so rounding is allowed without hiding errors at tiny intensities.
+        np.testing.assert_allclose(
+            actual,
+            expected,
+            rtol=1e-6,
+            atol=0.0,
+            err_msg=f"separation={sep}, stellar_diam_lod={diameter}",
+        )
+        assert np.isfinite(actual) and actual > 0.0
+        if 0 < j < len(diam_knots) - 1:
+            neighbours = [
+                reference.core_mean_intensity(sep, stellar_diam=float(d))
+                / coro.pixel_scale_lod**2
+                for d in diam_knots[[j - 1, j + 1]]
+            ]
+            assert min(neighbours) <= actual <= max(neighbours)
