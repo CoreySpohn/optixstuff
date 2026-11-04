@@ -163,4 +163,9 @@ cython_debug/
 input/
 output/
 scripts/
+!.github/scripts/
 *.png
+
+.claude/
+.jax_cache/
+.ruff_cache/
