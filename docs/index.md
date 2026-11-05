@@ -53,8 +53,11 @@ This example requires a user-supplied YIP directory.
 
 ```python notest
 from optixstuff import (
-    OpticalPath, SimplePrimary, IdealDetector,
-    ConstantThroughput, SpectralThroughput,
+    OpticalPath,
+    SimplePrimary,
+    IdealDetector,
+    ConstantThroughput,
+    SpectralThroughput,
 )
 from yippy import EqxCoronagraph
 
@@ -71,8 +74,8 @@ path = OpticalPath(
 )
 
 # Throughput at a wavelength
-print(path.system_throughput(550.0))    # scalar throughput
-print(path.detector.get_qe(550.0))      # QE at 550 nm
+print(path.system_throughput(550.0))  # scalar throughput
+print(path.detector.get_qe(550.0))  # QE at 550 nm
 ```
 
 ## Installation

@@ -12,12 +12,12 @@ each.
 from optixstuff import IdealDetector
 
 detector = IdealDetector(
-    pixel_scale_arcsec=0.01,         # arcsec/pixel
-    shape=(512, 512),         # detector grid
-    quantum_efficiency=1.0,   # constant QE (default)
-    dark_current_rate_e_per_s=0.0,    # no dark current
-    read_noise_e=0.0, # no read noise
-    clock_induced_charge_rate_e_per_frame=0.0,             # no clock-induced charge
+    pixel_scale_arcsec=0.01,  # arcsec/pixel
+    shape=(512, 512),  # detector grid
+    quantum_efficiency=1.0,  # constant QE (default)
+    dark_current_rate_e_per_s=0.0,  # no dark current
+    read_noise_e=0.0,  # no read noise
+    clock_induced_charge_rate_e_per_frame=0.0,  # no clock-induced charge
 )
 ```
 
@@ -37,12 +37,12 @@ detector = Detector(
     pixel_scale_arcsec=0.01,
     shape=(512, 512),
     quantum_efficiency=0.9,
-    dark_current_rate_e_per_s=1e-4,       # e/s/pixel
-    read_noise_e=3.0,     # e RMS per read
-    clock_induced_charge_rate_e_per_frame=1e-3,                # e per frame per pixel
-    frame_time_s=300.0,             # seconds per readout frame
+    dark_current_rate_e_per_s=1e-4,  # e/s/pixel
+    read_noise_e=3.0,  # e RMS per read
+    clock_induced_charge_rate_e_per_frame=1e-3,  # e per frame per pixel
+    frame_time_s=300.0,  # seconds per readout frame
     read_time_s=0.05,
-    dqe=0.0,                      # detector quantum efficiency factor
+    dqe=0.0,  # detector quantum efficiency factor
 )
 ```
 
@@ -77,15 +77,15 @@ from optixstuff import (
 
 # Dark current: Poisson with mean = rate * exposure_time_s
 dark_e = dark_current(
-    dark_current_rate_e_per_s=1e-4,    # e/s/pixel
-    exposure_time_s=3600.0,      # seconds
+    dark_current_rate_e_per_s=1e-4,  # e/s/pixel
+    exposure_time_s=3600.0,  # seconds
     shape=(512, 512),
     prng_key=jax.random.PRNGKey(0),
 )
 
 # Clock-induced charge: Poisson per-frame, scaled by num_frames
 cic_e = clock_induced_charge(
-    clock_induced_charge_rate_e_per_frame=1e-3,             # e/frame/pixel
+    clock_induced_charge_rate_e_per_frame=1e-3,  # e/frame/pixel
     num_frames=12.0,
     shape=(512, 512),
     prng_key=jax.random.PRNGKey(1),
@@ -93,7 +93,7 @@ cic_e = clock_induced_charge(
 
 # Read noise: Gaussian per-frame, RMS-summed across frames
 read_e = read_noise(
-    read_noise_e=3.0,            # e RMS per read
+    read_noise_e=3.0,  # e RMS per read
     num_frames=12.0,
     shape=(512, 512),
     prng_key=jax.random.PRNGKey(2),
@@ -117,7 +117,7 @@ from coronagraphoto import star_readout, planet_readout
 keys = jax.random.split(jax.random.PRNGKey(0), 6)
 
 # Sources (Poisson realizations of the count rates)
-star_e   = star_readout(star, optical_path, keys[0], ...)
+star_e = star_readout(star, optical_path, keys[0], ...)
 planet_e = planet_readout(planet, optical_path, keys[1], ...)
 
 # Detector noise contributions

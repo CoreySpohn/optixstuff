@@ -99,11 +99,11 @@ This example requires measured throughput curves and a configured coronagraph an
 path = OpticalPath(
     primary=SimplePrimary(diameter_m=6.0),
     attenuating_elements=(
-        ConstantThroughput(throughput=0.95),               # primary coating
-        ConstantThroughput(throughput=0.95),               # secondary mirror
-        ConstantThroughput(throughput=0.97),               # fold mirror
-        SpectralThroughput(wavelengths_nm, mirror_R),      # measured mirror reflectivity
-        SpectralThroughput(wavelengths_nm, filter_T),      # bandpass filter
+        ConstantThroughput(throughput=0.95),  # primary coating
+        ConstantThroughput(throughput=0.95),  # secondary mirror
+        ConstantThroughput(throughput=0.97),  # fold mirror
+        SpectralThroughput(wavelengths_nm, mirror_R),  # measured mirror reflectivity
+        SpectralThroughput(wavelengths_nm, filter_T),  # bandpass filter
     ),
     coronagraph=...,
     detector=...,
@@ -134,9 +134,11 @@ without breaking the API:
 ```python
 from optixstuff import AbstractDetector
 
+
 class WavelengthDependentQE(AbstractDetector):
     def get_qe(self, wavelength_nm):
-        return self._qe_interp(wavelength_nm)   # real wavelength dep
+        return self._qe_interp(wavelength_nm)  # real wavelength dep
+
 
 class TimeVaryingDetector(AbstractDetector):
     def dark_current_rate_at(self, time_jd):
@@ -159,8 +161,12 @@ hardware configuration:
 ```python
 import equinox as eqx
 from optixstuff import (
-    AbstractPrimary, AbstractOpticalElement, AbstractCoronagraph, AbstractDetector,
+    AbstractPrimary,
+    AbstractOpticalElement,
+    AbstractCoronagraph,
+    AbstractDetector,
 )
+
 
 class OpticalPath(eqx.Module):
     primary: AbstractPrimary
@@ -206,13 +212,14 @@ This example requires a configured optical path, scene sources, and exposure par
 
 ```python notest
 source_e = star_readout(star, optical_path, key1, ...)
-dark_e   = dark_current(detector.dark_current_rate_e_per_s,
-                                  exposure_time_s, detector.shape, key2)
-cic_e    = clock_induced_charge(detector.clock_induced_charge_rate_e_per_frame, num_frames,
-                         detector.shape, key3)
-read_e   = read_noise(detector.read_noise_e,
-                                num_frames, detector.shape, key4)
-frame    = source_e + dark_e + cic_e + read_e
+dark_e = dark_current(
+    detector.dark_current_rate_e_per_s, exposure_time_s, detector.shape, key2
+)
+cic_e = clock_induced_charge(
+    detector.clock_induced_charge_rate_e_per_frame, num_frames, detector.shape, key3
+)
+read_e = read_noise(detector.read_noise_e, num_frames, detector.shape, key4)
+frame = source_e + dark_e + cic_e + read_e
 ```
 
 For most use cases you can let the detector's high-level `readout`
