@@ -121,7 +121,12 @@ class TestBridgeDefaults:
             shape=(_SIZE, _SIZE),
         )
         expected = float(jnp.sum(scene)) * np.asarray(psf)
-        np.testing.assert_allclose(np.asarray(served), expected, rtol=1e-4)
+        # The Gaussian tail reaches ~1e-38, where XLA on x86 flushes float32
+        # subnormal products to zero; an absolute floor tied to the peak keeps
+        # the check meaningful without comparing those tail values exactly.
+        np.testing.assert_allclose(
+            np.asarray(served), expected, rtol=1e-4, atol=1e-6 * expected.max()
+        )
 
     def test_extended_scene_raises_on_missing_datacube(self):
         c = _TableCoronagraph(datacube=None)
