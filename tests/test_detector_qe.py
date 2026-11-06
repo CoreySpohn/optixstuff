@@ -74,3 +74,11 @@ class TestScalarQEUnchanged:
         )
         assert float(det.get_qe(400.0)) == pytest.approx(0.6)
         assert float(det.get_qe(1200.0)) == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("cls", [ox.IdealDetector, ox.Detector])
+def test_default_dqe_is_no_degradation(cls):
+    """dqe multiplies QE, so the default must be the neutral value 1.0."""
+    det = cls(pixel_scale_arcsec=0.01, shape=(4, 4))
+    assert det.dqe == 1.0
+    assert float(det.get_qe(500.0)) * det.dqe == pytest.approx(float(det.get_qe(500.0)))
