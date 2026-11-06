@@ -42,7 +42,7 @@ detector = Detector(
     clock_induced_charge_rate_e_per_frame=1e-3,  # e per frame per pixel
     frame_time_s=300.0,  # seconds per readout frame
     read_time_s=0.05,
-    dqe=0.0,  # detector quantum efficiency factor
+    dqe=1.0,  # QE degradation factor, multiplies QE (1 = none)
 )
 ```
 

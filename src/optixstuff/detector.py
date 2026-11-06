@@ -286,6 +286,9 @@ class IdealDetector(AbstractDetector):
 
     Suitable for broadband imager studies where wavelength-dependent
     QE variation is not important and CIC/read noise are negligible.
+
+    ``dqe`` is the multiplicative QE degradation factor; the default 1.0
+    means no degradation, so the effective QE is ``quantum_efficiency * dqe``.
     """
 
     pixel_scale_arcsec: float
@@ -308,7 +311,7 @@ class IdealDetector(AbstractDetector):
         clock_induced_charge_rate_e_per_frame: float = 0.0,
         frame_time_s: float = 1.0,
         read_time_s: float = 0.05,
-        dqe: float = 0.0,
+        dqe: float = 1.0,
     ) -> None:
         """Create a simple constant-QE detector."""
         self.pixel_scale_arcsec = pixel_scale_arcsec
@@ -379,6 +382,9 @@ class Detector(AbstractDetector):
     sources matter.  Uses Poisson statistics for dark/CIC and Gaussian
     for read noise, matching the coronagraphoto convention.
 
+    ``dqe`` is the multiplicative QE degradation factor; the default 1.0
+    means no degradation.
+
     Warning: ``num_frames = jnp.ceil(exposure_time_s / frame_time_s)`` is
     kept as a float. Never cast it to int inside JIT -- that triggers a
     ConcretizationTypeError when exposure_time_s is traced.
@@ -405,7 +411,7 @@ class Detector(AbstractDetector):
         clock_induced_charge_rate_e_per_frame: float = 0.0,
         frame_time_s: float = 1.0,
         read_time_s: float = 0.05,
-        dqe: float = 0.0,
+        dqe: float = 1.0,
         qe_curve: tuple[ArrayLike, ArrayLike] | None = None,
     ) -> None:
         """Create a full detector with all noise sources.
