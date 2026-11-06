@@ -1,10 +1,89 @@
-"""Tests for SegmentedPrimary segment geometry (size, pitch, centers)."""
+"""Tests for primary aperture area and segment geometry."""
 
+from types import SimpleNamespace
+
+import astropy.units as u
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from astropy.io import fits
+from yippy import Coronagraph, EqxCoronagraph
+from yippy.header import HeaderData
 
-from optixstuff import SegmentedPrimary
+from optixstuff import SegmentedPrimary, SimplePrimary, YippyCoronagraph
+
+
+@pytest.fixture
+def yip_header():
+    return fits.Header(
+        [("D", 6.0, "Diameter in m"), ("OBSCURED", 0.2), ("PIXSCALE", 0.1)]
+    )
+
+
+@pytest.mark.parametrize(
+    "source", ["path", "str", "file", "coronagraph", "wrapper", "attributes"]
+)
+def test_simple_primary_from_yip(source, yip_header, tmp_path):
+    """Fails if YIP area obscuration is squared again or D loses its units."""
+    if source == "file":
+        yip_header["OBSCURED"] = 0.0
+    obscured = yip_header["OBSCURED"]
+    if source in ("path", "str", "file"):
+        file_path = tmp_path / "stellar_intens.fits"
+        fits.PrimaryHDU(header=yip_header).writeto(file_path)
+        yip = file_path if source == "file" else tmp_path
+        if source == "str":
+            yip = str(yip)
+    else:
+        header = HeaderData.from_fits_header(yip_header)
+        # Exercise conversion to meters rather than taking Quantity.value.
+        if source == "attributes":
+            yip = SimpleNamespace(diameter_m=6.0, frac_obscured=obscured)
+        else:
+            yip = Coronagraph.__new__(Coronagraph)
+            yip.header = SimpleNamespace(
+                diameter=header.diameter.to(u.cm), obscured=obscured
+            )
+        if source == "wrapper":
+            yip = YippyCoronagraph(backend=yip)
+
+    primary = SimplePrimary.from_yip(yip, shape_factor=0.9)
+    assert primary.diameter_m == 6.0
+    assert primary.obscuration == np.sqrt(obscured)
+    np.testing.assert_allclose(primary.area_m2, np.pi * 3.0**2 * (1.0 - obscured) * 0.9)
+    default = SimplePrimary.from_yip(yip)
+    assert default.shape_factor == 1.0
+    np.testing.assert_allclose(default.area_m2, np.pi * 3.0**2 * (1.0 - obscured))
+
+
+@pytest.mark.parametrize("key", ["D", "OBSCURED"])
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "none"])
+def test_simple_primary_from_yip_requires_geometry(key, missing, yip_header, tmp_path):
+    """Fails if missing or null aperture metadata silently supplies defaults."""
+    if missing:
+        del yip_header[key]
+    else:
+        yip_header[key] = None
+    fits.PrimaryHDU(header=yip_header).writeto(tmp_path / "stellar_intens.fits")
+    with pytest.raises(ValueError, match=key):
+        SimplePrimary.from_yip(tmp_path)
+
+    header = SimpleNamespace(diameter=6.0 * u.m, obscured=0.2)
+    attr = "diameter" if key == "D" else "obscured"
+    if missing:
+        delattr(header, attr)
+    else:
+        setattr(header, attr, None)
+    with pytest.raises(ValueError, match=key):
+        SimplePrimary.from_yip(SimpleNamespace(header=header))
+
+
+def test_simple_primary_from_yip_requires_retained_diameter():
+    """Fails if an Eqx backend that discarded D supplies an invented diameter."""
+    backend = EqxCoronagraph.__new__(EqxCoronagraph)
+    for yip in (backend, YippyCoronagraph(backend=backend)):
+        with pytest.raises(ValueError, match=r"missing D.*original YIP"):
+            SimplePrimary.from_yip(yip)
 
 
 @pytest.fixture

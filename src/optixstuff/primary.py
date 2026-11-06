@@ -1,5 +1,8 @@
 """Primary mirror abstractions."""
 
+from math import sqrt
+from pathlib import Path
+
 import equinox as eqx
 import jax.numpy as jnp
 from equinox import AbstractVar
@@ -23,6 +26,11 @@ class AbstractPrimary(eqx.Module):
 class SimplePrimary(AbstractPrimary):
     """A simple circular primary mirror with a central obscuration.
 
+    The obscuration is the inner-to-outer diameter ratio, so the annular
+    collecting area is ``pi * (diameter_m / 2)**2 * (1 - obscuration**2)``
+    times ``shape_factor``. :meth:`from_yip` converts the YIP ``OBSCURED``
+    area fraction to this linear ratio by taking its square root.
+
     Args:
         diameter_m: Primary mirror diameter in meters.
         obscuration: Linear obscuration fraction (0 = no obscuration).
@@ -44,6 +52,66 @@ class SimplePrimary(AbstractPrimary):
         self._diameter_m = diameter_m
         self.obscuration = obscuration
         self.shape_factor = shape_factor
+
+    @classmethod
+    def from_yip(cls, yip, shape_factor: float = 1.0) -> "SimplePrimary":
+        """Build an aperture from YIP diameter and obscured area metadata.
+
+        Args:
+            yip: YIP directory or stellar-intensity FITS path, a
+                YippyCoronagraph, or a yippy Coronagraph/EqxCoronagraph.
+                Objects must retain the header or diameter metadata.
+                Paths read only the header, without loading PSF arrays.
+            shape_factor: Fraction of remaining area that collects light.
+
+        Returns:
+            An aperture with diameter in meters and linear obscuration.
+
+        Raises:
+            ValueError: If D or OBSCURED is missing or None. Some yippy
+                EqxCoronagraph versions discard D; use the original YIP
+                path or yippy Coronagraph in that case.
+        """
+        from astropy.io import fits
+        from yippy.header import HeaderData
+
+        from optixstuff.yippy_coronagraph import YippyCoronagraph
+
+        if isinstance(yip, YippyCoronagraph):
+            yip = yip._backend
+        if isinstance(yip, (str, Path)):
+            path = Path(yip)
+            if path.is_dir():
+                path = path / "stellar_intens.fits"
+            raw_header = fits.getheader(path, 0)
+            for key in ("D", "OBSCURED"):
+                if raw_header.get(key) is None:
+                    raise ValueError(f"YIP header is missing {key}")
+            header = HeaderData.from_fits_header(raw_header)
+        else:
+            header = getattr(yip, "header", None)
+
+        if header is not None:
+            diameter = getattr(header, "diameter", None)
+            obscured = getattr(header, "obscured", None)
+        else:
+            diameter = getattr(yip, "diameter_m", None)
+            obscured = getattr(yip, "frac_obscured", None)
+        if diameter is None:
+            raise ValueError(
+                "YIP metadata is missing D (diameter); use the original YIP "
+                "path or yippy Coronagraph if the backend discarded it"
+            )
+        if obscured is None:
+            raise ValueError(
+                "YIP metadata is missing OBSCURED (obscured area fraction)"
+            )
+        diameter_m = (
+            float(diameter.to_value("m"))
+            if hasattr(diameter, "to_value")
+            else float(diameter)
+        )
+        return cls(diameter_m, obscuration=sqrt(obscured), shape_factor=shape_factor)
 
     @property
     def diameter_m(self) -> float:
