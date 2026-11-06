@@ -10,6 +10,7 @@ from optixstuff import YippyCoronagraph
 from optixstuff.coronagraph import AbstractTableCoronagraph
 
 
+@pytest.mark.slow
 def test_separate_stellar_and_sky_frames(cached_diameter_coro):
     """Off-axis pitch cannot determine stellar area or stellar/sky resampling."""
     pytest.importorskip("sinchole")
@@ -54,6 +55,7 @@ def test_separate_stellar_and_sky_frames(cached_diameter_coro):
     )
 
 
+@pytest.mark.slow
 def test_shared_frame_bit_equality(cached_diameter_coro):
     """Delegating a shared legacy frame preserves every original output bit."""
     coro = cached_diameter_coro
