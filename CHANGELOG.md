@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/CoreySpohn/optixstuff/compare/v4.0.0...v4.0.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* route yippy stellar and sky products through their own frame ([b9a029b](https://github.com/CoreySpohn/optixstuff/commit/b9a029b2b03a96564b443ad14aacfe3fdbb9b62b))
+
 ## [4.0.0](https://github.com/CoreySpohn/optixstuff/compare/v3.0.0...v4.0.0) (2026-11-05)
 
 
