@@ -2,9 +2,13 @@
 
 import importlib.util
 import os
+import shutil
+from zipfile import ZipFile
 
 import pytest
 from hypothesis import settings
+from yippy import EqxCoronagraph
+from yippy.datasets import CATALOG, cache_dir
 
 import optixstuff as ox
 
@@ -16,6 +20,28 @@ if importlib.util.find_spec("hwoutils.testbudget") is not None:
 settings.register_profile("quick", max_examples=25, deadline=None)
 settings.register_profile("nightly", max_examples=200, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
+
+
+@pytest.fixture(scope="session")
+def cached_diameter_coro(tmp_path_factory):
+    """Use one cached public package copy across all diameter and frame tests."""
+    root = cache_dir()
+    scratch = tmp_path_factory.mktemp("stellar_diameter_yip")
+    for name in CATALOG:
+        candidates = (root / f"{name}.zip.unzip" / name, root / name)
+        source = next((path for path in candidates if path.is_dir()), None)
+        target = scratch / name
+        if source is not None:
+            shutil.copytree(source, target)
+        elif (root / f"{name}.zip").is_file():
+            with ZipFile(root / f"{name}.zip") as archive:
+                archive.extractall(scratch)
+        else:
+            continue
+        backend = EqxCoronagraph(target)
+        if backend._core_intensity_varies_with_diameter:
+            return ox.YippyCoronagraph(backend=backend)
+    pytest.skip(f"No cached public YIP with a stellar-diameter axis in {root}")
 
 
 @pytest.fixture

@@ -1,8 +1,6 @@
 """Stellar diameter forwarding, point-source regressions, and JAX tracing."""
 
 import inspect
-import shutil
-from zipfile import ZipFile
 
 import jax
 import jax.numpy as jnp
@@ -10,8 +8,7 @@ import numpy as np
 import pytest
 from test_coronagraph_contract import _TableCoronagraph
 from test_speckle import _MockCoro
-from yippy import EqxCoronagraph
-from yippy.datasets import CATALOG, cache_dir
+from yippy.datasets import CATALOG
 
 from optixstuff import YippyCoronagraph
 from optixstuff.coronagraph import (
@@ -39,28 +36,6 @@ class _DiameterBackend:
 @pytest.fixture
 def diameter_coro():
     return YippyCoronagraph(backend=_DiameterBackend())
-
-
-@pytest.fixture(scope="module")
-def cached_diameter_coro(tmp_path_factory):
-    """Use only cached public packages; keep generated caches in a temp copy."""
-    root = cache_dir()
-    scratch = tmp_path_factory.mktemp("stellar_diameter_yip")
-    for name in CATALOG:
-        candidates = (root / f"{name}.zip.unzip" / name, root / name)
-        source = next((path for path in candidates if path.is_dir()), None)
-        target = scratch / name
-        if source is not None:
-            shutil.copytree(source, target)
-        elif (root / f"{name}.zip").is_file():
-            with ZipFile(root / f"{name}.zip") as archive:
-                archive.extractall(scratch)
-        else:
-            continue
-        backend = EqxCoronagraph(target)
-        if backend._core_intensity_varies_with_diameter:
-            return YippyCoronagraph(backend=backend)
-    pytest.skip(f"No cached public YIP with a stellar-diameter axis in {root}")
 
 
 @pytest.mark.parametrize(

@@ -5,13 +5,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.transforms import resample_flux
-from test_stellar_diameter import cached_diameter_coro  # noqa: F401
 
 from optixstuff import YippyCoronagraph
 from optixstuff.coronagraph import AbstractTableCoronagraph
 
 
-def test_separate_stellar_and_sky_frames(cached_diameter_coro):  # noqa: F811
+def test_separate_stellar_and_sky_frames(cached_diameter_coro):
     """Off-axis pitch cannot determine stellar area or stellar/sky resampling."""
     pytest.importorskip("sinchole")
     native = cached_diameter_coro._backend
@@ -55,7 +54,7 @@ def test_separate_stellar_and_sky_frames(cached_diameter_coro):  # noqa: F811
     )
 
 
-def test_shared_frame_bit_equality(cached_diameter_coro):  # noqa: F811
+def test_shared_frame_bit_equality(cached_diameter_coro):
     """Delegating a shared legacy frame preserves every original output bit."""
     coro = cached_diameter_coro
     backend = coro._backend
