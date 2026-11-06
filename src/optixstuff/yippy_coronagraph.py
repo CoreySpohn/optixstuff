@@ -103,7 +103,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         """Mean stellar leakage per (lambda/D)^2 from the YIP interpolation table.
 
         yippy tabulates the fraction of the star's light per pixel, so the
-        value is divided by the pixel's solid angle, ``pixel_scale_lod**2``,
+        value is divided by the stellar pixel's solid angle,
         to meet the contract of :meth:`AbstractCoronagraph.core_mean_intensity`.
         The backend interpolates over the stellar diameter axis when present;
         otherwise it accepts and ignores the diameter.
@@ -116,7 +116,13 @@ class YippyCoronagraph(AbstractTableCoronagraph):
                 queried wavelength; 0 means a point star.
         """
         per_pixel = self._backend.core_mean_intensity(separation_lod, stellar_diam_lod)
-        return per_pixel / self._backend.pixel_scale_lod**2
+        return (
+            per_pixel
+            / getattr(
+                self._backend, "stellar_pixel_scale_lod", self._backend.pixel_scale_lod
+            )
+            ** 2
+        )
 
     def occulter_transmission(
         self,
@@ -138,6 +144,68 @@ class YippyCoronagraph(AbstractTableCoronagraph):
     ) -> Array:
         """Stellar leakage PSF from the YIP stellar intensity model."""
         return self._backend.stellar_intens(0.0)
+
+    def stellar_map(
+        self,
+        wavelength_nm: ArrayLike,
+        stellar_diam_lod: ArrayLike,
+        *,
+        pixel_scale_lod: ArrayLike,
+        shape: tuple[int, int],
+    ) -> Array:
+        """Resample stellar flux in the backend's stellar reference frame."""
+        method = getattr(self._backend, "stellar_map", None)
+        if method is None:
+            return super().stellar_map(
+                wavelength_nm,
+                stellar_diam_lod,
+                pixel_scale_lod=pixel_scale_lod,
+                shape=shape,
+            )
+        return method(
+            wavelength_nm,
+            stellar_diam_lod,
+            pixel_scale_lod=pixel_scale_lod,
+            shape=shape,
+        )
+
+    def source_psfs(
+        self,
+        wavelength_nm: ArrayLike,
+        x_lod: ArrayLike,
+        y_lod: ArrayLike,
+        *,
+        pixel_scale_lod: ArrayLike,
+        shape: tuple[int, int],
+    ) -> Array:
+        """Resample source flux in the backend's off-axis reference frame."""
+        method = getattr(self._backend, "source_psfs", None)
+        if method is None:
+            return super().source_psfs(
+                wavelength_nm,
+                x_lod,
+                y_lod,
+                pixel_scale_lod=pixel_scale_lod,
+                shape=shape,
+            )
+        return method(
+            wavelength_nm, x_lod, y_lod, pixel_scale_lod=pixel_scale_lod, shape=shape
+        )
+
+    def background_transmission(
+        self,
+        wavelength_nm: ArrayLike,
+        *,
+        pixel_scale_lod: ArrayLike,
+        shape: tuple[int, int],
+    ) -> Array:
+        """Resample sky values in the backend's sky reference frame."""
+        method = getattr(self._backend, "background_transmission", None)
+        if method is None:
+            return super().background_transmission(
+                wavelength_nm, pixel_scale_lod=pixel_scale_lod, shape=shape
+            )
+        return method(wavelength_nm, pixel_scale_lod=pixel_scale_lod, shape=shape)
 
     def off_axis_psf(
         self,
@@ -166,7 +234,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         Same units as :meth:`core_mean_intensity`, so multiplying by
         :meth:`core_area` gives the floor as a fraction of the star's light.
         yippy's own ``noise_floor_ayo`` is per pixel and is divided by the
-        pixel's solid angle, ``pixel_scale_lod**2``. Not part of the
+        stellar pixel's solid angle. Not part of the
         AbstractCoronagraph contract -- downstream ETCs should compute
         noise floors as pure functions.
 
@@ -183,7 +251,13 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         per_pixel = (
             self._backend.core_mean_intensity(separation_lod, stellar_diam_lod) / ppf
         )
-        return per_pixel / self._backend.pixel_scale_lod**2
+        return (
+            per_pixel
+            / getattr(
+                self._backend, "stellar_pixel_scale_lod", self._backend.pixel_scale_lod
+            )
+            ** 2
+        )
 
     def raw_contrast(self, separation_lod: ArrayLike) -> ArrayLike:
         """Raw contrast from the YIP interpolation table."""
