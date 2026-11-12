@@ -17,6 +17,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 dependencies = [
+    # SimplePrimary.from_yip reads the response header; yippy's own floor.
+    "astropy>=6.1",
     "equinox>=0.13.2",
     "hwoutils>=1.10.0",
     "interpax>=0.3.12",
