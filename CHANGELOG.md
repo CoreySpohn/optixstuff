@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.1.0](https://github.com/CoreySpohn/optixstuff/compare/v4.0.1...v4.1.0) (2026-11-12)
+
+
+### Features
+
+* **primary:** add SimplePrimary.from_yip ([f8f563e](https://github.com/CoreySpohn/optixstuff/commit/f8f563e94eeb326eebb5a4600236ad20b79068b3))
+
+
+### Bug Fixes
+
+* **detector:** default dqe to 1.0 so the default means no QE degradation ([735a651](https://github.com/CoreySpohn/optixstuff/commit/735a651607741091a494b8a0f710821d71da0bb5))
+
 ## [4.0.1](https://github.com/CoreySpohn/optixstuff/compare/v4.0.0...v4.0.1) (2026-11-06)
 
 
