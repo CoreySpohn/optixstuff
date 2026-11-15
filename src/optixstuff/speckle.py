@@ -36,7 +36,7 @@ class AbstractSpeckleField(eqx.Module):
     through :meth:`realize`.
 
     All wavelength arguments are in nanometers; ``time_s`` is seconds since
-    mission start. The returned map is on the field's native coronagraph
+    the speckle clock origin. The returned map is on the field's native coronagraph
     plane at :attr:`pixel_scale_lod`; the caller resamples it to the
     detector grid (as for the coronagraph ``stellar_intens`` map).
     """
@@ -44,13 +44,12 @@ class AbstractSpeckleField(eqx.Module):
     pixel_scale_lod: AbstractVar[float]
     """Native pixel scale in lambda/D per pixel."""
 
-    epoch_jd: AbstractVar[float]
-    """Julian Date that maps to ``time_s = 0`` -- the realization's clock
-    origin. Consumers (e.g. ``coronagraphoto.speckle_rate``) convert an
-    observation's absolute JD to the elapsed seconds :meth:`realize` expects
-    via ``(start_time_jd - epoch_jd)``; anchoring the clock here keeps the
-    physical interface in elapsed seconds and avoids feeding large absolute
-    JDs into the temporal synthesis."""
+    epoch_d: AbstractVar[float]
+    """Days from the scene epoch at which ``time_s = 0``.
+
+    Consumers convert observation offsets via ``(start_time_d - epoch_d)``;
+    a nearby clock origin preserves float32 resolution in elapsed seconds.
+    """
 
     @abc.abstractmethod
     def realize(
@@ -81,7 +80,7 @@ class AbstractSpeckleField(eqx.Module):
 
         Args:
             wavelength_nm: Wavelength in nanometers.
-            time_s: Time since mission start in seconds.
+            time_s: Time since the speckle clock origin in seconds.
 
         Returns:
             2D float contrast-delta array on the native coronagraph plane.
@@ -118,7 +117,7 @@ class AbstractSpeckleField(eqx.Module):
         Args:
             wavelength_nm: Wavelength in nanometers.
             exposure_s: Exposure length in seconds.
-            start_time_s: Exposure start, in seconds since ``epoch_jd``.
+            start_time_s: Exposure start, in seconds since ``epoch_d``.
             n_sub: Number of sub-exposure samples. Must be at least 1.
 
         Returns:

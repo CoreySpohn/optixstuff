@@ -17,7 +17,7 @@ class ExposureConfig(eqx.Module):
     sequence), depending on how the factories are composed.
     """
 
-    start_time_jd: jnp.ndarray  # Julian Date
+    start_time_d: jnp.ndarray  # Days from the scene epoch
     exposure_time_s: jnp.ndarray  # Seconds
     central_wavelength_nm: jnp.ndarray  # Nanometers
     bin_width_nm: jnp.ndarray  # Nanometers

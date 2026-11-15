@@ -36,7 +36,7 @@ class _MockSpeckle(ox.AbstractSpeckleField):
     """Incoherent-halo-style speckle field with a mild time modulation."""
 
     pixel_scale_lod: float = 0.25
-    epoch_jd: float = 2451545.0  # J2000
+    epoch_d: float = 0.0
 
     def realize(self, *, wavelength_nm, time_s=0.0):
         scale = 1.0 + 0.1 * jnp.cos(jnp.asarray(time_s, dtype=float))
@@ -149,7 +149,7 @@ class TestRealizeAverage:
     def test_a_static_field_is_unchanged_by_averaging(self):
         class _Static(ox.AbstractSpeckleField):
             pixel_scale_lod: float = 0.25
-            epoch_jd: float = 2451545.0
+            epoch_d: float = 0.0
 
             def realize(self, *, wavelength_nm, time_s=0.0):
                 return jnp.full((4, 4), 3e-11)

@@ -8,7 +8,7 @@ from optixstuff import ExposureConfig
 
 def test_exposure_scalar_construction():
     exp = ExposureConfig(
-        start_time_jd=jnp.asarray(60000.0),
+        start_time_d=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=jnp.asarray(500.0),
         bin_width_nm=jnp.asarray(100.0),
@@ -21,7 +21,7 @@ def test_exposure_scalar_construction():
 def test_exposure_vector_construction():
     wls = jnp.asarray([400.0, 500.0, 600.0])
     exp = ExposureConfig(
-        start_time_jd=jnp.asarray(60000.0),
+        start_time_d=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=wls,
         bin_width_nm=jnp.asarray(100.0),
@@ -34,14 +34,14 @@ def test_exposure_in_axes_helper():
     spec = ExposureConfig.in_axes(central_wavelength_nm=0, bin_width_nm=0)
     assert spec.central_wavelength_nm == 0
     assert spec.bin_width_nm == 0
-    assert spec.start_time_jd is None
+    assert spec.start_time_d is None
     assert spec.exposure_time_s is None
     assert spec.position_angle_deg is None
 
 
 def test_exposure_is_pytree():
     exp = ExposureConfig(
-        start_time_jd=jnp.asarray(60000.0),
+        start_time_d=jnp.asarray(60000.0),
         exposure_time_s=jnp.asarray(3600.0),
         central_wavelength_nm=jnp.asarray(500.0),
         bin_width_nm=jnp.asarray(100.0),
