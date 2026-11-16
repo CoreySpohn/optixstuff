@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import equinox as eqx
 import jax.numpy as jnp
+import pytest
 from conftest import scalar_coronagraph
 
 import optixstuff as ox
@@ -118,8 +119,19 @@ class TestFromDefaultSetup:
         assert path.npix_multiplier == 1.0
 
     def test_kwargs_override(self):
+        # A primary that disagrees with the coronagraph's lambda/D frame raises.
+        with pytest.raises(ValueError, match="frame"):
+            ox.OpticalPath.from_default_setup(
+                scalar_coronagraph(), circumscribed_diameter_m=8.0
+            )
+        assert (
+            ox.OpticalPath.from_default_setup(scalar_coronagraph()).primary.diameter(
+                "circumscribed"
+            )
+            == 6.0
+        )
         path = ox.OpticalPath.from_default_setup(
-            scalar_coronagraph(),
+            scalar_coronagraph(8.0),
             circumscribed_diameter_m=8.0,
             obscuration=0.1,
             attenuating_throughput=0.5,

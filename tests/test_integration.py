@@ -34,8 +34,9 @@ def yippy_coronagraph(yip_path):
 @pytest.fixture(scope="session")
 def optical_path(yippy_coronagraph):
     """Full OpticalPath with primary, coronagraph, detector, and a filter."""
+    # The primary takes the coronagraph's diameter: its tables fix lambda/D.
     primary = ox.SimplePrimary(
-        circumscribed_diameter_m=6.0,
+        circumscribed_diameter_m=yippy_coronagraph.grid.frame.diameter_m,
         collecting_area_m2=3.141592653589793 * 9 * (1 - 0.14**2),
     )
     detector = ox.Detector(

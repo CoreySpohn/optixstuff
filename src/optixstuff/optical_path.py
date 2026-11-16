@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import functools
+import math
 from math import pi
 from pathlib import Path
 
 import equinox as eqx
+import jax
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
@@ -54,12 +56,37 @@ class OpticalPath(eqx.Module):
     npix_multiplier: float = 1.0
     speckle: AbstractSpeckleField | None = None
 
+    def __check_init__(self):
+        """Reject a primary whose diameter disagrees with the coronagraph's frame.
+
+        Coronagraph tables are computed for one telescope: their lambda/D frame
+        carries its diameter. Pairing them with a primary of another diameter
+        would take the angular scale from one telescope and the collecting area
+        from another. Rescaling a coronagraph to a new telescope is a modelling
+        choice the caller makes explicitly, not a silent default.
+        """
+        coronagraphs = getattr(self.coronagraph, "bands", None) or (self.coronagraph,)
+        for coronagraph in coronagraphs:
+            frame = getattr(getattr(coronagraph, "grid", None), "frame", None)
+            if frame is None:
+                continue
+            supplied = self.primary.diameter(frame.diameter_convention)
+            if isinstance(supplied, jax.core.Tracer):
+                continue
+            if not math.isclose(float(supplied), frame.diameter_m, rel_tol=1e-6):
+                raise ValueError(
+                    f"primary {frame.diameter_convention} diameter {float(supplied)} m "
+                    f"differs from the coronagraph's lambda/D frame "
+                    f"({frame.diameter_m} m); build the primary with the "
+                    "coronagraph's diameters"
+                )
+
     @classmethod
     def from_default_setup(
         cls,
         coronagraph: AbstractCoronagraph | str | Path,
         *,
-        circumscribed_diameter_m: float = 6.0,
+        circumscribed_diameter_m: float | None = None,
         obscuration: float = 0.0,
         inscribed_diameter_m: float | None = None,
         attenuating_throughput: float = 1.0,
@@ -86,8 +113,9 @@ class OpticalPath(eqx.Module):
                 - a ``yippy.EqxCoronagraph`` instance (wrapped via
                   ``YippyCoronagraph(backend=...)`` so callers can keep
                   using existing yippy code without rebuilding).
-            circumscribed_diameter_m: Primary mirror diameter [m]. Default ``6.0`` (HWO
-                EAC1 baseline).
+            circumscribed_diameter_m: Primary mirror diameter [m]. Default: the
+                coronagraph frame's diameter (when that frame is circumscribed),
+                so the tables and the primary describe one telescope.
             inscribed_diameter_m: Explicit inscribed diameter; defaults to the
                 circular outer diameter.
             obscuration: Linear central-obscuration fraction. Default 0.
@@ -123,6 +151,13 @@ class OpticalPath(eqx.Module):
 
             coro = YippyCoronagraph(backend=coronagraph)
 
+        if circumscribed_diameter_m is None:
+            frame = coro.grid.frame
+            if frame.diameter_convention != "circumscribed":
+                raise ValueError(
+                    "the coronagraph frame is inscribed: pass circumscribed_diameter_m"
+                )
+            circumscribed_diameter_m = frame.diameter_m
         return cls(
             primary=SimplePrimary(
                 circumscribed_diameter_m=circumscribed_diameter_m,

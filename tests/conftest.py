@@ -98,10 +98,10 @@ def synthetic_coronagraph(path, n=24, *, rules=()):
 
 
 # Constant coronagraph shared by hardware-container tests.
-def scalar_coronagraph():
-    frame = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0).frame(
-        500.0
-    )
+def scalar_coronagraph(diameter_m=6.0):
+    frame = SimplePrimary(
+        circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
+    ).frame(500.0)
     return ScalarCoronagraph(
         grid=PixelGrid.focal(24, 0.5, frame),
         throughput_fraction=0.5,

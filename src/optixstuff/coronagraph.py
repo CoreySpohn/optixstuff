@@ -3,6 +3,7 @@
 import abc
 import math
 from dataclasses import replace
+from itertools import pairwise
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -399,6 +400,12 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             key=lambda i: abs(self.band_centers_nm[i] - float(wavelength_nm)),
         )
         return self.bands[index]
+
+    @property
+    def quadrature_knots_nm(self):
+        """Nearest-band dispatch breakpoints: midpoints between band centres [nm]."""
+        centers = sorted(self.band_centers_nm)
+        return tuple((a + b) / 2 for a, b in pairwise(centers))
 
     def _performance_band(self, wavelength_nm):
         return self.band(
