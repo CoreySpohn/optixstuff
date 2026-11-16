@@ -1,76 +1,67 @@
-"""Primary mirror abstractions."""
+"""Primary apertures with explicit diameter conventions and collecting areas."""
 
-from math import sqrt
+import abc
+from math import pi, sqrt
 from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
 from equinox import AbstractVar
+from hwoutils.grids import Frame
 
 
 class AbstractPrimary(eqx.Module):
-    """Abstract interface for a primary aperture.
+    """Aperture geometry in metres, independent of its optical consumers."""
 
-    Any concrete implementation must provide the diameter and collecting
-    area of the primary mirror as scalar values in SI units. These are
-    consumed by exposure time calculators and simulation tools alike.
-    """
+    collecting_area_m2: AbstractVar[float]
 
-    diameter_m: AbstractVar[float]
-    """Primary mirror diameter in meters."""
+    @abc.abstractmethod
+    def diameter(self, convention: str) -> float:
+        """Return metres for static 'circumscribed' or 'inscribed'; else raise."""
 
-    area_m2: AbstractVar[float]
-    """Effective collecting area in square meters."""
+    def frame(self, reference_wavelength_nm, convention="circumscribed") -> Frame:
+        """Build static lambda/D geometry from this primary's declared diameter."""
+        return Frame(reference_wavelength_nm, self.diameter(convention), convention)
 
 
 class SimplePrimary(AbstractPrimary):
-    """A simple circular primary mirror with a central obscuration.
+    """An aperture with independently supplied diameters and collecting area.
 
-    The obscuration is the inner-to-outer diameter ratio, so the annular
-    collecting area is ``pi * (diameter_m / 2)**2 * (1 - obscuration**2)``
-    times ``shape_factor``. :meth:`from_yip` converts the YIP ``OBSCURED``
-    area fraction to this linear ratio by taking its square root.
-
-    Args:
-        diameter_m: Primary mirror diameter in meters.
-        obscuration: Linear obscuration fraction (0 = no obscuration).
-        shape_factor: Fraction of unobscured area that is collecting
-            (accounts for struts, segment gaps, etc.). Default 1.0.
+    All dimensions are metres. For a filled circular aperture only, the
+    inscribed diameter may be omitted and defaults to the circumscribed one.
+    Area is supplied independently; it never determines either diameter.
     """
 
-    _diameter_m: float
-    obscuration: float
-    shape_factor: float
+    circumscribed_diameter_m: float
+    inscribed_diameter_m: float
+    collecting_area_m2: float
 
     def __init__(
-        self,
-        diameter_m: float,
-        obscuration: float = 0.0,
-        shape_factor: float = 1.0,
-    ) -> None:
-        """Create a simple circular primary mirror."""
-        self._diameter_m = diameter_m
-        self.obscuration = obscuration
-        self.shape_factor = shape_factor
+        self, *, circumscribed_diameter_m, collecting_area_m2, inscribed_diameter_m=None
+    ):
+        """Store both diameter conventions and the independently measured area."""
+        self.circumscribed_diameter_m = circumscribed_diameter_m
+        self.inscribed_diameter_m = (
+            circumscribed_diameter_m
+            if inscribed_diameter_m is None
+            else inscribed_diameter_m
+        )
+        self.collecting_area_m2 = collecting_area_m2
+
+    def diameter(self, convention):
+        """Return the explicitly selected diameter in metres."""
+        if convention == "circumscribed":
+            return self.circumscribed_diameter_m
+        if convention == "inscribed":
+            return self.inscribed_diameter_m
+        raise ValueError(f"Unknown diameter convention: {convention!r}")
 
     @classmethod
-    def from_yip(cls, yip, shape_factor: float = 1.0) -> "SimplePrimary":
-        """Build an aperture from YIP diameter and obscured area metadata.
+    def from_yip(cls, yip, shape_factor=1.0):
+        """Read D and D_INSC directly; area is pi*D**2/4*(1-OBSCURED)*factor.
 
-        Args:
-            yip: YIP directory or stellar-intensity FITS path, a
-                YippyCoronagraph, or a yippy Coronagraph/EqxCoronagraph.
-                Objects must retain the header or diameter metadata.
-                Paths read only the header, without loading PSF arrays.
-            shape_factor: Fraction of remaining area that collects light.
-
-        Returns:
-            An aperture with diameter in meters and linear obscuration.
-
-        Raises:
-            ValueError: If D or OBSCURED is missing or None. Some yippy
-                EqxCoronagraph versions discard D; use the original YIP
-                path or yippy Coronagraph in that case.
+        Accept a YIP directory/FITS path or an object retaining its header.
+        Backends which discarded D_INSC cannot reconstruct it from an area.
         """
         from astropy.io import fits
         from yippy.header import HeaderData
@@ -81,171 +72,149 @@ class SimplePrimary(AbstractPrimary):
             yip = yip._backend
         if isinstance(yip, (str, Path)):
             path = Path(yip)
-            if path.is_dir():
-                path = path / "stellar_intens.fits"
-            raw_header = fits.getheader(path, 0)
-            for key in ("D", "OBSCURED"):
-                if raw_header.get(key) is None:
+            raw = fits.getheader(
+                path / "stellar_intens.fits" if path.is_dir() else path
+            )
+            for key in ("D", "D_INSC", "OBSCURED"):
+                if raw.get(key) is None:
                     raise ValueError(f"YIP header is missing {key}")
-            header = HeaderData.from_fits_header(raw_header)
+            header = HeaderData.from_fits_header(raw)
         else:
             header = getattr(yip, "header", None)
-
-        if header is not None:
-            diameter = getattr(header, "diameter", None)
-            obscured = getattr(header, "obscured", None)
-        else:
-            diameter = getattr(yip, "diameter_m", None)
-            obscured = getattr(yip, "frac_obscured", None)
-        if diameter is None:
-            raise ValueError(
-                "YIP metadata is missing D (diameter); use the original YIP "
-                "path or yippy Coronagraph if the backend discarded it"
+        values = []
+        for key, attr in (
+            ("D", "diameter"),
+            ("D_INSC", "diameter_inscribed"),
+            ("OBSCURED", "obscured"),
+        ):
+            value = getattr(header, attr, None)
+            if value is None:
+                raise ValueError(f"YIP metadata is missing {key}; use the original YIP")
+            values.append(
+                float(value.to_value("m"))
+                if hasattr(value, "to_value")
+                else float(value)
             )
-        if obscured is None:
-            raise ValueError(
-                "YIP metadata is missing OBSCURED (obscured area fraction)"
-            )
-        diameter_m = (
-            float(diameter.to_value("m"))
-            if hasattr(diameter, "to_value")
-            else float(diameter)
+        circ, insc, obscured = values
+        return cls(
+            circumscribed_diameter_m=circ,
+            inscribed_diameter_m=insc,
+            collecting_area_m2=pi * circ**2 / 4 * (1 - obscured) * shape_factor,
         )
-        return cls(diameter_m, obscuration=sqrt(obscured), shape_factor=shape_factor)
 
-    @property
-    def diameter_m(self) -> float:
-        """Primary mirror diameter in meters."""
-        return self._diameter_m
-
-    @property
-    def area_m2(self) -> float:
-        """Effective collecting area in square meters."""
-        r = self._diameter_m / 2.0
-        gross_area = jnp.pi * r**2
-        return gross_area * (1.0 - self.obscuration**2) * self.shape_factor
-
-    def __repr__(self) -> str:
-        """One-line summary of diameter, obscuration, and effective area."""
+    def __repr__(self):
+        """Summarize the two diameter conventions and collecting area."""
         return (
-            f"SimplePrimary(D={self._diameter_m:.3g} m, "
-            f"obs={self.obscuration:.3g}, "
-            f"shape_factor={self.shape_factor:.3g}, "
-            f"area={float(self.area_m2):.3g} m^2)"
+            f"SimplePrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
+            f"D_insc={self.inscribed_diameter_m:.3g} m, "
+            f"area={self.collecting_area_m2:.3g} m^2)"
         )
 
 
-def _hex_axial_coords(n_rings: int) -> list[tuple[int, int]]:
-    """Axial (q, r) centers of a hex-packed n-ring layout.
-
-    Yields ``1 + 3 n (n + 1)`` coordinates, center first.
-    """
-    coords = [(0, 0)]
-    for q in range(-n_rings, n_rings + 1):
-        for r in range(-n_rings, n_rings + 1):
-            if max(abs(q), abs(r), abs(q + r)) <= n_rings and not (q == 0 and r == 0):
-                coords.append((q, r))
-    return coords
+def _hex_axial_coords(n_rings):
+    """Axial centres of a complete hexagonal layout, centre first."""
+    return [(0, 0)] + [
+        (q, r)
+        for q in range(-n_rings, n_rings + 1)
+        for r in range(-n_rings, n_rings + 1)
+        if max(abs(q), abs(r), abs(q + r)) <= n_rings and (q, r) != (0, 0)
+    ]
 
 
 class SegmentedPrimary(AbstractPrimary):
-    """A segmented hex primary that carries pupil geometry, not just scalars.
+    """Complete rings of flat-top hexagons, including the centre segment.
 
-    Beyond the diameter and collecting area every primary provides, this
-    describes the segment layout -- ring count, segment count, gap, shape -- so a
-    diffraction backend (e.g. dLux) can build the pupil from it. optixstuff only
-    DESCRIBES the geometry; it does not propagate wavefronts.
-
-    Args:
-        diameter_m: Circumscribing diameter in meters.
-        area_m2: Effective collecting area in square meters (gap/fill corrected).
-        n_rings: Number of segment rings around the center segment.
-        n_segments: Total segment count (``1 + 3 n (n + 1)`` for a full layout).
-        segment_gap_m: Inter-segment optical gap in meters.
-        segment_shape: Segment shape; only ``"hexagon"`` is supported today.
+    Write a=segment_point_to_point_m/2, p=sqrt(3)*a+gap and n=n_rings.
+    The outer-ring centre at (sqrt(3)*n*p/2, n*p/2) plus vertex (a,0)
+    has the maximum radius: D_circ=2*hypot(sqrt(3)*n*p/2+a,n*p/2).
+    D_insc is the largest centred circle inside the scalloped outer outline,
+    bridging gaps at the perimeter and ignoring internal segment gaps. For
+    n>0 its nearest reentrant vertices have x=sqrt(3)*n*p/2+a/2;
+    odd rings have a gap bridge at y=0, even rings have a vertex at
+    y=sqrt(3)*a/2. Thus D_insc=2*hypot(x,0 or sqrt(3)*a/2).
+    For n=0 a single hexagon has D_circ=2*a and D_insc=sqrt(3)*a.
+    Area=(1+3*n*(n+1))*6*(sqrt(3)/4)*a**2, the sum of six equilateral
+    triangles per segment. Gaps alter pitch and extent, not segment area.
     """
 
-    _diameter_m: float
-    _area_m2: float
+    segment_point_to_point_m: float
     segment_gap_m: float
-    segment_point_to_point_m: float | None
-    inscribed_diameter_m: float | None
+    collecting_area_m2: float
+    circumscribed_diameter_m: float
+    inscribed_diameter_m: float
     n_rings: int = eqx.field(static=True)
     n_segments: int = eqx.field(static=True)
     segment_shape: str = eqx.field(static=True)
 
     def __init__(
         self,
-        diameter_m: float,
-        area_m2: float,
-        n_rings: int,
-        n_segments: int,
-        segment_gap_m: float,
-        segment_shape: str = "hexagon",
-        segment_point_to_point_m: float | None = None,
-        inscribed_diameter_m: float | None = None,
-    ) -> None:
-        """Create a segmented hex primary from its geometry."""
-        self._diameter_m = diameter_m
-        self._area_m2 = area_m2
-        self.segment_gap_m = segment_gap_m
-        self.segment_point_to_point_m = segment_point_to_point_m
-        self.inscribed_diameter_m = inscribed_diameter_m
-        self.n_rings = n_rings
-        self.n_segments = n_segments
+        *,
+        n_rings,
+        segment_point_to_point_m,
+        segment_gap_m=0.0,
+        segment_shape="hexagon",
+    ):
+        """Derive diameters and area from the full hexagonal segment geometry."""
+        if segment_shape != "hexagon":
+            raise ValueError("segment_shape must be hexagon")
+        if int(n_rings) != n_rings or n_rings < 0:
+            raise ValueError("n_rings must be a nonnegative integer")
+        if segment_point_to_point_m <= 0 or segment_gap_m < 0:
+            raise ValueError("segment size must be positive and gap nonnegative")
+        self.n_rings = int(n_rings)
+        self.n_segments = 1 + 3 * self.n_rings * (self.n_rings + 1)
         self.segment_shape = segment_shape
+        self.segment_point_to_point_m = segment_point_to_point_m
+        self.segment_gap_m = segment_gap_m
+        a, n = segment_point_to_point_m / 2, self.n_rings
+        p = sqrt(3) * a + segment_gap_m
+        self.circumscribed_diameter_m = (
+            2 * ((sqrt(3) * n * p / 2 + a) ** 2 + (n * p / 2) ** 2) ** 0.5
+        )
+        self.inscribed_diameter_m = (
+            sqrt(3) * a
+            if n == 0
+            else 2
+            * (
+                (sqrt(3) * n * p / 2 + a / 2) ** 2
+                + (sqrt(3) * a / 2 if n % 2 == 0 else 0) ** 2
+            )
+            ** 0.5
+        )
+        self.collecting_area_m2 = self.n_segments * 3 * sqrt(3) / 2 * a**2
+
+    def diameter(self, convention):
+        """Return metres under one of the two explicit diameter conventions."""
+        if convention == "circumscribed":
+            return self.circumscribed_diameter_m
+        if convention == "inscribed":
+            return self.inscribed_diameter_m
+        raise ValueError(f"Unknown diameter convention: {convention!r}")
 
     @property
-    def diameter_m(self) -> float:
-        """Circumscribing diameter in meters."""
-        return self._diameter_m
+    def segment_flat_to_flat_m(self):
+        """Twice the hexagon apothem, sqrt(3)/2 times vertex-to-vertex size."""
+        return self.segment_point_to_point_m * sqrt(3) / 2
 
     @property
-    def area_m2(self) -> float:
-        """Effective collecting area in square meters."""
-        return self._area_m2
-
-    @property
-    def segment_flat_to_flat_m(self) -> float:
-        """Segment flat-to-flat size in meters.
-
-        Exact (``point_to_point * sqrt(3) / 2``) when the segment size is
-        given; otherwise the legacy circumscribing approximation
-        ``diameter / (2 n_rings + 1)``.
-        """
-        if self.segment_point_to_point_m is not None:
-            return self.segment_point_to_point_m * jnp.sqrt(3.0) / 2.0
-        return self._diameter_m / (2 * self.n_rings + 1)
-
-    @property
-    def segment_pitch_m(self) -> float:
-        """Center-to-center distance of adjacent segments (flat-to-flat + gap)."""
+    def segment_pitch_m(self):
+        """Neighbouring segment centre distance in metres."""
         return self.segment_flat_to_flat_m + self.segment_gap_m
 
     @property
     def segment_centers_m(self):
-        """``(n_segments, 2)`` segment center (x, y) positions in meters.
+        """Flat-top lattice (n_segments, 2) coordinates, ordered (x,y)."""
+        axial = jnp.asarray(_hex_axial_coords(self.n_rings))
+        q, r = axial[:, 0], axial[:, 1]
+        return self.segment_pitch_m * jnp.stack(
+            (sqrt(3) / 2 * (q + r), (r - q) / 2), axis=-1
+        )
 
-        A flat-top hexagonal lattice (flats up, points along x), the
-        convention of the HWO EAC baseline pupils: the center segment is
-        first, and adjacent centers are one ``segment_pitch_m`` apart.
-        """
-        if self.segment_shape != "hexagon":
-            msg = f"segment_centers_m undefined for shape {self.segment_shape!r}"
-            raise NotImplementedError(msg)
-        axial = _hex_axial_coords(self.n_rings)
-        pitch = self.segment_pitch_m
-        qs = jnp.array([q for q, _ in axial])
-        rs = jnp.array([r for _, r in axial])
-        xs = pitch * (jnp.sqrt(3.0) / 2.0) * (qs + rs)
-        ys = pitch * (rs - qs) / 2.0
-        return jnp.stack([xs, ys], axis=-1)
-
-    def __repr__(self) -> str:
-        """One-line summary of diameter, segment layout, and effective area."""
+    def __repr__(self):
+        """Summarize aperture extents, segment count and collecting area."""
         return (
-            f"SegmentedPrimary(D={self._diameter_m:.3g} m, "
-            f"{self.n_segments} {self.segment_shape} segs, "
-            f"{self.n_rings} rings, gap={self.segment_gap_m * 1e3:.3g} mm, "
-            f"area={float(self._area_m2):.3g} m^2)"
+            f"SegmentedPrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
+            f"D_insc={self.inscribed_diameter_m:.3g} m, "
+            f"{self.n_segments} hexagon segs, {self.n_rings} rings, "
+            f"area={self.collecting_area_m2:.3g} m^2)"
         )

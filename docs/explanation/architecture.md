@@ -97,7 +97,7 @@ This example requires measured throughput curves and a configured coronagraph an
 
 ```python notest
 path = OpticalPath(
-    primary=SimplePrimary(diameter_m=6.0),
+    primary=SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
     attenuating_elements=(
         ConstantThroughput(throughput=0.95),  # primary coating
         ConstantThroughput(throughput=0.95),  # secondary mirror
@@ -176,3 +176,48 @@ Combine sources before drawing so detector noise is counted once.
 
 See [detector models](detector_models) for units, shapes, timing, and the
 explicit excess-noise distribution.
+
+## Aperture frames, images, and performance records
+
+A primary stores collecting area independently of its two diameter conventions.
+`primary.frame(reference_wavelength_nm, convention="circumscribed")` creates a
+shared `Frame` without asking the consumer to repeat a diameter conversion.
+For segmented apertures the inscribed circle follows the scalloped outer outline,
+bridging perimeter gaps; the internal segment gaps reduce collecting area only
+through the declared segment sizes, and do not define the aperture diameter.
+
+The six image methods take a target `PixelGrid`: `on_axis_psf(wavelength_nm, grid)`,
+`off_axis_psf(wavelength_nm, separation_lod, grid)`,
+`stellar_map(wavelength_nm, stellar_diam_lod, *, grid)`,
+`source_psfs(wavelength_nm, x_lod, y_lod, *, grid)`,
+`background_transmission(wavelength_nm, *, grid)`, and
+`extended_scene(scene_map: Image, wavelength_nm, *, grid, rotation_deg=0.0)`.
+The grid defines units, frame, pixel-centre coordinates, and array shape.
+Source offsets are in the native off-axis frame; stellar diameters are in the
+native stellar frame. Resampling reconciles different frames through arcseconds
+at each frame's reference wavelength. Rotation angles are concrete host values.
+
+| Product | Image measure | Image quantity |
+|---|---|---|
+| On/off-axis PSFs, stellar map, source PSFs | `per_pixel` | `stellar_flux_fraction` |
+| Background transmission | `per_unit_area` | `transmission` |
+| Extended scene | `per_pixel` | Input scene quantity |
+
+Transmission uses sampled-value semantics to preserve amplitude, and is
+dimensionless despite the density-like resampling measure. PSFs are fractions
+of the unocculted source flux per pixel, not normalized to post-coronagraph flux.
+
+`curves(rule=Circular(0.7), *, leakage_rule="aperture_mean")` selects a prepared
+yippy record. The five scalar convenience methods call its `evaluate` method.
+`leakage_density_lod2` is already per square lambda/D; no pixel-area correction
+belongs in consumers. `noise_floor_ayo` reads that density and divides by `ppf`.
+The record's contrast identity holds at measured knots; yippy interpolates the
+five fields in their declared spaces independently between knots.
+Additional rules and leakage conventions must be prepared during construction.
+Finite stellar diameter remains an image capability; scalar records retain the
+diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
+selects a multiband record; `curves()` alone uses the reference band.
+
+Speckle `realize(wavelength_nm=..., time_d=...)` uses days from the scene epoch.
+Implementations subtract their `epoch_d` clock origin internally. Exposure
+averaging takes `start_time_d` and `exposure_s`, converting seconds with hwoutils.

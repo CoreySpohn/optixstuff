@@ -6,6 +6,7 @@ from optixstuff.coronagraph import (
     AbstractScalarCoronagraph,
     AbstractTableCoronagraph,
     MultiBandCoronagraph,
+    ScalarCoronagraph,
 )
 from optixstuff.detector import (
     AbstractDetector,
@@ -47,6 +48,7 @@ __all__ = [
     "MultiBandCoronagraph",
     "OpticalPath",
     "PhotonRates",
+    "ScalarCoronagraph",
     "SegmentedPrimary",
     "SimplePrimary",
     "SpectralThroughput",

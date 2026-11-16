@@ -3,7 +3,8 @@
 Each leaf class in optixstuff (primary, detector, throughput elements,
 coronagraphs) defines its own one-line ``__repr__``; the
 :class:`OpticalPath` aggregator uses :func:`indent` to nest the
-children one level deeper.
+children one level deeper. Primary summaries label both diameter conventions;
+coronagraph summaries distinguish data extent from a design working angle.
 """
 
 from __future__ import annotations

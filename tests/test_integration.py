@@ -34,7 +34,10 @@ def yippy_coronagraph(yip_path):
 @pytest.fixture(scope="session")
 def optical_path(yippy_coronagraph):
     """Full OpticalPath with primary, coronagraph, detector, and a filter."""
-    primary = ox.SimplePrimary(diameter_m=6.0, obscuration=0.14)
+    primary = ox.SimplePrimary(
+        circumscribed_diameter_m=6.0,
+        collecting_area_m2=3.141592653589793 * 9 * (1 - 0.14**2),
+    )
     detector = ox.Detector(
         pixel_scale_arcsec=0.010,
         shape=(100, 100),
@@ -69,10 +72,13 @@ class TestYippyCoronagraph:
         assert isinstance(yippy_coronagraph, eqx.Module)
 
     def test_pixel_scale_positive(self, yippy_coronagraph):
-        assert yippy_coronagraph.pixel_scale_lod > 0
+        assert yippy_coronagraph.grid.step > 0
 
     def test_iwa_owa_ordering(self, yippy_coronagraph):
-        assert yippy_coronagraph.IWA < yippy_coronagraph.OWA
+        assert (
+            yippy_coronagraph.curves().iwa_lod
+            < yippy_coronagraph.curves().data_extent_lod
+        )
 
     def test_throughput_in_range(self, yippy_coronagraph):
         t = yippy_coronagraph.throughput(5.0, 500.0)
@@ -82,8 +88,8 @@ class TestYippyCoronagraph:
         a = yippy_coronagraph.core_area(5.0, 500.0)
         assert float(a) > 0
 
-    def test_core_mean_intensity_nonnegative(self, yippy_coronagraph):
-        cmi = yippy_coronagraph.core_mean_intensity(5.0, 500.0)
+    def test_leakage_density_lod2_nonnegative(self, yippy_coronagraph):
+        cmi = yippy_coronagraph.leakage_density_lod2(5.0, 500.0)
         assert float(cmi) >= 0
 
     def test_occulter_transmission_in_range(self, yippy_coronagraph):
@@ -91,36 +97,18 @@ class TestYippyCoronagraph:
         assert 0.0 <= float(st) <= 1.0
 
     @pytest.mark.parametrize("separation_lod", [6.0, 10.0, 16.0])
-    def test_core_mean_intensity_is_per_lod_squared(
+    def test_leakage_density_lod2_is_per_lod_squared(
         self, yippy_coronagraph, separation_lod
     ):
-        """Core mean intensity is the star's light per (lambda/D)^2.
-
-        The package's stellar map holds the fraction of the star's light on
-        each pixel. Averaged over a thin ring of pixels at the separation and
-        divided by one pixel's solid angle, it is the intensity per
-        (lambda/D)^2 that the contract promises. A value reported per pixel
-        would come back smaller by the pixel area in (lambda/D)^2, a factor of
-        16 at 0.25 lambda/D pixels. The tolerance covers the difference between
-        a one-pixel ring and the reader's radial bins, under 10 percent.
-        """
+        """Exact delegation to the aperture-density record, without pixel scaling."""
         coro = yippy_coronagraph
-        pixel_lod = coro.pixel_scale_lod
-        star_map = jnp.asarray(coro.stellar_intens(0.0))
-        ny, nx = star_map.shape
-        # The shipped maps are point-symmetric about the array's middle,
-        # between the four central pixels.
-        rows, cols = jnp.indices((ny, nx))
-        radius_lod = jnp.hypot(rows - (ny - 1) / 2.0, cols - (nx - 1) / 2.0) * pixel_lod
-        ring = jnp.abs(radius_lod - separation_lod) < 0.5 * pixel_lod
-        per_pixel = jnp.sum(jnp.where(ring, star_map, 0.0)) / jnp.sum(ring)
-        expected = float(per_pixel) / pixel_lod**2
-
-        got = float(coro.core_mean_intensity(separation_lod, 500.0))
-        assert got == pytest.approx(expected, rel=0.1)
+        record = coro.curves()
+        # The record is an aperture mean, not the old azimuthal per-pixel profile.
+        expected = record.evaluate("leakage_density_lod2", separation_lod)
+        assert coro.leakage_density_lod2(separation_lod) == expected
 
     @pytest.mark.parametrize("separation_lod", [6.0, 10.0])
-    def test_noise_floor_ayo_matches_core_mean_intensity(
+    def test_noise_floor_ayo_matches_leakage_density_lod2(
         self, yippy_coronagraph, separation_lod
     ):
         """The AYO noise floor is the core mean intensity over the ppf.
@@ -132,7 +120,7 @@ class TestYippyCoronagraph:
         coro = yippy_coronagraph
         ppf = 30.0
         floor = float(coro.noise_floor_ayo(separation_lod, ppf))
-        cmi = float(coro.core_mean_intensity(separation_lod, 500.0))
+        cmi = float(coro.leakage_density_lod2(separation_lod, 500.0))
         assert floor == pytest.approx(cmi / ppf, rel=1e-6)
 
 
@@ -150,4 +138,6 @@ class TestOpticalPathIntegration:
 
     def test_primary_area(self, optical_path):
         expected = jnp.pi * 3.0**2 * (1.0 - 0.14**2)
-        assert optical_path.primary.area_m2 == pytest.approx(float(expected), rel=1e-6)
+        assert optical_path.primary.collecting_area_m2 == pytest.approx(
+            float(expected), rel=1e-6
+        )

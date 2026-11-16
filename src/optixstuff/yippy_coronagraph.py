@@ -1,313 +1,130 @@
-"""YippyCoronagraph -- AbstractCoronagraph backed by a yippy EqxCoronagraph."""
+"""Shared-grid adapter over a yippy EqxCoronagraph and its aperture records."""
 
 from typing import final
 
-from jax.typing import ArrayLike
-from jaxtyping import Array
+import jax
+import jax.numpy as jnp
+import numpy as np
 from yippy import EqxCoronagraph
+from yippy.performance import performance_curves
 
-from optixstuff.coronagraph import AbstractTableCoronagraph
+from optixstuff.coronagraph import _DEFAULT_RULE, AbstractTableCoronagraph
 
 
 @final
 class YippyCoronagraph(AbstractTableCoronagraph):
-    """Coronagraph performance model backed by a yippy YIP interpolation table.
+    """Adapt yippy Images and eagerly cached PerformanceCurves without unit changes.
 
-    Wraps a yippy ``EqxCoronagraph`` via composition: the scalar curves
-    adapt the backend's interpolation tables, and the native-grid table
-    SPI (``stellar_intens`` / ``create_psfs`` / ``sky_trans`` /
-    ``psf_shape`` / ``psf_datacube``) delegates to the backend, from
-    which :class:`AbstractTableCoronagraph` serves the sampling-explicit
-    image contract.  The ``_backend`` field is itself an ``eqx.Module``,
-    so its internal JAX arrays flow through ``filter_jit`` and
-    ``filter_grad`` normally.
-
-    Construction mirrors ``EqxCoronagraph`` -- pass either a YIP path or
-    an existing ``EqxCoronagraph`` instance::
-
-        coro = YippyCoronagraph("/path/to/yip")
-        coro = YippyCoronagraph(backend=existing_eqx_coro)
+    Existing backend records are retained. Additional ``rules`` are prepared
+    during construction on the backend's separation axis and stellar map.
+    Prepare every rule before JIT; curves() only selects stored records and
+    raises for an unprepared rule/averaging combination. The constructor's
+    leakage_rule selects the density convention for additional records.
     """
 
     _backend: EqxCoronagraph
+    _records: tuple
+    outer_working_angle_lod: float | None
 
     def __init__(
         self,
-        yip_path: str | None = None,
+        yip_path=None,
         *,
-        backend: EqxCoronagraph | None = None,
+        backend=None,
+        rules=(),
+        leakage_rule="aperture_mean",
+        outer_working_angle_lod=None,
         **kwargs,
-    ) -> None:
-        """Create a YippyCoronagraph from a YIP path or existing backend.
-
-        Args:
-            yip_path: Path to a Yield Input Package directory.
-            backend: Pre-built EqxCoronagraph.  Takes precedence over yip_path.
-            **kwargs: Forwarded to ``EqxCoronagraph`` when building from yip_path.
-        """
-        if backend is not None:
-            self._backend = backend
-        elif yip_path is not None:
-            self._backend = EqxCoronagraph(yip_path, **kwargs)
-        else:
-            msg = "Provide either yip_path or backend"
-            raise ValueError(msg)
-
-    # -- AbstractVar fields satisfied via properties ----------------------
-
-    @property
-    def pixel_scale_lod(self) -> float:
-        """Native pixel scale in lambda/D per pixel."""
-        return self._backend.pixel_scale_lod
-
-    @property
-    def IWA(self) -> float:
-        """Inner working angle in lambda/D."""
-        return self._backend.IWA
-
-    @property
-    def OWA(self) -> float:
-        """Outer working angle in lambda/D."""
-        return self._backend.OWA
-
-    # -- Scalar interface -------------------------------------------------
-
-    def throughput(
-        self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Core throughput from the YIP interpolation table."""
-        return self._backend.throughput(separation_lod)
-
-    def core_area(
-        self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Photometric aperture area from the YIP interpolation table."""
-        return self._backend.core_area(separation_lod)
-
-    def core_mean_intensity(
-        self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        time_s: ArrayLike = 0.0,
-        stellar_diam_lod: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Mean stellar leakage per (lambda/D)^2 from the YIP interpolation table.
-
-        yippy tabulates the fraction of the star's light per pixel, so the
-        value is divided by the stellar pixel's solid angle,
-        to meet the contract of :meth:`AbstractCoronagraph.core_mean_intensity`.
-        The backend interpolates over the stellar diameter axis when present;
-        otherwise it accepts and ignores the diameter.
-
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometers (accepted and ignored).
-            time_s: Time since mission start in seconds (accepted and ignored).
-            stellar_diam_lod: Stellar angular diameter in lambda/D at the
-                queried wavelength; 0 means a point star.
-        """
-        per_pixel = self._backend.core_mean_intensity(separation_lod, stellar_diam_lod)
-        return (
-            per_pixel
-            / getattr(
-                self._backend, "stellar_pixel_scale_lod", self._backend.pixel_scale_lod
+    ):
+        """Load a YIP or wrap a backend, then prepare any extra aperture rules."""
+        if backend is None and yip_path is None:
+            raise ValueError("Provide either yip_path or backend")
+        self._backend = (
+            backend
+            if backend is not None
+            else EqxCoronagraph(yip_path, leakage_rule=leakage_rule, **kwargs)
+        )
+        self.outer_working_angle_lod = outer_working_angle_lod
+        records = list(self._backend.curves_by_rule.values())
+        for rule in rules:
+            if any(r.rule == rule and r.leakage_rule == leakage_rule for r in records):
+                continue
+            record = performance_curves(
+                lambda s: self._backend.create_psf(s, 0.0),
+                self._backend.stellar_intens(0.0),
+                rule,
+                separations_lod=self._backend.performance.separation_lod,
+                leakage_rule=leakage_rule,
+                stellar_diameter=0.0,
             )
-            ** 2
+            records.append(
+                jax.tree.map(
+                    lambda x: jnp.asarray(x) if isinstance(x, np.ndarray) else x, record
+                )
+            )
+        self._records = tuple(records)
+
+    @property
+    def grid(self):
+        """Native off-axis lod grid with its explicit circumscribed Frame."""
+        return self._backend.grid
+
+    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+        """Select a retained yippy record for this rule and density convention."""
+        for record in self._records:
+            if record.rule == rule and record.leakage_rule == leakage_rule:
+                return record
+        raise ValueError(
+            "No prepared record; supply rules and leakage_rule at construction"
         )
 
-    def occulter_transmission(
-        self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Sky transmission from the YIP interpolation table."""
+    def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
+        """Dimensionless sky transmission from the backend's ancillary record."""
         return self._backend.occulter_transmission(separation_lod)
-
-    # -- Image interface --------------------------------------------------
-
-    def on_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Stellar leakage PSF from the YIP stellar intensity model."""
-        return self._backend.stellar_intens(0.0)
-
-    def stellar_map(
-        self,
-        wavelength_nm: ArrayLike,
-        stellar_diam_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Resample stellar flux in the backend's stellar reference frame."""
-        method = getattr(self._backend, "stellar_map", None)
-        if method is None:
-            return super().stellar_map(
-                wavelength_nm,
-                stellar_diam_lod,
-                pixel_scale_lod=pixel_scale_lod,
-                shape=shape,
-            )
-        return method(
-            wavelength_nm,
-            stellar_diam_lod,
-            pixel_scale_lod=pixel_scale_lod,
-            shape=shape,
-        )
-
-    def source_psfs(
-        self,
-        wavelength_nm: ArrayLike,
-        x_lod: ArrayLike,
-        y_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Resample source flux in the backend's off-axis reference frame."""
-        method = getattr(self._backend, "source_psfs", None)
-        if method is None:
-            return super().source_psfs(
-                wavelength_nm,
-                x_lod,
-                y_lod,
-                pixel_scale_lod=pixel_scale_lod,
-                shape=shape,
-            )
-        return method(
-            wavelength_nm, x_lod, y_lod, pixel_scale_lod=pixel_scale_lod, shape=shape
-        )
-
-    def background_transmission(
-        self,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Resample sky values in the backend's sky reference frame."""
-        method = getattr(self._backend, "background_transmission", None)
-        if method is None:
-            return super().background_transmission(
-                wavelength_nm, pixel_scale_lod=pixel_scale_lod, shape=shape
-            )
-        return method(wavelength_nm, pixel_scale_lod=pixel_scale_lod, shape=shape)
-
-    def off_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        separation_lod: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Off-axis planet PSF from the YIP PSF interpolator.
-
-        Places the planet along the +x axis by convention.
-        """
-        return self._backend.create_psf(separation_lod, 0.0, npixels)
-
-    # -- Convenience methods and the table SPI ----------------------------
 
     def noise_floor_ayo(
         self,
-        separation_lod: ArrayLike,
-        ppf: float = 30.0,
+        separation_lod,
+        ppf=30.0,
         *,
-        stellar_diam_lod: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """AYO noise floor per (lambda/D)^2: ``core_mean_intensity / ppf``.
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Record leakage_density_lod2 divided by ppf, in (lambda/D)^-2.
 
-        Same units as :meth:`core_mean_intensity`, so multiplying by
-        :meth:`core_area` gives the floor as a fraction of the star's light.
-        yippy's own ``noise_floor_ayo`` is per pixel and is divided by the
-        stellar pixel's solid angle. Not part of the
-        AbstractCoronagraph contract -- downstream ETCs should compute
-        noise floors as pure functions.
-
-        Division by ``ppf`` precedes the pixel-area conversion to preserve
-        point-source rounding exactly.
-
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            ppf: Post-processing noise suppression factor.
-            stellar_diam_lod: Stellar angular diameter in lambda/D at the
-                queried wavelength; 0 means a point star. Accepted and ignored
-                when the backend has no diameter model.
+        No pixel-area conversion occurs: the record already stores density.
         """
-        per_pixel = (
-            self._backend.core_mean_intensity(separation_lod, stellar_diam_lod) / ppf
-        )
         return (
-            per_pixel
-            / getattr(
-                self._backend, "stellar_pixel_scale_lod", self._backend.pixel_scale_lod
+            self.curves(rule, leakage_rule=leakage_rule).evaluate(
+                "leakage_density_lod2", separation_lod
             )
-            ** 2
+            / ppf
         )
 
-    def raw_contrast(self, separation_lod: ArrayLike) -> ArrayLike:
-        """Raw contrast from the YIP interpolation table."""
-        return self._backend.raw_contrast(separation_lod)
-
-    def stellar_intens(self, stellar_diam_lod: float) -> Array:
-        """Stellar intensity map for a given stellar angular diameter."""
+    def stellar_intens(self, stellar_diam_lod):
+        """Native per-pixel stellar fraction Image at the requested diameter."""
         return self._backend.stellar_intens(stellar_diam_lod)
 
-    @property
-    def psf_shape(self) -> tuple[int, int]:
-        """Shape of the PSF arrays from the YIP file."""
-        return self._backend.psf_shape
-
-    @property
-    def sky_trans(self) -> Array:
-        """Full sky transmission map."""
-        return self._backend.sky_trans
-
-    def create_psfs(self, x_lod: ArrayLike, y_lod: ArrayLike) -> Array:
-        """Batched off-axis PSFs at (x_lod, y_lod) source positions.
-
-        Delegates to the backend yippy create_psfs closure. Returns
-        a stack of PSF images, one per input source coordinate.
-
-        Args:
-            x_lod: Source x-coordinates in lambda/D, shape (K,).
-            y_lod: Source y-coordinates in lambda/D, shape (K,).
-
-        Returns:
-            PSF stack of shape (K, ny, nx) where (ny, nx) == self.psf_shape.
-        """
+    def create_psfs(self, x_lod, y_lod):
+        """Native per-pixel source fractions with leading axis 'source'."""
         return self._backend.create_psfs(x_lod, y_lod)
 
     @property
-    def psf_datacube(self) -> Array | None:
-        """Pre-computed quarter-symmetric PSF datacube from the backend.
+    def sky_trans(self):
+        """Native dimensionless sampled transmission Image."""
+        return self._backend.sky_trans
 
-        Returns None if the backing EqxCoronagraph was not built
-        with ensure_psf_datacube=True. Consumers that need this for
-        disk convolution should construct the backend with the flag set.
-        """
+    @property
+    def psf_datacube(self):
+        """Full or quarter PSF cube; None when not requested at construction."""
         return self._backend.psf_datacube
 
-    def __repr__(self) -> str:
-        """One-line summary of YIP backend metadata."""
-        ny, nx = self._backend.psf_shape
+    def __repr__(self):
+        """Summarize native grid and available performance records."""
+        record = self._records[0]
         return (
-            f"YippyCoronagraph(IWA={float(self.IWA):.3g}, "
-            f"OWA={float(self.OWA):.3g} lambda/D, "
-            f"pixel_scale_arcsec={float(self.pixel_scale_lod):.3g} lambda/D/px, "
-            f"PSF {ny}x{nx})"
+            f"YippyCoronagraph(iwa_lod={float(record.iwa_lod):.3g}, "
+            f"data_extent_lod={record.data_extent_lod:.3g}, "
+            f"grid={self.grid.shape}, step_lod={self.grid.step:.3g}, "
+            f"rules={len(self._records)})"
         )

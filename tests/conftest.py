@@ -1,16 +1,18 @@
 """Shared fixtures for optixstuff tests."""
 
 import importlib.util
+import inspect
 import os
-import shutil
-from zipfile import ZipFile
 
+import numpy as np
 import pytest
+from astropy.io import fits
+from hwoutils.grids import PixelGrid
 from hypothesis import settings
-from yippy import EqxCoronagraph
-from yippy.datasets import CATALOG, cache_dir
+from yippy import Coronagraph, EqxCoronagraph
 
 import optixstuff as ox
+from optixstuff import ScalarCoronagraph, SimplePrimary, YippyCoronagraph
 
 # Released hwoutils versions may not include the optional budget plugin yet.
 pytest_plugins = []
@@ -22,32 +24,106 @@ settings.register_profile("nightly", max_examples=200, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
 
 
+# Small analytic YIP fixtures with independent pixel-centre coordinates.
+
+
+def concrete_subclasses(base):
+    classes = []
+    for cls in base.__subclasses__():
+        if not inspect.isabstract(cls):
+            classes.append(cls)
+        classes.extend(concrete_subclasses(cls))
+    return classes
+
+
+def synthetic_coronagraph(path, n=24, *, rules=()):
+    path.mkdir(exist_ok=True)
+    scale, center, sigma = 0.5, (n - 1) / 2, 0.7
+    yy, xx = np.indices((n, n))
+    xx, yy = (xx - center) * scale, (yy - center) * scale
+    offsets = np.array(
+        [(x, y) for x in (0.0, 1.0, 2.0, 3.0) for y in (0.0, 1.0, 2.0, 3.0)]
+    )
+    psfs = np.array(
+        [
+            0.6
+            * (1 - 0.9 * np.exp(-(x * x + y * y) / 4))
+            * scale**2
+            / (2 * np.pi * sigma**2)
+            * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma**2))
+            for x, y in offsets
+        ]
+    )
+    header = fits.Header(
+        {
+            "D": 6.0,
+            "D_INSC": 4.7,
+            "OBSCURED": 0.2,
+            "PIXSCALE": scale,
+            "LAMBDA": 500.0,
+            "MINLAM": 450.0,
+            "MAXLAM": 550.0,
+            "XCENTER": center + 0.5,
+            "YCENTER": center + 0.5,
+            "N_LAM": 1,
+            "N_STAR": 3,
+        }
+    )
+    for key, unit in (
+        ("D", "m"),
+        ("D_INSC", "m"),
+        ("LAMBDA", "nm"),
+        ("MINLAM", "nm"),
+        ("MAXLAM", "nm"),
+    ):
+        header.comments[key] = f"value in {unit}"
+    for filename, data in (
+        ("offax_psf", psfs),
+        ("offax_psf_offset_list", offsets),
+        (
+            "stellar_intens",
+            np.stack([np.full((n, n), 1e-8 * (1 + d * d)) for d in (0.0, 0.1, 0.2)]),
+        ),
+        ("stellar_intens_diam_list", np.array([0.0, 0.1, 0.2])),
+        ("sky_trans", 1 - np.exp(-(xx * xx + yy * yy) / 4)),
+    ):
+        fits.PrimaryHDU(data, header).writeto(path / f"{filename}.fits", overwrite=True)
+    host = Coronagraph(path)
+    for rule in rules:
+        host.compute_all_performance_curves(rule)
+    host.create_psf_datacube()
+    return YippyCoronagraph(
+        backend=EqxCoronagraph(yippy_coro=host, ensure_psf_datacube=True)
+    )
+
+
+# Constant coronagraph shared by hardware-container tests.
+def scalar_coronagraph():
+    frame = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0).frame(
+        500.0
+    )
+    return ScalarCoronagraph(
+        grid=PixelGrid.focal(24, 0.5, frame),
+        throughput_fraction=0.5,
+        aperture_area_lod2=1.0,
+        stellar_leakage_density_lod2=1e-10,
+        outer_working_angle_lod=30.0,
+    )
+
+
 @pytest.fixture(scope="session")
 def cached_diameter_coro(tmp_path_factory):
-    """Use one cached public package copy across all diameter and frame tests."""
-    root = cache_dir()
-    scratch = tmp_path_factory.mktemp("stellar_diameter_yip")
-    for name in CATALOG:
-        candidates = (root / f"{name}.zip.unzip" / name, root / name)
-        source = next((path for path in candidates if path.is_dir()), None)
-        target = scratch / name
-        if source is not None:
-            shutil.copytree(source, target)
-        elif (root / f"{name}.zip").is_file():
-            with ZipFile(root / f"{name}.zip") as archive:
-                archive.extractall(scratch)
-        else:
-            continue
-        backend = EqxCoronagraph(target)
-        if backend._core_intensity_varies_with_diameter:
-            return ox.YippyCoronagraph(backend=backend)
-    pytest.skip(f"No cached public YIP with a stellar-diameter axis in {root}")
+    """Synthetic diameter-dependent package; all generated files stay in tmp_path."""
+    return synthetic_coronagraph(tmp_path_factory.mktemp("stellar_diameter_yip"))
 
 
 @pytest.fixture
 def simple_primary():
     """A basic 6m primary mirror with 14% obscuration."""
-    return ox.SimplePrimary(diameter_m=6.0, obscuration=0.14)
+    return ox.SimplePrimary(
+        circumscribed_diameter_m=6.0,
+        collecting_area_m2=3.141592653589793 * 9 * (1 - 0.14**2),
+    )
 
 
 @pytest.fixture

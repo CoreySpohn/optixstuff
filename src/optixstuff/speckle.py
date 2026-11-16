@@ -23,6 +23,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
+from hwoutils.constants import s2d
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -35,8 +36,8 @@ class AbstractSpeckleField(eqx.Module):
     or a learned generator. All produce a coronagraph-plane contrast map
     through :meth:`realize`.
 
-    All wavelength arguments are in nanometers; ``time_s`` is seconds since
-    the speckle clock origin. The returned map is on the field's native coronagraph
+    All wavelength arguments are in nanometers; ``time_d`` is days from
+    the scene epoch. The returned map is on the field's native coronagraph
     plane at :attr:`pixel_scale_lod`; the caller resamples it to the
     detector grid (as for the coronagraph ``stellar_intens`` map).
     """
@@ -45,10 +46,10 @@ class AbstractSpeckleField(eqx.Module):
     """Native pixel scale in lambda/D per pixel."""
 
     epoch_d: AbstractVar[float]
-    """Days from the scene epoch at which ``time_s = 0``.
+    """Speckle clock origin in days from the scene epoch.
 
-    Consumers convert observation offsets via ``(start_time_d - epoch_d)``;
-    a nearby clock origin preserves float32 resolution in elapsed seconds.
+    Implementations form elapsed time as ``time_d - epoch_d`` and convert
+    with hwoutils constants when their evolution model uses seconds.
     """
 
     @abc.abstractmethod
@@ -56,7 +57,7 @@ class AbstractSpeckleField(eqx.Module):
         self,
         *,
         wavelength_nm: ArrayLike,
-        time_s: ArrayLike = 0.0,
+        time_d: ArrayLike = 0.0,
     ) -> Array:
         """Speckle flux-fraction *delta* at a given time and wavelength.
 
@@ -73,14 +74,14 @@ class AbstractSpeckleField(eqx.Module):
         implementation adds the cross term, which carries the bright-tail
         pinning and requires the complex ``E_nom``.
 
-        Evolution is driven by ``time_s``, not a per-call PRNG key: the
+        Evolution is driven by ``time_d``, not a per-call PRNG key: the
         realization is fixed at construction so the map is deterministic and
         differentiable, and temporal correlation survives across an exposure
         / roll sequence.
 
         Args:
             wavelength_nm: Wavelength in nanometers.
-            time_s: Time since the speckle clock origin in seconds.
+            time_d: Days from the scene epoch.
 
         Returns:
             2D float contrast-delta array on the native coronagraph plane.
@@ -92,7 +93,7 @@ class AbstractSpeckleField(eqx.Module):
         *,
         wavelength_nm: ArrayLike,
         exposure_s: ArrayLike,
-        start_time_s: ArrayLike = 0.0,
+        start_time_d: ArrayLike = 0.0,
         n_sub: int = 8,
     ) -> Array:
         """Speckle contrast delta averaged over an exposure.
@@ -117,7 +118,7 @@ class AbstractSpeckleField(eqx.Module):
         Args:
             wavelength_nm: Wavelength in nanometers.
             exposure_s: Exposure length in seconds.
-            start_time_s: Exposure start, in seconds since ``epoch_d``.
+            start_time_d: Exposure start, in days from the scene epoch.
             n_sub: Number of sub-exposure samples. Must be at least 1.
 
         Returns:
@@ -129,12 +130,12 @@ class AbstractSpeckleField(eqx.Module):
         if int(n_sub) < 1 or int(n_sub) != n_sub:
             raise ValueError(f"n_sub must be a positive integer, got {n_sub}")
         n_sub = int(n_sub)
-        start = jnp.asarray(start_time_s, dtype=float)
-        step = jnp.asarray(exposure_s, dtype=float) / n_sub
+        start = jnp.asarray(start_time_d, dtype=float)
+        step = jnp.asarray(exposure_s, dtype=float) * s2d / n_sub
 
         def sample(index):
             return self.realize(
-                wavelength_nm=wavelength_nm, time_s=start + (index + 0.5) * step
+                wavelength_nm=wavelength_nm, time_d=start + (index + 0.5) * step
             )
 
         # Accumulate rather than stacking: one map is held at a time, so a

@@ -1,638 +1,376 @@
-"""Coronagraph abstractions."""
+"""Coronagraph performance records and images on explicit shared grids."""
 
 import abc
+import math
+from dataclasses import replace
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
-from hwoutils.transforms import resample_flux
-from jax.typing import ArrayLike
-from jaxtyping import Array
+from hwoutils.grids import Image, PixelGrid, resample
+from yippy import Circular, PerformanceCurves
+
+_DEFAULT_RULE = Circular(0.7)
 
 
-def _convolve_quadrants(flux, psf_datacube):
-    """Convolve flux with a quarter-symmetric PSF datacube via fold-and-sum.
+def _on_grid(image: Image, grid: PixelGrid) -> Image:
+    """Resample using the product's frame; reconcile different lod frames via sky."""
+    if image.grid == grid:
+        return image
+    source = image.grid
+    target = grid
+    if source.unit != target.unit or (
+        source.unit == "lod" and source.frame != target.frame
+    ):
+        if source.unit == "lod":
+            source = source.to_arcsec(source.frame.reference_wavelength_nm)
+        if target.unit == "lod":
+            target = target.to_arcsec(target.frame.reference_wavelength_nm)
+    sampled = resample(replace(image, grid=source), target)
+    return replace(sampled, grid=grid)
 
-    Handles padding dynamically to ensure all quadrants match the shape of the
-    first quadrant (which defines the PSF datacube shape).
+
+def _convolve_quadrants(flux, psf_datacube, grid: PixelGrid):
+    """Fold sources about grid.center, with odd shared axes counted exactly once.
+
+    Cube axes are (source_y, source_x, y, x). Positive source indices start
+    at ceil(c); even grids have half-integer offsets and disjoint quadrants.
+    Odd grids share the zero-offset axes, supplied by the positive quadrant;
+    reflected negative halves receive one leading zero on each shared axis.
     """
-    ny, nx = flux.shape
-    cy, cx = (ny - 1) // 2, (nx - 1) // 2
-
-    # Q1: top-right (includes center pixel and axes) -> reference shape
-    q1 = flux[cy:, cx:]
-    target_h, target_w = q1.shape
-
-    # Q2: top-left -- flip X, pad inner-left + outer-right to target width
-    q2_raw = flux[cy:, :cx]
-    q2_flipped = q2_raw[:, ::-1]
-    pad_q2_right = max(0, target_w - (q2_flipped.shape[1] + 1))
-    q2 = jnp.pad(q2_flipped, ((0, 0), (1, pad_q2_right)))
-
-    # Q3: bottom-left -- flip both, pad inner-top, inner-left, outer-bottom/right
-    q3_raw = flux[:cy, :cx]
-    q3_flipped = q3_raw[::-1, ::-1]
-    pad_q3_bottom = max(0, target_h - (q3_flipped.shape[0] + 1))
-    pad_q3_right = max(0, target_w - (q3_flipped.shape[1] + 1))
-    q3 = jnp.pad(q3_flipped, ((1, pad_q3_bottom), (1, pad_q3_right)))
-
-    # Q4: bottom-right -- flip Y, pad inner-top + outer-bottom
-    q4_raw = flux[:cy, cx:]
-    q4_flipped = q4_raw[::-1, :]
-    pad_q4_bottom = max(0, target_h - (q4_flipped.shape[0] + 1))
-    q4 = jnp.pad(q4_flipped, ((1, pad_q4_bottom), (0, 0)))
-
-    flux_stack = jnp.stack([q1, q2, q3, q4])
-    partial_images = jnp.einsum("qij,ijxy->qxy", flux_stack, psf_datacube)
-
-    img_q1 = partial_images[0]
-    img_q2 = jnp.fliplr(partial_images[1])
-    img_q3 = jnp.flipud(jnp.fliplr(partial_images[2]))
-    img_q4 = jnp.flipud(partial_images[3])
-
-    return img_q1 + img_q2 + img_q3 + img_q4
+    ny, nx = grid.shape
+    cx, cy = grid.center_x, grid.center_y
+    if (cx, cy) != ((nx - 1) / 2, (ny - 1) / 2):
+        raise ValueError("quarter datacubes require a geometric grid center")
+    sx, sy = math.ceil(cx), math.ceil(cy)
+    padx, pady = int(cx == sx), int(cy == sy)
+    quadrants = (
+        flux[sy:, sx:],
+        jnp.pad(flux[sy:, :sx][:, ::-1], ((0, 0), (padx, 0))),
+        jnp.pad(flux[:sy, :sx][::-1, ::-1], ((pady, 0), (padx, 0))),
+        jnp.pad(flux[:sy, sx:][::-1, :], ((pady, 0), (0, 0))),
+    )
+    images = jnp.einsum("qij,ijyx->qyx", jnp.stack(quadrants), psf_datacube)
+    return images[0] + images[1, :, ::-1] + images[2, ::-1, ::-1] + images[3, ::-1, :]
 
 
 class AbstractCoronagraph(eqx.Module):
-    """Abstract interface for coronagraph performance models.
+    """Optics on a native lod grid with its explicit wavelength/diameter frame.
 
-    Provides scalar performance curves (for ETC use), single-PSF
-    generation, and a sampling-explicit image contract (for image
-    simulation): ``stellar_map`` / ``source_psfs`` /
-    ``background_transmission`` / ``extended_scene`` serve maps at the
-    caller's requested pixel scale and shape, so backend-internal grids
-    never leak downstream. Implementations can be backed by pre-computed
-    interpolation tables (subclass :class:`AbstractTableCoronagraph`,
-    which serves the image contract from native-grid tables), physical
-    wavefront propagation, or analytical models.
-
-    All wavelength arguments are in nanometers throughout.
-    All separations and pixel scales are in lambda/D units -- the
-    contract is dimensionless optics; angle conversions are the
-    telescope primary's business.
+    Source coordinates and stellar diameters are in each native product's
+    lambda/D. Image output sampling is defined entirely by the target grid.
+    Wavelength selects a band; monochromatic tables have no further chromatic
+    dependence. time_d is always days from the scene epoch.
     """
 
-    pixel_scale_lod: AbstractVar[float]
-    """Native pixel scale in lambda/D per pixel."""
-
-    IWA: AbstractVar[float]
-    """Inner working angle in lambda/D."""
-
-    OWA: AbstractVar[float]
-    """Outer working angle in lambda/D."""
-
-    # ------------------------------------------------------------------
-    # Scalar interface -- consumed by jaxEDITH and yield estimators
-    # ------------------------------------------------------------------
+    grid: AbstractVar[PixelGrid]
+    outer_working_angle_lod: AbstractVar[float | None]
 
     @abc.abstractmethod
+    def curves(
+        self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"
+    ) -> PerformanceCurves:
+        """Return the prepared performance record for an explicit aperture rule."""
+
+    def _performance_band(self, wavelength_nm):
+        return self
+
     def throughput(
         self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
+        separation_lod,
+        wavelength_nm=None,
         *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Core (off-axis planet) throughput.
+        time_d=0.0,
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Weighted planet flux fraction, from the selected rule's record."""
+        return (
+            self._performance_band(wavelength_nm)
+            .curves(rule, leakage_rule=leakage_rule)
+            .evaluate("throughput", separation_lod)
+        )
 
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometers.
-            time_s: Time since mission start in seconds.
-
-        Returns:
-            Fractional throughput in [0, 1].
-        """
-        ...
-
-    @abc.abstractmethod
     def core_area(
         self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
+        separation_lod,
+        wavelength_nm=None,
         *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Photometric aperture area in (lambda/D)^2.
+        time_d=0.0,
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Aperture or noise-equivalent area in (lambda/D)^2."""
+        return (
+            self._performance_band(wavelength_nm)
+            .curves(rule, leakage_rule=leakage_rule)
+            .evaluate("core_area_lod2", separation_lod)
+        )
 
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometers.
-            time_s: Time since mission start in seconds.
-
-        Returns:
-            Core area in (lambda/D)^2.
-        """
-        ...
-
-    @abc.abstractmethod
-    def core_mean_intensity(
+    def leakage_fraction(
         self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
+        separation_lod,
+        wavelength_nm=None,
         *,
-        time_s: ArrayLike = 0.0,
-        stellar_diam_lod: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Mean stellar intensity within the photometric aperture.
+        time_d=0.0,
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Absolute stellar flux fraction integrated with the rule's weights."""
+        return (
+            self._performance_band(wavelength_nm)
+            .curves(rule, leakage_rule=leakage_rule)
+            .evaluate("leakage_fraction", separation_lod)
+        )
 
-        The fraction of the star's incident light per unit solid angle, in
-        (lambda/D)^-2, averaged over the aperture (azimuthally, for a
-        tabulated curve). It does not depend on any pixel grid: multiplied by
-        :meth:`core_area` it is the fraction of the star's light that leaks
-        into the photometric aperture. A backend that tabulates the fraction
-        per pixel divides by the pixel's solid angle in (lambda/D)^2.
-
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometers.
-            time_s: Time since mission start in seconds.
-            stellar_diam_lod: Stellar angular diameter in lambda/D at the
-                queried wavelength; 0 means a point star. Implementations
-                without a diameter model accept and ignore it.
-
-        Returns:
-            Mean stellar leakage intensity in (lambda/D)^-2.
-        """
-        ...
-
-    @abc.abstractmethod
-    def occulter_transmission(
+    def leakage_density_lod2(
         self,
-        separation_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
+        separation_lod,
+        wavelength_nm=None,
         *,
-        time_s: ArrayLike = 0.0,
-    ) -> ArrayLike:
-        """Off-axis (sky/zodi) transmission through the occulter.
+        time_d=0.0,
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Stellar flux fraction per (lambda/D)^2 under the named averaging rule."""
+        return (
+            self._performance_band(wavelength_nm)
+            .curves(rule, leakage_rule=leakage_rule)
+            .evaluate("leakage_density_lod2", separation_lod)
+        )
 
-        Args:
-            separation_lod: Angular separation in lambda/D.
-            wavelength_nm: Wavelength in nanometers.
-            time_s: Time since mission start in seconds.
-
-        Returns:
-            Fractional sky transmission in [0, 1].
-        """
-        ...
-
-    # ------------------------------------------------------------------
-    # Single-PSF image interface
-    # ------------------------------------------------------------------
-    #
-    # Subsumed by the sampling-explicit contract below (``stellar_map``
-    # additionally carries the stellar diameter; ``source_psfs`` the 2D
-    # position) but retained for existing single-PSF consumers.
-
-    @abc.abstractmethod
-    def on_axis_psf(
+    def raw_contrast(
         self,
-        wavelength_nm: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """On-axis (stellar leakage) PSF.
-
-        Returns the coronagraphic PSF for an on-axis point source,
-        normalized to unit stellar flux before the coronagraph. For a
-        finite stellar diameter use :meth:`stellar_map`, which carries
-        the diameter axis this signature lacks.
-
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-            pixel_scale_rad: Output pixel scale in radians/pixel.
-            npixels: Output array side length in pixels. Must be a
-                Python int (not a JAX array) as it determines the
-                output shape at compile time.
-
-        Returns:
-            2D float array of shape (npixels, npixels).
-        """
-        ...
-
-    @abc.abstractmethod
-    def off_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        separation_lod: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Off-axis PSF at a given angular separation.
-
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-            separation_lod: Source separation in lambda/D.
-            pixel_scale_rad: Output pixel scale in radians/pixel.
-            npixels: Output array side length in pixels. Must be a
-                Python int (not a JAX array) as it determines the
-                output shape at compile time.
-
-        Returns:
-            2D float array of shape (npixels, npixels).
-        """
-        ...
-
-    # ------------------------------------------------------------------
-    # Sampling-explicit image contract -- consumed by coronagraphoto
-    # ------------------------------------------------------------------
-    #
-    # Maps are served AT the requested target sampling (in practice the
-    # detector grid), so callers never see a backend's internal grid.
-
-    @abc.abstractmethod
-    def stellar_map(
-        self,
-        wavelength_nm: ArrayLike,
-        stellar_diam_lod: ArrayLike,
+        separation_lod,
+        wavelength_nm=None,
         *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """On-axis stellar leakage map at the requested sampling.
+        time_d=0.0,
+        rule=_DEFAULT_RULE,
+        leakage_rule="aperture_mean",
+    ):
+        """Rule-defined stellar intensity divided by planet intensity."""
+        return (
+            self._performance_band(wavelength_nm)
+            .curves(rule, leakage_rule=leakage_rule)
+            .evaluate("raw_contrast", separation_lod)
+        )
 
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-            stellar_diam_lod: Stellar angular diameter in lambda/D.
-            pixel_scale_lod: Target pixel scale in lambda/D per pixel.
-            shape: Target array shape (ny, nx).
+    def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
+        """Read dimensionless sky transmission when the record carries that profile.
 
-        Returns:
-            Map of shape ``shape`` in fraction of pre-coronagraph
-            stellar photons per target pixel.
+        Backends with a separate sky product may override this concrete helper.
         """
-        ...
+        return (
+            self._performance_band(wavelength_nm)
+            .curves()
+            .evaluate("occulter_transmission", separation_lod)
+        )
+
+    def on_axis_psf(self, wavelength_nm, grid: PixelGrid) -> Image:
+        """Point-star per_pixel stellar_flux_fraction on grid, shape (ny,nx)."""
+        return self.stellar_map(wavelength_nm, 0.0, grid=grid)
+
+    def off_axis_psf(self, wavelength_nm, separation_lod, grid: PixelGrid) -> Image:
+        """One +x source, per_pixel stellar_flux_fraction on grid, shape (ny,nx)."""
+        image = self.source_psfs(
+            wavelength_nm, jnp.atleast_1d(separation_lod), jnp.zeros(1), grid=grid
+        )
+        return replace(image, data=image.data[0], leading_axes=())
 
     @abc.abstractmethod
-    def source_psfs(
-        self,
-        wavelength_nm: ArrayLike,
-        x_lod: ArrayLike,
-        y_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Off-axis point-source PSFs at the requested sampling.
-
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-            x_lod: Source x-coordinates in lambda/D, shape (K,).
-            y_lod: Source y-coordinates in lambda/D, shape (K,).
-            pixel_scale_lod: Target pixel scale in lambda/D per pixel.
-            shape: Target array shape (ny, nx).
-
-        Returns:
-            Stack of shape (K, ny, nx) in fraction of source photons
-            per target pixel.
-        """
-        ...
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid) -> Image:
+        """Finite-star per_pixel stellar_flux_fraction, shape (ny,nx)."""
 
     @abc.abstractmethod
-    def background_transmission(
-        self,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Per-pixel transmission map for a spatially uniform background.
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid: PixelGrid) -> Image:
+        """Per_pixel stellar_flux_fraction PSFs, shape (source,ny,nx)."""
 
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-            pixel_scale_lod: Target pixel scale in lambda/D per pixel.
-            shape: Target array shape (ny, nx).
-
-        Returns:
-            Dimensionless transmission map of shape ``shape`` (value
-            semantics, not a flux).
-        """
-        ...
+    @abc.abstractmethod
+    def background_transmission(self, wavelength_nm, *, grid: PixelGrid) -> Image:
+        """Dimensionless transmission, per_unit_area to preserve sampled amplitude."""
 
     @abc.abstractmethod
     def extended_scene(
-        self,
-        scene_map: Array,
-        map_pixel_scale_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-        rotation_deg: ArrayLike = 0.0,
-    ) -> Array:
-        """Render an extended incoherent scene through the coronagraph.
+        self, scene_map: Image, wavelength_nm, *, grid: PixelGrid, rotation_deg=0.0
+    ) -> Image:
+        """Redistribute per-pixel scene flux; retain quantity on the target grid.
 
-        Args:
-            scene_map: Per-pixel source intensity in any units; the
-                output carries the same units per target pixel.
-            map_pixel_scale_lod: Pixel scale of ``scene_map`` in
-                lambda/D per pixel.
-            wavelength_nm: Wavelength in nanometers.
-            pixel_scale_lod: Target pixel scale in lambda/D per pixel.
-            shape: Target array shape (ny, nx).
-            rotation_deg: CCW rotation applied when mapping the scene
-                into the coronagraph frame (sky-to-detector roll).
-
-        Returns:
-            The scene redistributed by the per-position off-axis PSFs,
-            shape ``shape``.
+        scene_map is a 2D per_pixel Image. rotation_deg is a concrete CCW
+        angle in the scene's coordinate plane; orient grids for sky parity.
         """
-        ...
 
 
 class AbstractTableCoronagraph(AbstractCoronagraph):
-    """Base for coronagraphs backed by native-grid interpolation tables.
+    """Native Image tables resampled once through hwoutils.grids.resample."""
 
-    Declares the table SPI -- the native-grid maps a table backend holds
-    (``stellar_intens``, ``create_psfs``, ``sky_trans``, ``psf_shape``,
-    ``psf_datacube``) -- and serves the sampling-explicit image contract
-    from it with flux-conserving resamples to the requested target grid.
-    Scalar performance curves remain the subclass's business (a table
-    backend interpolates its own curve tables). Subclasses implementing
-    ``core_mean_intensity`` use ``stellar_diam_lod`` when their curve
-    tables provide a diameter axis; otherwise they accept and ignore it.
-    The image-map SPI does not prescribe a scalar curve table format.
+    sky_trans: AbstractVar[Image]
+    psf_datacube: AbstractVar[object]
 
-    The tables are monochromatic by construction (a YIP is a per-band
-    file), so the served maps ignore ``wavelength_nm`` beyond the
-    caller's own lambda/D sampling conversion; stack per-band instances
-    in a :class:`MultiBandCoronagraph` for a broadband model.
-    """
-
-    # -- table SPI ---------------------------------------------------------
-    # AbstractVar members may be satisfied by a dataclass field or a
-    # property (a concrete base property would shadow subclass fields).
-
-    psf_shape: AbstractVar[tuple]
-    """Native map shape (ny, nx) shared by the table members."""
-
-    sky_trans: AbstractVar[Array]
-    """Native-grid transmission map for a spatially uniform background."""
-
-    psf_datacube: AbstractVar[Array | None]
-    """Optional per-source-position PSF library for extended scenes.
-
-    ``None`` means the table was built without one; :meth:`extended_scene`
-    then raises. Full ``(ny, nx, ny, nx)`` and quarter-symmetric
-    ``(ny//2+1, nx//2+1, ny, nx)`` layouts are supported.
-    """
+    @property
+    def psf_shape(self):
+        """Native image shape (ny,nx)."""
+        return self.grid.shape
 
     @abc.abstractmethod
-    def stellar_intens(self, stellar_diam_lod: ArrayLike) -> Array:
-        """Native-grid stellar leakage map for a stellar angular diameter.
-
-        The diameter axis is a genuine table capability (a YIP tabulates
-        finite-size stellar maps); implementations interpolate over it.
-        """
-        ...
+    def stellar_intens(self, stellar_diam_lod) -> Image:
+        """Native per-pixel stellar fraction Image, retaining its stellar grid."""
 
     @abc.abstractmethod
-    def create_psfs(self, x_lod: ArrayLike, y_lod: ArrayLike) -> Array:
-        """Native-grid off-axis PSF stack at (x_lod, y_lod), shape (K, ny, nx)."""
-        ...
+    def create_psfs(self, x_lod, y_lod) -> Image:
+        """Native source PSFs Image with leading axis 'source'."""
 
-    # -- single-PSF interface served from the tables -----------------------
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+        """Per-pixel stellar fraction on grid, using the stellar product's frame."""
+        return _on_grid(self.stellar_intens(stellar_diam_lod), grid)
 
-    def on_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Point-source stellar leakage map on the native grid.
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+        """Per-pixel source fractions on grid; x indexes columns, y indexes rows."""
+        return _on_grid(self.create_psfs(x_lod, y_lod), grid)
 
-        Table backends serve their native sampling; the requested
-        ``pixel_scale_rad`` / ``npixels`` are accepted for interface
-        conformance only. Use :meth:`stellar_map` for target-sampled
-        maps and finite stellar diameters.
-        """
-        return self.stellar_intens(0.0)
+    def background_transmission(self, wavelength_nm, *, grid):
+        """Sample dimensionless transmission without multiplying by pixel area."""
+        return _on_grid(self.sky_trans, grid)
 
-    def off_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        separation_lod: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Off-axis PSF at +x separation on the native grid.
-
-        Sampling arguments are accepted for interface conformance only;
-        use :meth:`source_psfs` for target-sampled maps.
-        """
-        return self.create_psfs(jnp.atleast_1d(separation_lod), jnp.zeros(1))[0]
-
-    # -- sampling-explicit contract served from the tables -----------------
-
-    def stellar_map(
-        self,
-        wavelength_nm: ArrayLike,
-        stellar_diam_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Native ``stellar_intens`` resampled (flux-conserving) to target."""
-        return resample_flux(
-            self.stellar_intens(stellar_diam_lod),
-            self.pixel_scale_lod,
-            pixel_scale_lod,
-            shape,
-            0.0,
-        )
-
-    def source_psfs(
-        self,
-        wavelength_nm: ArrayLike,
-        x_lod: ArrayLike,
-        y_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Native ``create_psfs`` stack resampled (flux-conserving) to target."""
-
-        def _to_target(psf):
-            return resample_flux(psf, self.pixel_scale_lod, pixel_scale_lod, shape, 0.0)
-
-        return jax.vmap(_to_target)(self.create_psfs(x_lod, y_lod))
-
-    def background_transmission(
-        self,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Native ``sky_trans`` resampled to target with value semantics.
-
-        A transmission is a per-pixel value, not a flux, so the
-        pixel-area scaling of the flux-conserving resample is undone.
-        """
-        resampled = resample_flux(
-            self.sky_trans, self.pixel_scale_lod, pixel_scale_lod, shape, 0.0
-        )
-        return resampled * (self.pixel_scale_lod / pixel_scale_lod) ** 2
-
-    def extended_scene(
-        self,
-        scene_map: Array,
-        map_pixel_scale_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-        rotation_deg: ArrayLike = 0.0,
-    ) -> Array:
-        """Scene convolved with the ``psf_datacube`` PSF library.
-
-        Resamples the scene to the native source grid (applying the
-        sky-to-detector rotation), convolves via the full or
-        quarter-symmetric datacube, and resamples the result to the
-        target grid.
-
-        Raises:
-            ValueError: if :attr:`psf_datacube` is ``None``, or its
-                source grid matches neither the full nor the quarter
-                PSF shape.
-        """
-        datacube = self.psf_datacube
-        if datacube is None:
-            raise ValueError(
-                "extended_scene requires a coronagraph with a PSF "
-                f"datacube; got {type(self).__name__}.psf_datacube=None. "
-                "The table implementation convolves the scene with the "
-                "per-source-position PSFs and cannot run without it."
+    def extended_scene(self, scene_map, wavelength_nm, *, grid, rotation_deg=0.0):
+        """Convolve scene flux with full or grid-centred quarter PSF tables."""
+        if self.psf_datacube is None:
+            raise ValueError("extended_scene requires psf_datacube")
+        if scene_map.measure != "per_pixel" or scene_map.data.ndim != 2:
+            raise ValueError("scene_map must be a two-dimensional per_pixel Image")
+        if rotation_deg != 0:
+            angle = math.radians(rotation_deg)
+            c, s = math.cos(angle), math.sin(angle)
+            (a, b), (d, e) = scene_map.grid.basis
+            rotated = replace(
+                scene_map.grid,
+                basis=((c * a - s * d, c * b - s * e), (s * a + c * d, s * b + c * e)),
             )
-        ny, nx = self.psf_shape
-        src = resample_flux(
-            scene_map,
-            map_pixel_scale_lod,
-            self.pixel_scale_lod,
-            (ny, nx),
-            rotation_deg,
-        )
-        n_src_y, n_src_x = datacube.shape[:2]
-        if (n_src_y, n_src_x) == (ny, nx):
-            native = jnp.einsum("ij,ijxy->xy", src, datacube)
-        elif (n_src_y, n_src_x) == (ny // 2 + 1, nx // 2 + 1):
-            native = _convolve_quadrants(src, datacube)
+            scene_map = replace(scene_map, grid=rotated)
+        src = _on_grid(scene_map, self.grid).data
+        ny, nx = self.grid.shape
+        shape = self.psf_datacube.shape[:2]
+        if shape == (ny, nx):
+            native = jnp.einsum("ij,ijyx->yx", src, self.psf_datacube)
+        elif shape == ((ny + 1) // 2, (nx + 1) // 2):
+            native = _convolve_quadrants(src, self.psf_datacube, self.grid)
         else:
             raise ValueError(
-                "extended_scene: psf_datacube source-grid shape "
-                f"({n_src_y}, {n_src_x}) does not match either the full "
-                f"PSF shape ({ny}, {nx}) or the quarter PSF shape "
-                f"({ny // 2 + 1}, {nx // 2 + 1}). Coronagraphs must "
-                "publish a full or quarter datacube."
+                f"psf_datacube source shape {shape} must be full "
+                f"{(ny, nx)} or quarter {((ny + 1) // 2, (nx + 1) // 2)}"
             )
-        return resample_flux(native, self.pixel_scale_lod, pixel_scale_lod, shape, 0.0)
+        return _on_grid(
+            Image(native, self.grid, (), "per_pixel", scene_map.quantity), grid
+        )
 
 
 class AbstractScalarCoronagraph(AbstractCoronagraph):
-    """Base for ETC-only coronagraph models that lack 2D PSF generation.
+    """Analytic records for ETC use; image methods are explicitly zero placeholders.
 
-    Stubs out the single-PSF interface and the sampling-explicit image
-    contract with zero arrays so the class satisfies AbstractCoronagraph
-    without requiring a full optical model. Do NOT use this base for a
-    model that carries native-grid tables -- subclass
-    :class:`AbstractTableCoronagraph` instead, or the image pipeline
-    will silently render zeros.
-
-    Subclasses implementing ``core_mean_intensity`` accept and ignore
-    ``stellar_diam_lod`` unless they provide a stellar diameter model.
+    Constants describe one calibrated rule. Without a PSF, another aperture's
+    encircled flux cannot be inferred: subclasses supply records for each rule.
     """
 
-    def on_axis_psf(
-        self,
-        wavelength_nm: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Return a zero PSF (not implemented for scalar-only models)."""
-        return jnp.zeros((npixels, npixels))
+    grid: PixelGrid
+    _records: tuple
+    sky_transmission: float
+    outer_working_angle_lod: float | None
 
-    def off_axis_psf(
+    def __init__(
         self,
-        wavelength_nm: ArrayLike,
-        separation_lod: ArrayLike,
-        pixel_scale_rad: float,
-        npixels: int,
-    ) -> Array:
-        """Return a zero PSF (not implemented for scalar-only models)."""
-        return jnp.zeros((npixels, npixels))
-
-    def stellar_map(
-        self,
-        wavelength_nm: ArrayLike,
-        stellar_diam_lod: ArrayLike,
         *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Return a zero map (not implemented for scalar-only models)."""
-        return jnp.zeros(shape)
+        grid,
+        throughput_fraction,
+        aperture_area_lod2,
+        stellar_leakage_density_lod2,
+        sky_transmission=1.0,
+        rule=_DEFAULT_RULE,
+        outer_working_angle_lod=None,
+    ):
+        """Prepare one constant record from explicitly unit-labelled constants."""
+        if grid.unit != "lod":
+            raise ValueError("native grid must use lod")
+        self.grid = grid
+        self.sky_transmission = sky_transmission
+        self.outer_working_angle_lod = outer_working_angle_lod
+        tau, area, density = (
+            throughput_fraction,
+            aperture_area_lod2,
+            stellar_leakage_density_lod2,
+        )
+        self._records = (
+            PerformanceCurves(
+                [0.0],
+                grid.frame,
+                rule,
+                [tau],
+                [area],
+                [density * area],
+                [density],
+                [density * area / tau if tau > 0 else 1e20],
+                0.0 if tau > 0 else float("nan"),
+                min(grid.shape) * grid.step / 2,
+            ),
+        )
 
-    def source_psfs(
-        self,
-        wavelength_nm: ArrayLike,
-        x_lod: ArrayLike,
-        y_lod: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Return zero PSFs (not implemented for scalar-only models)."""
-        k = jnp.atleast_1d(jnp.asarray(x_lod)).shape[0]
-        return jnp.zeros((k, *shape))
+    @abc.abstractmethod
+    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+        """Read an eagerly prepared constant record; never build inside tracing."""
+        for record in self._records:
+            if record.rule == rule and record.leakage_rule == leakage_rule:
+                return record
+        raise ValueError("No prepared record for this rule and leakage_rule")
 
-    def background_transmission(
-        self,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-    ) -> Array:
-        """Return a zero map (not implemented for scalar-only models)."""
-        return jnp.zeros(shape)
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+        """Zero per-pixel stellar fraction; scalar models do not synthesize PSFs."""
+        return Image(
+            jnp.zeros(grid.shape), grid, (), "per_pixel", "stellar_flux_fraction"
+        )
 
-    def extended_scene(
-        self,
-        scene_map: Array,
-        map_pixel_scale_lod: ArrayLike,
-        wavelength_nm: ArrayLike,
-        *,
-        pixel_scale_lod: ArrayLike,
-        shape: tuple[int, int],
-        rotation_deg: ArrayLike = 0.0,
-    ) -> Array:
-        """Return a zero map (not implemented for scalar-only models)."""
-        return jnp.zeros(shape)
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+        """Zero source PSFs, shape (source,ny,nx), for a scalar-only model."""
+        k = jnp.atleast_1d(x_lod).shape[0]
+        return Image(
+            jnp.zeros((k, *grid.shape)),
+            grid,
+            ("source",),
+            "per_pixel",
+            "stellar_flux_fraction",
+        )
+
+    def background_transmission(self, wavelength_nm, *, grid):
+        """Zero sampled transmission placeholder for scalar-only models."""
+        return Image(jnp.zeros(grid.shape), grid, (), "per_unit_area", "transmission")
+
+    def extended_scene(self, scene_map, wavelength_nm, *, grid, rotation_deg=0.0):
+        """Zero scene-flux placeholder, retaining the input quantity."""
+        return Image(jnp.zeros(grid.shape), grid, (), "per_pixel", scene_map.quantity)
+
+
+class ScalarCoronagraph(AbstractScalarCoronagraph):
+    """Constant performance for a declared aperture rule, independent of wavelength.
+
+    The one-knot record has tau=throughput_fraction, A=aperture_area_lod2,
+    density=stellar_leakage_density_lod2, ell=density*A and C=ell/tau.
+    A positive constant curve first has positive throughput at zero (iwa=0).
+    Data extent describes the supplied grid; a design OWA is separate.
+    """
+
+    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+        """Select the constant record built by AbstractScalarCoronagraph."""
+        return super().curves(rule, leakage_rule=leakage_rule)
+
+    def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
+        """Constant dimensionless sky transmission."""
+        return jnp.full_like(jnp.asarray(separation_lod) * 1.0, self.sky_transmission)
 
 
 class MultiBandCoronagraph(AbstractCoronagraph):
-    """A broadband coronagraph as a stack of per-band models.
+    """Nearest-band dispatch at a concrete wavelength, with no spectral interpolation.
 
-    Every contract call dispatches to the band whose declared center is
-    nearest the requested ``wavelength_nm`` and forwards the call
-    unchanged. Because the contract is sampling-explicit in lambda/D,
-    chromatic magnification needs no handling here: the caller already
-    converts its detector grid to lambda/D at each wavelength.
-
-    The per-band models can be anything implementing
-    ``AbstractCoronagraph`` -- per-band YIP tables
-    (:class:`optixstuff.YippyCoronagraph`) or per-wavelength compiled
-    views of a live propagation model -- and can be mixed.
-
-    ``wavelength_nm`` must be concrete (a Python/NumPy scalar, not a
-    traced JAX value) at dispatch time: bands are distinct pytrees with
-    distinct shapes, so the selection is Python control flow. This
-    matches the per-bin structure of the rate pipeline, where the
-    wavelength is a static observation parameter.
-
-    Scalar metadata (``pixel_scale_lod`` / ``IWA`` / ``OWA``) is served
-    from the band nearest ``reference_wavelength_nm`` (default: the
-    first band).
+    curves() and grid use the reference band; band(wavelength_nm).curves(rule)
+    selects another record. Convenience curves keep their optional wavelength
+    argument and dispatch to that band's record. Monochromatic tables retain
+    their existing lack of additional wavelength dependence.
     """
 
     band_centers_nm: tuple = eqx.field(static=True)
@@ -640,136 +378,72 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     reference_wavelength_nm: float = eqx.field(static=True)
 
     def __init__(self, band_centers_nm, bands, *, reference_wavelength_nm=None):
-        """Build a multi-band stack.
-
-        Args:
-            band_centers_nm: Band center wavelengths in nanometers, one
-                per band.
-            bands: The per-band ``AbstractCoronagraph`` models, aligned
-                with ``band_centers_nm``.
-            reference_wavelength_nm: Wavelength whose band serves the
-                scalar metadata. Default: the first band's center.
-        """
-        centers = tuple(float(c) for c in band_centers_nm)
-        bands = tuple(bands)
-        if len(centers) != len(bands):
-            raise ValueError(
-                f"{len(centers)} band centers but {len(bands)} band models"
-            )
-        if not bands:
-            raise ValueError("MultiBandCoronagraph needs at least one band")
-        self.band_centers_nm = centers
-        self.bands = bands
+        """Store one model per band, selecting the first as reference by default."""
+        self.band_centers_nm = tuple(float(c) for c in band_centers_nm)
+        self.bands = tuple(bands)
+        if not self.bands or len(self.bands) != len(self.band_centers_nm):
+            raise ValueError("Need one or more bands, with one center per band")
         self.reference_wavelength_nm = float(
-            centers[0] if reference_wavelength_nm is None else reference_wavelength_nm
+            self.band_centers_nm[0]
+            if reference_wavelength_nm is None
+            else reference_wavelength_nm
         )
 
-    def band(self, wavelength_nm) -> AbstractCoronagraph:
-        """The band model whose center is nearest ``wavelength_nm``."""
-        wl = float(wavelength_nm)
+    def band(self, wavelength_nm):
+        """Return the nearest band; wavelength is a concrete host scalar."""
         index = min(
-            range(len(self.band_centers_nm)),
-            key=lambda i: abs(self.band_centers_nm[i] - wl),
+            range(len(self.bands)),
+            key=lambda i: abs(self.band_centers_nm[i] - float(wavelength_nm)),
         )
         return self.bands[index]
 
-    # -- scalar metadata from the reference band ---------------------------
+    def _performance_band(self, wavelength_nm):
+        return self.band(
+            self.reference_wavelength_nm if wavelength_nm is None else wavelength_nm
+        )
 
     @property
-    def pixel_scale_lod(self) -> float:
-        """Native pixel scale of the reference band."""
-        return self.band(self.reference_wavelength_nm).pixel_scale_lod
+    def grid(self):
+        """Reference band's native grid."""
+        return self.band(self.reference_wavelength_nm).grid
 
     @property
-    def IWA(self) -> float:
-        """Inner working angle of the reference band."""
-        return self.band(self.reference_wavelength_nm).IWA
+    def outer_working_angle_lod(self):
+        """Reference band's design outer working angle, or None when unknown."""
+        return self.band(self.reference_wavelength_nm).outer_working_angle_lod
 
-    @property
-    def OWA(self) -> float:
-        """Outer working angle of the reference band."""
-        return self.band(self.reference_wavelength_nm).OWA
-
-    # -- every interface dispatches on wavelength --------------------------
-
-    def throughput(self, separation_lod, wavelength_nm, *, time_s=0.0):
-        """Core throughput from the nearest band."""
-        return self.band(wavelength_nm).throughput(
-            separation_lod, wavelength_nm, time_s=time_s
+    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+        """Reference band's cached performance record."""
+        return self.band(self.reference_wavelength_nm).curves(
+            rule, leakage_rule=leakage_rule
         )
 
-    def core_area(self, separation_lod, wavelength_nm, *, time_s=0.0):
-        """Photometric aperture area from the nearest band."""
-        return self.band(wavelength_nm).core_area(
-            separation_lod, wavelength_nm, time_s=time_s
+    def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
+        """Selected band's sky transmission."""
+        return self._performance_band(wavelength_nm).occulter_transmission(
+            separation_lod, wavelength_nm, time_d=time_d
         )
 
-    def core_mean_intensity(
-        self, separation_lod, wavelength_nm, *, time_s=0.0, stellar_diam_lod=0.0
-    ):
-        """Mean stellar leakage from the nearest band at the given diameter."""
-        return self.band(wavelength_nm).core_mean_intensity(
-            separation_lod,
-            wavelength_nm,
-            time_s=time_s,
-            stellar_diam_lod=stellar_diam_lod,
-        )
-
-    def occulter_transmission(self, separation_lod, wavelength_nm, *, time_s=0.0):
-        """Sky transmission from the nearest band."""
-        return self.band(wavelength_nm).occulter_transmission(
-            separation_lod, wavelength_nm, time_s=time_s
-        )
-
-    def on_axis_psf(self, wavelength_nm, pixel_scale_rad, npixels):
-        """On-axis PSF from the nearest band."""
-        return self.band(wavelength_nm).on_axis_psf(
-            wavelength_nm, pixel_scale_rad, npixels
-        )
-
-    def off_axis_psf(self, wavelength_nm, separation_lod, pixel_scale_rad, npixels):
-        """Off-axis PSF from the nearest band."""
-        return self.band(wavelength_nm).off_axis_psf(
-            wavelength_nm, separation_lod, pixel_scale_rad, npixels
-        )
-
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, pixel_scale_lod, shape):
-        """Stellar leakage map from the nearest band."""
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+        """Selected band's stellar Image on grid."""
         return self.band(wavelength_nm).stellar_map(
-            wavelength_nm,
-            stellar_diam_lod,
-            pixel_scale_lod=pixel_scale_lod,
-            shape=shape,
+            wavelength_nm, stellar_diam_lod, grid=grid
         )
 
-    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, pixel_scale_lod, shape):
-        """Off-axis PSF stack from the nearest band."""
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+        """Selected band's source Images on grid."""
         return self.band(wavelength_nm).source_psfs(
-            wavelength_nm, x_lod, y_lod, pixel_scale_lod=pixel_scale_lod, shape=shape
+            wavelength_nm, x_lod, y_lod, grid=grid
         )
 
-    def background_transmission(self, wavelength_nm, *, pixel_scale_lod, shape):
-        """Background transmission map from the nearest band."""
+    def background_transmission(self, wavelength_nm, *, grid):
+        """Selected band's dimensionless transmission Image on grid."""
         return self.band(wavelength_nm).background_transmission(
-            wavelength_nm, pixel_scale_lod=pixel_scale_lod, shape=shape
+            wavelength_nm, grid=grid
         )
 
-    def extended_scene(
-        self,
-        scene_map,
-        map_pixel_scale_lod,
-        wavelength_nm,
-        *,
-        pixel_scale_lod,
-        shape,
-        rotation_deg=0.0,
-    ):
-        """Extended-scene render from the nearest band."""
+    def extended_scene(self, scene_map, wavelength_nm, *, grid, rotation_deg=0.0):
+        """Selected band's scene redistribution on grid."""
         return self.band(wavelength_nm).extended_scene(
-            scene_map,
-            map_pixel_scale_lod,
-            wavelength_nm,
-            pixel_scale_lod=pixel_scale_lod,
-            shape=shape,
-            rotation_deg=rotation_deg,
+            scene_map, wavelength_nm, grid=grid, rotation_deg=rotation_deg
         )

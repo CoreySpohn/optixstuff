@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from math import pi
 from pathlib import Path
 
 import equinox as eqx
@@ -58,8 +59,9 @@ class OpticalPath(eqx.Module):
         cls,
         coronagraph: AbstractCoronagraph | str | Path,
         *,
-        diameter_m: float = 6.0,
+        circumscribed_diameter_m: float = 6.0,
         obscuration: float = 0.0,
+        inscribed_diameter_m: float | None = None,
         attenuating_throughput: float = 1.0,
         detector_shape: tuple[int, int] = (512, 512),
         pixel_scale_arcsec: float = 0.01,
@@ -84,8 +86,10 @@ class OpticalPath(eqx.Module):
                 - a ``yippy.EqxCoronagraph`` instance (wrapped via
                   ``YippyCoronagraph(backend=...)`` so callers can keep
                   using existing yippy code without rebuilding).
-            diameter_m: Primary mirror diameter [m]. Default ``6.0`` (HWO
+            circumscribed_diameter_m: Primary mirror diameter [m]. Default ``6.0`` (HWO
                 EAC1 baseline).
+            inscribed_diameter_m: Explicit inscribed diameter; defaults to the
+                circular outer diameter.
             obscuration: Linear central-obscuration fraction. Default 0.
             attenuating_throughput: Combined throughput of the optical
                 chain (one :class:`ConstantThroughput`). Default
@@ -120,7 +124,14 @@ class OpticalPath(eqx.Module):
             coro = YippyCoronagraph(backend=coronagraph)
 
         return cls(
-            primary=SimplePrimary(diameter_m=diameter_m, obscuration=obscuration),
+            primary=SimplePrimary(
+                circumscribed_diameter_m=circumscribed_diameter_m,
+                inscribed_diameter_m=inscribed_diameter_m,
+                collecting_area_m2=pi
+                * circumscribed_diameter_m**2
+                / 4
+                * (1 - obscuration**2),
+            ),
             attenuating_elements=(
                 ConstantThroughput(throughput=attenuating_throughput, name="optics"),
             ),

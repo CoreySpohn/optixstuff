@@ -4,30 +4,9 @@ from __future__ import annotations
 
 import equinox as eqx
 import jax.numpy as jnp
+from conftest import scalar_coronagraph
 
 import optixstuff as ox
-from optixstuff.coronagraph import AbstractScalarCoronagraph
-
-
-class _MockCoro(AbstractScalarCoronagraph):
-    """Minimal scalar-only coronagraph for factory + repr tests."""
-
-    pixel_scale_lod: float = 0.5
-    IWA: float = 2.0
-    OWA: float = 30.0
-
-    def throughput(self, sep, wl, *, time_s=0.0):
-        return 0.5
-
-    def core_area(self, sep, wl, *, time_s=0.0):
-        return 1.0
-
-    def core_mean_intensity(self, sep, wl, *, time_s=0.0, stellar_diam_lod=0.0):
-        """Return constant leakage; stellar diameter is accepted and ignored."""
-        return 1e-10
-
-    def occulter_transmission(self, sep, wl, *, time_s=0.0):
-        return 1.0
 
 
 class TestReprs:
@@ -36,7 +15,7 @@ class TestReprs:
     def test_simple_primary(self, simple_primary):
         s = repr(simple_primary)
         assert "SimplePrimary" in s
-        assert "D=6" in s
+        assert "D_circ=6" in s
         assert "area=" in s
 
     def test_simple_detector(self, simple_detector):
@@ -94,7 +73,7 @@ class TestReprs:
                 ox.ConstantThroughput(throughput=0.9, name="m1"),
                 ox.ConstantThroughput(throughput=0.8, name="m2"),
             ),
-            coronagraph=_MockCoro(),
+            coronagraph=scalar_coronagraph(),
             detector=simple_detector,
         )
         s = repr(path)
@@ -114,7 +93,7 @@ class TestReprs:
         path = ox.OpticalPath(
             primary=simple_primary,
             attenuating_elements=(),
-            coronagraph=_MockCoro(),
+            coronagraph=scalar_coronagraph(),
             detector=simple_detector,
         )
         s = repr(path)
@@ -125,13 +104,13 @@ class TestFromDefaultSetup:
     """Verify the convenience factory builds a usable OpticalPath."""
 
     def test_returns_optical_path_with_defaults(self):
-        path = ox.OpticalPath.from_default_setup(_MockCoro())
+        path = ox.OpticalPath.from_default_setup(scalar_coronagraph())
         assert isinstance(path, ox.OpticalPath)
         assert isinstance(path.primary, ox.SimplePrimary)
         assert isinstance(path.detector, ox.Detector)
         assert len(path.attenuating_elements) == 1
         # Defaults applied.
-        assert path.primary.diameter_m == 6.0
+        assert path.primary.diameter("circumscribed") == 6.0
         assert path.detector.shape == (512, 512)
         assert path.detector.pixel_scale_arcsec == 0.01
         assert float(path.detector.quantum_efficiency(550.0)) == float(jnp.asarray(0.9))
@@ -140,8 +119,8 @@ class TestFromDefaultSetup:
 
     def test_kwargs_override(self):
         path = ox.OpticalPath.from_default_setup(
-            _MockCoro(),
-            diameter_m=8.0,
+            scalar_coronagraph(),
+            circumscribed_diameter_m=8.0,
             obscuration=0.1,
             attenuating_throughput=0.5,
             detector_shape=(256, 256),
@@ -151,8 +130,8 @@ class TestFromDefaultSetup:
             n_channels=2.0,
             npix_multiplier=3.0,
         )
-        assert path.primary.diameter_m == 8.0
-        assert path.primary.obscuration == 0.1
+        assert path.primary.diameter("circumscribed") == 8.0
+        assert path.primary.collecting_area_m2 == 3.141592653589793 * 16 * 0.99
         assert path.detector.shape == (256, 256)
         assert path.detector.pixel_scale_arcsec == 0.02
         assert float(path.detector.quantum_efficiency(550.0)) == float(
@@ -165,65 +144,29 @@ class TestFromDefaultSetup:
         assert path.attenuating_elements[0].throughput == 0.5
 
     def test_accepts_coronagraph_instance(self):
-        coro = _MockCoro()
+        coro = scalar_coronagraph()
         path = ox.OpticalPath.from_default_setup(coro)
         # Same object reused, no copy/wrap.
         assert path.coronagraph is coro
 
     def test_path_is_a_pytree(self):
-        path = ox.OpticalPath.from_default_setup(_MockCoro())
+        path = ox.OpticalPath.from_default_setup(scalar_coronagraph())
         # eqx.tree_at can walk it (sanity check that nothing is non-pytree).
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None
 
-    def test_accepts_yippy_eqx_coronagraph(self):
+    def test_accepts_yippy_eqx_coronagraph(self, tmp_path):
         """A bare ``yippy.EqxCoronagraph`` is wrapped via the ``backend`` kwarg.
 
         Catches the regression where any non-``AbstractCoronagraph`` /
         non-path argument was unconditionally ``str()``-ified and fed
         to ``YippyCoronagraph`` as a path.
         """
+        from conftest import synthetic_coronagraph
+
         from optixstuff.yippy_coronagraph import YippyCoronagraph
 
-        # Build a minimal yippy.EqxCoronagraph-shaped duck. We don't need
-        # yippy installed for this -- ``YippyCoronagraph(backend=...)``
-        # stores whatever it's given on ``_backend``, so any object that
-        # quacks works.
-        class _Duck:
-            pixel_scale_lod = 0.5
-            psf_shape = (32, 32)
-            IWA = 2.0
-            OWA = 30.0
-            psf_datacube = None
-            sky_trans = jnp.ones((32, 32))
-
-            def throughput(self, *args, **kwargs):
-                return 0.5
-
-            def core_area(self, *args, **kwargs):
-                return 1.0
-
-            def core_mean_intensity(self, *args, **kwargs):
-                return 1e-10
-
-            def occulter_transmission(self, *args, **kwargs):
-                return 1.0
-
-            def stellar_intens(self, diam_lod):
-                return jnp.ones(self.psf_shape)
-
-            def create_psf(self, *args, **kwargs):
-                return jnp.ones(self.psf_shape)
-
-            def create_psfs(self, x_lod, y_lod):
-                return jnp.zeros((x_lod.shape[0], *self.psf_shape))
-
-            def noise_floor_ayo(self, *args, **kwargs):
-                return 1e-10
-
-            def raw_contrast(self, *args, **kwargs):
-                return 1e-10
-
-        path = ox.OpticalPath.from_default_setup(_Duck())
+        backend = synthetic_coronagraph(tmp_path)._backend
+        path = ox.OpticalPath.from_default_setup(backend)
         assert isinstance(path.coronagraph, YippyCoronagraph)
-        assert isinstance(path.coronagraph._backend, _Duck)
+        assert path.coronagraph._backend is backend

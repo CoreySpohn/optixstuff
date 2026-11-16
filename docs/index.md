@@ -59,11 +59,11 @@ from optixstuff import (
     ConstantThroughput,
     SpectralThroughput,
 )
-from yippy import EqxCoronagraph
+from optixstuff import YippyCoronagraph
 
-primary = SimplePrimary(diameter_m=6.0)
+primary = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
 detector = IdealDetector(pixel_scale_arcsec=0.01, shape=(512, 512))
-coronagraph = EqxCoronagraph("path/to/yip")
+coronagraph = YippyCoronagraph("path/to/yip")
 throughput = ConstantThroughput(throughput=0.85)
 
 path = OpticalPath(

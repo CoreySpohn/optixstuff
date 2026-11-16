@@ -57,6 +57,30 @@ Optical elements and coronagraphs accept fidelity axes — **wavelength**, **pos
 future high-fidelity models (wavelength-dependent coatings, position-dependent vignetting,
 time-dependent detector degradation) can use them without breaking the interface.
 
+### Primary geometry and coronagraph grids
+
+Primaries expose `diameter("circumscribed")`, `diameter("inscribed")`, and
+`collecting_area_m2`. Build a lambda/D frame with `primary.frame(500.0)`.
+`SimplePrimary` takes both diameters and collecting area as keyword arguments;
+`SegmentedPrimary` derives them from segment size, gap, and ring count.
+
+Coronagraph images use `hwoutils.grids.Image` and an explicit target `PixelGrid`.
+Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
+between pixels. For example, `coro.off_axis_psf(500.0, 3.0, coro.grid)` returns
+per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
+`extended_scene(scene_image, 500.0, grid=target)` retains the scene quantity.
+
+`coro.curves(Circular(0.7))` is the single performance record for that aperture.
+Import `Circular` from `yippy`; prepare additional rules with
+`YippyCoronagraph(backend=backend, rules=(Circular(1.0),))` before JIT.
+Records contain throughput, core area, stellar leakage fraction, leakage density,
+raw contrast, `iwa_lod`, and `data_extent_lod`. A known design limit is separately
+named `outer_working_angle_lod`. `ScalarCoronagraph` stores calibrated constants
+for one declared aperture; its image methods return zero placeholders.
+`MultiBandCoronagraph` selects the nearest band without spectral interpolation.
+Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
+exposure durations remain seconds.
+
 ### Detector chain
 
 Readers supply `PhotonRates` in photons/s/nm at shared quadrature nodes.
