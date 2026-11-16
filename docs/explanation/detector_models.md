@@ -1,155 +1,100 @@
 # Detector models
 
-optixstuff ships two concrete detector implementations and three
-noise-generator primitives. This page explains when to reach for
-each.
+All detector calculations follow one chain:
+`PhotonRates -> detector.electrons -> ElectronRates -> moments or draw`.
+Readers supply the six source terms in photons/s/nm at quadrature nodes,
+with shape `(W, Q)` for apertures or `(W, Q, ny, nx)` for images.
+Absent terms may be scalar zero. The terms are `planet`, `star_leakage`,
+`local_zodi`, `exozodi`, `thermal`, and `stellar_companions`.
 
-## The two detectors
+`PhotonRates.integrate(quadrature)` returns `IntegratedPhotonRates`, a
+record in photons/s with the same fields and shape `(W, *spatial)`.
+It contains no detector effects. `total()` sums the fields with broadcasting.
+`PhotonRates.zeros((W, Q, ny, nx))` allocates six zero integrands.
 
-### `IdealDetector`
+## Hardware and yield
 
-```python
-from optixstuff import IdealDetector
-
-detector = IdealDetector(
-    pixel_scale_arcsec=0.01,  # arcsec/pixel
-    shape=(512, 512),  # detector grid
-    quantum_efficiency=1.0,  # constant QE (default)
-    dark_current_rate_e_per_s=0.0,  # no dark current
-    read_noise_e=0.0,  # no read noise
-    clock_induced_charge_rate_e_per_frame=0.0,  # no clock-induced charge
-)
-```
-
-**Use for**: broadband imaging studies where wavelength-dependent QE
-variation and detector noise contributions are negligible. Sandbox /
-debugging / first-pass forward modeling.
-
-All noise sources default to zero -- `IdealDetector` models a pure
-photon counter.
-
-### `Detector`
+`IdealDetector` has QE one, zero dark current, zero clock-induced charge
+(CIC), zero read noise, and excess noise factor squared one. Its draw is
+only a Poisson draw of the supplied electron rate times live time.
+`Detector` supports constant `qe` or a measured `qe_curve`, interpolated
+linearly and zero outside its wavelength range. Both constructors are
+keyword-only. `quantum_efficiency(wavelength_nm)` returns an array with
+the same shape as the input, including for constant QE.
 
 ```python
-from optixstuff import Detector
+import jax
+import jax.numpy as jnp
+from hwoutils.spectral import Band, Quadrature
+from optixstuff import Detector, PhotonRates, frames_for_time
 
+quadrature = Quadrature.build([Band(500.0, 600.0)], knots_nm=None, order=3)
+rates = PhotonRates(planet=jnp.ones((1, 3, 2, 2)))
 detector = Detector(
     pixel_scale_arcsec=0.01,
-    shape=(512, 512),
-    quantum_efficiency=0.9,
-    dark_current_rate_e_per_s=1e-4,  # e/s/pixel
-    read_noise_e=3.0,  # e RMS per read
-    clock_induced_charge_rate_e_per_frame=1e-3,  # e per frame per pixel
-    frame_time_s=300.0,  # seconds per readout frame
+    shape=(2, 2),
+    qe_curve=([400.0, 600.0, 800.0], [0.2, 0.8, 0.4]),
+    survival_fraction=0.9,
+    dark_current_e_per_pixel_s=1e-4,
+    clock_induced_charge_e_per_pixel_frame=1e-3,
+    read_noise_e_rms=3.0,
+    excess_noise_factor_sq=1.0,
     read_time_s=0.05,
-    dqe=1.0,  # QE degradation factor, multiplies QE (1 = none)
+    overlaps_read=False,
 )
+electrons = detector.electrons(rates, quadrature)
+plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
+mean, variance = detector.mean_and_variance(electrons, plan)
+image = detector.draw(jax.random.key(0), electrons, plan)
 ```
 
-**Use for**: realistic noise budgets, mission yield calculations,
-end-to-end performance simulations.
+`electrons` is the only place detector yield is applied: it integrates
+`survival_fraction * quantum_efficiency(nodes_nm) * rates` with the
+quadrature's dimensional weights in nm. Yield is applied before integration,
+so a band-mean QE cannot replace the spectral calculation. The result has
+shape `(W, *spatial)` in electrons/s. Survival is the fraction of
+photoelectrons that survive to be counted; its neutral value is one.
+Concrete survival or QE outside `[0, 1]` raises at construction.
 
-`Detector` uses **all** of its noise-source fields. Dark current and
-CIC enter as Poisson processes; read noise is Gaussian. Compose with
-the detector's `readout` method or with the standalone noise
-primitives (below).
+## Frames and observatory time
 
-### Same schema, different behavior
+Frame duration belongs to the observation's `FramePlan(frame_time_s, n_frames)`.
+`frames_for_time` rounds requested live time up to whole frames. Ratios
+within relative tolerance `max(1e-12, 4 * eps)` of a positive integer count
+as exact multiples. Every positive sub-frame request takes one frame;
+zero time takes zero. Counts remain floats under JIT and have zero derivative.
+The final frame collects for its entire duration.
 
-`IdealDetector` and `Detector` accept the same field signature. The
-difference is in the methods: `IdealDetector` uses constant QE
-(ignores wavelength) and skips noise contributions when rates are
-zero. `Detector` uses every field and returns the full physical noise
-budget. Use `Detector` whenever you want realistic noise.
+`plan.live_time_s = n_frames * frame_time_s` is collecting time.
+`plan.occupied_time_s(detector)` additionally pays one `read_time_s` per
+frame unless `overlaps_read=True`, for a sensor that collects during readout.
 
-## The noise primitives
+## Moments and sampling
 
-Three standalone functions for direct noise simulation:
+For total electron rate E, effective aperture size n_pix, live time t,
+frame count N, dark current d, CIC c, read RMS sigma_r, and excess noise F2:
 
-```python
-import jax
-
-from optixstuff import (
-    dark_current,
-    clock_induced_charge,
-    read_noise,
-)
-
-# Dark current: Poisson with mean = rate * exposure_time_s
-dark_e = dark_current(
-    dark_current_rate_e_per_s=1e-4,  # e/s/pixel
-    exposure_time_s=3600.0,  # seconds
-    shape=(512, 512),
-    prng_key=jax.random.PRNGKey(0),
-)
-
-# Clock-induced charge: Poisson per-frame, scaled by num_frames
-cic_e = clock_induced_charge(
-    clock_induced_charge_rate_e_per_frame=1e-3,  # e/frame/pixel
-    num_frames=12.0,
-    shape=(512, 512),
-    prng_key=jax.random.PRNGKey(1),
-)
-
-# Read noise: Gaussian per-frame, RMS-summed across frames
-read_e = read_noise(
-    read_noise_e=3.0,  # e RMS per read
-    num_frames=12.0,
-    shape=(512, 512),
-    prng_key=jax.random.PRNGKey(2),
-)
+```text
+mean = (E + n_pix*d)*t + n_pix*c*N
+variance = F2*mean + n_pix*sigma_r^2*N
 ```
 
-These are **noise contributions** (additive to a source readout), not
-full readouts. Each returns the per-pixel noise electrons for one
-exposure, ready to be summed into a complete frame alongside the
-source-readout contributions from coronagraphoto.
+`mean_and_variance(electrons, plan, n_pix=1.0, sum_bands=False)` returns
+two arrays of shape `(W, *spatial)`. With `sum_bands=True`, it sums only
+axis zero and returns shape `spatial`, scalar for an aperture. Image
+pixels use `n_pix=1`; aperture readers supply their effective pixel count.
+Independent bands pay their own detector noise.
 
-## Composing a realistic frame
+`draw(key, electrons, plan)` samples per pixel, using independent subkeys
+for Poisson source plus dark, Poisson CIC, gain, and Gaussian read noise.
+With F2=1 it adds the two Poisson counts and read noise. With F2>1, let
+K be the sum of the Poisson counts and theta=F2-1. The gain output is zero
+when K=0, otherwise Gamma(shape=K/theta, scale=theta). Its conditional
+mean is K and variance is K*theta. Thus E[G]=lambda and
+Var[G]=lambda + lambda*theta=F2*lambda. Read variance is added after gain.
+This is an analog gain model for independent electrons; it omits
+thresholding, saturation, gain-register geometry, and correlated noise.
 
-This example requires a configured optical path, scene sources, and exposure parameters.
-
-```python notest
-import jax
-from optixstuff import dark_current, clock_induced_charge, read_noise
-from coronagraphoto import star_readout, planet_readout
-
-keys = jax.random.split(jax.random.PRNGKey(0), 6)
-
-# Sources (Poisson realizations of the count rates)
-star_e = star_readout(star, optical_path, keys[0], ...)
-planet_e = planet_readout(planet, optical_path, keys[1], ...)
-
-# Detector noise contributions
-shape = optical_path.detector.shape
-dark_e = dark_current(
-    optical_path.detector.dark_current_rate_e_per_s,
-    exposure_time_s,
-    shape,
-    keys[2],
-)
-cic_e = clock_induced_charge(
-    optical_path.detector.clock_induced_charge_rate_e_per_frame,
-    num_frames,
-    shape,
-    keys[3],
-)
-read_e = read_noise(
-    optical_path.detector.read_noise_e,
-    num_frames,
-    shape,
-    keys[4],
-)
-
-# Compose
-frame = star_e + planet_e + dark_e + cic_e + read_e
-```
-
-For most use cases the detector's high-level `readout` method handles
-this composition for you; the primitives are exposed for advanced use
-(custom noise budgets, sensitivity studies, partial-noise traces).
-
-## See also
-
-- [Architecture](architecture) -- where detectors fit in the
-  optixstuff abstraction hierarchy
+Combine all source contributions before drawing once, so the detector
+noise is paid once for each band and pixel. QE and survival never act
+again on `ElectronRates`.

@@ -3,7 +3,7 @@
 Each leaf class in optixstuff (primary, detector, throughput elements,
 coronagraphs) defines its own one-line ``__repr__``; the
 :class:`OpticalPath` aggregator uses :func:`indent` to nest the
-children one level deeper. Same pattern as ``skyscapes._repr``.
+children one level deeper.
 """
 
 from __future__ import annotations

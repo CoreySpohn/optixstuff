@@ -1,6 +1,5 @@
 """Tests for optixstuff hardware abstractions."""
 
-import jax
 import jax.numpy as jnp
 import pytest
 
@@ -44,160 +43,6 @@ class TestConstantThroughputElement:
         arr = jnp.ones((10, 10))
         result = throughput_element.apply(arr, 500.0)
         assert jnp.allclose(result, 0.8 * jnp.ones((10, 10)))
-
-
-class TestSimpleDetector:
-    def test_quantum_efficiency(self, simple_detector):
-        assert simple_detector.quantum_efficiency == pytest.approx(0.9)
-
-    def test_dark_current_rate(self, simple_detector):
-        assert simple_detector.dark_current_rate_e_per_s == pytest.approx(1e-4)
-
-    def test_read_noise(self, simple_detector):
-        assert simple_detector.read_noise_e == pytest.approx(3.0)
-
-    def test_pixel_scale(self, simple_detector):
-        assert simple_detector.pixel_scale_arcsec == pytest.approx(0.010)
-
-    def test_shape(self, simple_detector):
-        assert simple_detector.shape == (100, 100)
-
-    def test_readout_runs(self, simple_detector):
-        """Verify readout produces output with correct shape."""
-        image_rate = jnp.ones((100, 100)) * 10.0
-        key = jax.random.PRNGKey(42)
-        result = simple_detector.readout(image_rate, 100.0, key)
-        assert result.shape == (100, 100)
-
-    def test_readout_positive_rate_produces_counts(self, simple_detector):
-        """With bright source, result should have nonzero counts."""
-        image_rate = jnp.ones((100, 100)) * 1000.0
-        key = jax.random.PRNGKey(0)
-        result = simple_detector.readout(image_rate, 100.0, key)
-        assert jnp.sum(result) > 0
-
-    def test_readout_source_electrons_runs(self, simple_detector):
-        """readout_source_electrons produces (ny, nx) output for a bright source."""
-        image_rate = jnp.ones((100, 100)) * 100.0
-        key = jax.random.PRNGKey(0)
-        result = simple_detector.readout_source_electrons(image_rate, 10.0, key)
-        assert result.shape == (100, 100)
-        assert jnp.all(result >= 0)
-
-    def test_readout_source_electrons_applies_qe(self):
-        """Mean counts should equal rate * t * QE for a bright enough source."""
-        det = ox.IdealDetector(
-            pixel_scale_arcsec=0.010,
-            shape=(32, 32),
-            quantum_efficiency=0.5,
-            dark_current_rate_e_per_s=0.0,
-        )
-        image_rate = jnp.ones((32, 32)) * 10000.0
-        key = jax.random.PRNGKey(1)
-        result = det.readout_source_electrons(image_rate, 10.0, key)
-        # Expected mean = 10000 * 10 * 0.5 = 50000; tolerance is loose for shot noise
-        assert jnp.isclose(float(jnp.mean(result)), 50000.0, rtol=0.02)
-
-    def test_readout_noise_electrons_dark_only(self, simple_detector):
-        """IdealDetector noise is dark current only -- no CIC, no read."""
-        key = jax.random.PRNGKey(2)
-        result = simple_detector.readout_noise_electrons(1000.0, key)
-        assert result.shape == (100, 100)
-        # Dark rate is 1e-4 e/s/pix -> mean ~0.1 e/pix for t=1000s
-        assert float(jnp.mean(result)) < 1.0
-
-    def test_readout_source_electrons_thinned_matches_chain_distribution(self):
-        """Thinned Poisson and the explicit Binomial(Poisson, QE) chain
-        produce identical marginal distributions (Poisson thinning theorem).
-
-        Verifies that ``readout_source_electrons_thinned`` is a valid
-        drop-in for the explicit chain in performance-critical paths.
-        Compares sample mean + variance across a large 200x200 image with
-        independent keys.
-        """
-        det = ox.IdealDetector(
-            pixel_scale_arcsec=0.010,
-            shape=(200, 200),
-            quantum_efficiency=0.7,
-            dark_current_rate_e_per_s=0.0,
-        )
-        # Mid-range mean so both Poisson and Binomial use their dense paths
-        # (avoids degenerate small-mean special cases).
-        image_rate = jnp.ones((200, 200)) * 1000.0
-        t_exp = 10.0
-        # Use a different key per draw so independence holds.
-        k_chain = jax.random.PRNGKey(101)
-        k_thinned = jax.random.PRNGKey(202)
-
-        out_chain = det.readout_source_electrons(image_rate, t_exp, k_chain)
-        out_thinned = det.readout_source_electrons_thinned(image_rate, t_exp, k_thinned)
-
-        # Theoretical: Poisson(lambda * QE) -> mean = var = 1000 * 10 * 0.7 = 7000.
-        expected_mean = 1000.0 * 10.0 * 0.7
-        for label, out in [("chain", out_chain), ("thinned", out_thinned)]:
-            mean = float(jnp.mean(out))
-            var = float(jnp.var(out))
-            assert jnp.isclose(mean, expected_mean, rtol=0.01), (
-                f"{label}: mean={mean:.1f}, expected ~{expected_mean:.1f}"
-            )
-            # Poisson variance == mean.
-            assert jnp.isclose(var, expected_mean, rtol=0.05), (
-                f"{label}: var={var:.1f}, expected ~{expected_mean:.1f}"
-            )
-
-    def test_readout_source_electrons_thinned_is_faster_than_chain(
-        self, simple_detector
-    ):
-        """Thinned readout returns the same shape + non-negative counts.
-
-        Pure-correctness smoke test for the fast path; runtime is asserted
-        separately in benchmarks, not here.
-        """
-        image_rate = jnp.ones((50, 50)) * 200.0
-        key = jax.random.PRNGKey(3)
-        out = simple_detector.readout_source_electrons_thinned(image_rate, 5.0, key)
-        assert out.shape == (50, 50)
-        assert jnp.all(out >= 0)
-
-
-class TestDetector:
-    """Tests for the full Detector model (dark + CIC + read noise)."""
-
-    @pytest.fixture
-    def full_detector(self):
-        return ox.Detector(
-            pixel_scale_arcsec=0.010,
-            shape=(64, 64),
-            quantum_efficiency=0.9,
-            dark_current_rate_e_per_s=1e-4,
-            read_noise_e=3.0,
-            clock_induced_charge_rate_e_per_frame=0.02,
-            frame_time_s=100.0,
-        )
-
-    # The detector source-readout kernel can need more than 5 s to compile cold.
-    @pytest.mark.medium
-    def test_readout_source_electrons_shape(self, full_detector):
-        image_rate = jnp.ones((64, 64)) * 10.0
-        key = jax.random.PRNGKey(3)
-        result = full_detector.readout_source_electrons(image_rate, 10.0, key)
-        assert result.shape == (64, 64)
-
-    def test_readout_noise_electrons_shape(self, full_detector):
-        key = jax.random.PRNGKey(4)
-        result = full_detector.readout_noise_electrons(100.0, key)
-        assert result.shape == (64, 64)
-
-    def test_readout_matches_manual_split_compose(self, full_detector):
-        """readout(image, t, k) is bit-identical to manually splitting the key
-        and composing readout_source_electrons + readout_noise_electrons."""
-        image_rate = jnp.ones((64, 64)) * 10.0
-        key = jax.random.PRNGKey(5)
-        combined = full_detector.readout(image_rate, 100.0, key)
-        key_src, key_noise = jax.random.split(key, 2)
-        src = full_detector.readout_source_electrons(image_rate, 100.0, key_src)
-        noise = full_detector.readout_noise_electrons(100.0, key_noise)
-        assert jnp.allclose(combined, src + noise)
 
 
 class TestLinearThroughputElement:
@@ -275,23 +120,6 @@ class TestOpticalPath:
         )
         assert path.n_channels == 2.0
         assert path.npix_multiplier == 3.0
-
-
-class TestPureNoiseFunctions:
-    def test_dark_current_shape(self):
-        key = jax.random.PRNGKey(0)
-        dc = ox.dark_current(0.001, 100.0, (50, 50), key)
-        assert dc.shape == (50, 50)
-
-    def test_read_noise_shape(self):
-        key = jax.random.PRNGKey(1)
-        rn = ox.read_noise(3.0, 10.0, (50, 50), key)
-        assert rn.shape == (50, 50)
-
-    def test_cic_shape(self):
-        key = jax.random.PRNGKey(2)
-        clock_induced_charge = ox.clock_induced_charge(0.02, 5.0, (50, 50), key)
-        assert clock_induced_charge.shape == (50, 50)
 
 
 class TestYippyCoronagraphExtras:

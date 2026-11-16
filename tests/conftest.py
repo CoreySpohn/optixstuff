@@ -56,11 +56,6 @@ def simple_detector():
     return ox.IdealDetector(
         pixel_scale_arcsec=0.010,
         shape=(100, 100),
-        quantum_efficiency=0.9,
-        dark_current_rate_e_per_s=1e-4,
-        read_noise_e=3.0,
-        clock_induced_charge_rate_e_per_frame=0.02,
-        frame_time_s=1000.0,
     )
 
 

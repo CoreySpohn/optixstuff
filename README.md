@@ -52,10 +52,37 @@ Built on [JAX](https://github.com/google/jax) and
 - **Container** — `OpticalPath`, a composable hardware configuration passed to all
   simulators
 
-Every abstract method accepts three fidelity axes — **wavelength**, **position**, and
+Optical elements and coronagraphs accept fidelity axes — **wavelength**, **position**, and
 **time** — with defaults so that simple implementations can ignore unused axes while
 future high-fidelity models (wavelength-dependent coatings, position-dependent vignetting,
 time-dependent detector degradation) can use them without breaking the interface.
+
+### Detector chain
+
+Readers supply `PhotonRates` in photons/s/nm at shared quadrature nodes.
+The detector converts them to `ElectronRates` with spectral QE and survival
+applied once, before integration. The observer owns the frame plan.
+
+```python
+import jax
+import jax.numpy as jnp
+from hwoutils.spectral import Band, Quadrature
+from optixstuff import Detector, PhotonRates, frames_for_time
+
+quadrature = Quadrature.build([Band(500.0, 600.0)], knots_nm=None, order=3)
+rates = PhotonRates(planet=jnp.ones((1, 3)))
+detector = Detector(pixel_scale_arcsec=0.01, shape=(1, 1), qe=0.9)
+electrons = detector.electrons(rates, quadrature)
+plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
+mean, variance = detector.mean_and_variance(electrons, plan)
+counts = detector.draw(jax.random.key(0), electrons, plan)
+```
+
+The six source fields retain their names throughout the chain. Image readers
+use `(W, Q, ny, nx)` integrands; aperture readers use `(W, Q)`. The detector
+returns `(W, *spatial)` electrons/s and count moments. See the
+[detector contract](https://optixstuff.readthedocs.io/en/latest/explanation/detector_models.html)
+for noise parameters, gain statistics, and readout overlap.
 
 ### Ecosystem position
 

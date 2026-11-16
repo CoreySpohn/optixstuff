@@ -38,13 +38,12 @@ def optical_path(yippy_coronagraph):
     detector = ox.Detector(
         pixel_scale_arcsec=0.010,
         shape=(100, 100),
-        quantum_efficiency=0.9,
-        dark_current_rate_e_per_s=3e-5,
-        read_noise_e=0.0,
-        clock_induced_charge_rate_e_per_frame=1.3e-3,
-        frame_time_s=1000.0,
+        qe=0.9,
+        dark_current_e_per_pixel_s=3e-5,
+        read_noise_e_rms=0.0,
+        clock_induced_charge_e_per_pixel_frame=1.3e-3,
         read_time_s=1000.0,
-        dqe=1.0,
+        survival_fraction=1.0,
     )
     optics_filter = ox.ConstantThroughput(throughput=0.5, name="optics")
     return ox.OpticalPath(

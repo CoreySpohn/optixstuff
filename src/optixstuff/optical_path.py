@@ -9,7 +9,7 @@ import equinox as eqx
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
-from optixstuff.detector import AbstractDetector, IdealDetector
+from optixstuff.detector import AbstractDetector, Detector
 from optixstuff.disperser import AbstractDisperser
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
@@ -63,8 +63,8 @@ class OpticalPath(eqx.Module):
         attenuating_throughput: float = 1.0,
         detector_shape: tuple[int, int] = (512, 512),
         pixel_scale_arcsec: float = 0.01,
-        quantum_efficiency: float = 0.9,
-        dark_current_rate_e_per_s: float = 0.0,
+        qe: float = 0.9,
+        dark_current_e_per_pixel_s: float = 0.0,
         n_channels: float = 1.0,
         npix_multiplier: float = 1.0,
         speckle: AbstractSpeckleField | None = None,
@@ -94,8 +94,8 @@ class OpticalPath(eqx.Module):
                 ``(512, 512)``.
             pixel_scale_arcsec: Detector plate scale [arcsec/px]. Default
                 ``0.01``.
-            quantum_efficiency: Default ``0.9``.
-            dark_current_rate_e_per_s: Default ``0.0`` e-/s/px (perfect detector;
+            qe: Default ``0.9``.
+            dark_current_e_per_pixel_s: Default ``0.0`` e-/s/px (perfect detector;
                 callers add realistic noise when needed).
             n_channels: AYO parallel-path multiplier. Default ``1.0``.
             npix_multiplier: IFS signal-spread multiplier. Default ``1.0``.
@@ -125,11 +125,11 @@ class OpticalPath(eqx.Module):
                 ConstantThroughput(throughput=attenuating_throughput, name="optics"),
             ),
             coronagraph=coro,
-            detector=IdealDetector(
+            detector=Detector(
                 pixel_scale_arcsec=pixel_scale_arcsec,
                 shape=detector_shape,
-                quantum_efficiency=quantum_efficiency,
-                dark_current_rate_e_per_s=dark_current_rate_e_per_s,
+                qe=qe,
+                dark_current_e_per_pixel_s=dark_current_e_per_pixel_s,
             ),
             n_channels=n_channels,
             npix_multiplier=npix_multiplier,

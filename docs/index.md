@@ -75,7 +75,7 @@ path = OpticalPath(
 
 # Throughput at a wavelength
 print(path.system_throughput(550.0))  # scalar throughput
-print(path.detector.get_qe(550.0))  # QE at 550 nm
+print(path.detector.quantum_efficiency(550.0))  # QE at 550 nm
 ```
 
 ## Installation
@@ -97,7 +97,7 @@ provides:
 - **Container** -- `OpticalPath`, a composable hardware configuration
   passed to all downstream simulators
 
-Every abstract method accepts three fidelity axes -- **wavelength**,
+Optical elements and coronagraphs accept fidelity axes -- **wavelength**,
 **position**, and **time** -- with defaults so simple implementations
 can ignore unused axes while future high-fidelity models
 (wavelength-dependent coatings, position-dependent vignetting,
@@ -106,7 +106,7 @@ the interface.
 
 See [architecture](explanation/architecture) for the full abstraction
 hierarchy, and [detector models](explanation/detector_models) for an
-overview of the available detectors and noise primitives.
+overview of photon rates, electron statistics, and detector draws.
 
 ```{toctree}
 :maxdepth: 1

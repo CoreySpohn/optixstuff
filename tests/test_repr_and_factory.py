@@ -43,23 +43,22 @@ class TestReprs:
         s = repr(simple_detector)
         assert "IdealDetector" in s
         assert "100x100" in s
-        assert "QE=0.90" in s
+        assert "QE=1.00" in s
 
     def test_full_detector(self):
         det = ox.Detector(
             pixel_scale_arcsec=0.010,
             shape=(64, 64),
-            quantum_efficiency=0.9,
-            dark_current_rate_e_per_s=1e-4,
-            read_noise_e=3.0,
-            clock_induced_charge_rate_e_per_frame=0.02,
-            frame_time_s=100.0,
+            qe=0.9,
+            dark_current_e_per_pixel_s=1e-4,
+            read_noise_e_rms=3.0,
+            clock_induced_charge_e_per_pixel_frame=0.02,
         )
         s = repr(det)
         assert s.startswith("Detector(")
         assert "RN=3" in s
         assert "CIC=0.02" in s
-        assert "frame_time_s=100" in s
+        assert "F2=1" in s
 
     def test_constant_throughput_element(self, throughput_element):
         s = repr(throughput_element)
@@ -129,13 +128,13 @@ class TestFromDefaultSetup:
         path = ox.OpticalPath.from_default_setup(_MockCoro())
         assert isinstance(path, ox.OpticalPath)
         assert isinstance(path.primary, ox.SimplePrimary)
-        assert isinstance(path.detector, ox.IdealDetector)
+        assert isinstance(path.detector, ox.Detector)
         assert len(path.attenuating_elements) == 1
         # Defaults applied.
         assert path.primary.diameter_m == 6.0
         assert path.detector.shape == (512, 512)
         assert path.detector.pixel_scale_arcsec == 0.01
-        assert path.detector.quantum_efficiency == 0.9
+        assert float(path.detector.quantum_efficiency(550.0)) == float(jnp.asarray(0.9))
         assert path.n_channels == 1.0
         assert path.npix_multiplier == 1.0
 
@@ -147,8 +146,8 @@ class TestFromDefaultSetup:
             attenuating_throughput=0.5,
             detector_shape=(256, 256),
             pixel_scale_arcsec=0.02,
-            quantum_efficiency=0.95,
-            dark_current_rate_e_per_s=1e-3,
+            qe=0.95,
+            dark_current_e_per_pixel_s=1e-3,
             n_channels=2.0,
             npix_multiplier=3.0,
         )
@@ -156,8 +155,10 @@ class TestFromDefaultSetup:
         assert path.primary.obscuration == 0.1
         assert path.detector.shape == (256, 256)
         assert path.detector.pixel_scale_arcsec == 0.02
-        assert path.detector.quantum_efficiency == 0.95
-        assert path.detector.dark_current_rate_e_per_s == 1e-3
+        assert float(path.detector.quantum_efficiency(550.0)) == float(
+            jnp.asarray(0.95)
+        )
+        assert path.detector.dark_current_e_per_pixel_s == float(jnp.asarray(1e-3))
         assert path.n_channels == 2.0
         assert path.npix_multiplier == 3.0
         # Single attenuating element built with the overridden throughput.

@@ -11,12 +11,9 @@ from optixstuff.detector import (
     AbstractDetector,
     Detector,
     IdealDetector,
-    clock_induced_charge,
-    dark_current,
-    read_noise,
 )
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
-from optixstuff.exposure import ExposureConfig
+from optixstuff.exposure import ExposureConfig, FramePlan, frames_for_time
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -25,6 +22,7 @@ from optixstuff.optical_elements import (
 )
 from optixstuff.optical_path import OpticalPath
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
+from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
 from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.yippy_coronagraph import YippyCoronagraph
 
@@ -40,17 +38,19 @@ __all__ = [
     "AbstractUniformElement",
     "ConstantThroughput",
     "Detector",
+    "ElectronRates",
     "ExposureConfig",
+    "FramePlan",
     "IdealDetector",
+    "IntegratedPhotonRates",
     "LensletDisperser",
     "MultiBandCoronagraph",
     "OpticalPath",
+    "PhotonRates",
     "SegmentedPrimary",
     "SimplePrimary",
     "SpectralThroughput",
     "YippyCoronagraph",
     "__version__",
-    "clock_induced_charge",
-    "dark_current",
-    "read_noise",
+    "frames_for_time",
 ]

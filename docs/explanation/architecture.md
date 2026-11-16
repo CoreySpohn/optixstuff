@@ -120,38 +120,12 @@ position axis -- see the next section.
 
 ## The three-axis design
 
-Every abstract method accepts three optional axes of variation:
-
-- **Wavelength** -- spectral dependence
-- **Position** -- spatial / field-angle dependence
-- **Time** -- temporal evolution (degradation, drift)
-
-Simple implementations ignore axes they don't model (e.g.,
-`IdealDetector.get_qe(wavelength)` returns a constant regardless of
-the wavelength input). High-fidelity implementations can use them
-without breaking the API:
-
-```python
-from optixstuff import AbstractDetector
-
-
-class WavelengthDependentQE(AbstractDetector):
-    def get_qe(self, wavelength_nm):
-        return self._qe_interp(wavelength_nm)  # real wavelength dep
-
-
-class TimeVaryingDetector(AbstractDetector):
-    def dark_current_rate_at(self, time_jd):
-        # detector degrades over mission lifetime
-        return self._rate0 * (1 + self._deg_per_yr * (time_jd - self._t0))
-```
-
-This is the **fidelity axis** in optixstuff's design: start simple,
-add complexity without rewriting consumers. coronagraphoto's
-`star_rate`, `system_rate`, etc. accept any subclass of any abstract
-base. Swap an `IdealDetector` for a `WavelengthDependentQE` and the
-image simulation picks up the new physics with zero downstream
-changes.
+Optical elements and coronagraphs expose wavelength, position, and time
+where those axes affect their response. Detectors expose
+`quantum_efficiency(wavelength_nm)` for spectral yield. All detector
+subclasses share the same `electrons`, `mean_and_variance`, and `draw`
+contract. `IdealDetector` supplies QE one; `Detector` supplies constant
+or measured spectral QE. Frame duration belongs to `FramePlan`.
 
 ## OpticalPath as a composable container
 
@@ -179,57 +153,26 @@ Two convenience methods compose elements:
 
 - `system_throughput(wavelength_nm)` -- product of all element
   throughputs at a wavelength
-- `detector.get_qe(wavelength_nm)` -- detector QE at that wavelength
+- `detector.quantum_efficiency(wavelength_nm)` -- detector QE at that wavelength
 
 That's it. The container does not own simulation logic; it just holds
 hardware. Simulators (coronagraphoto, jaxEDITH) consume the container,
 query its throughput / QE / coronagraph response, and produce
 science-level outputs.
 
-## Detector noise: hardware physics, not scene simulation
+## Photon rates, electrons, and detector noise
 
-optixstuff exposes three noise primitives at the module level:
+Scene readers supply `PhotonRates` at `hwoutils.spectral.Quadrature` nodes.
+`detector.electrons(rates, quadrature)` applies survival and QE at each
+node, then integrates into `ElectronRates`. This is the only detector
+yield conversion. Optical throughput remains upstream of that boundary.
 
-```text
-dark_current(rate, exposure_time_s, shape, prng_key) -> Array
-clock_induced_charge(rate, num_frames, shape, prng_key) -> Array
-read_noise(noise_e, num_frames, shape, prng_key) -> Array
-```
+The observer chooses a frame duration and calls
+`frames_for_time(time_s, frame_time_s)` to obtain a `FramePlan`.
+`detector.mean_and_variance(electrons, plan)` computes the electron budget;
+`detector.draw(key, electrons, plan)` samples that budget with per-pixel
+Poisson counts, optional excess gain noise, and Gaussian read noise.
+Combine sources before drawing so detector noise is counted once.
 
-These are **noise contributions**, not full detector readouts. They
-take only detector-side parameters (rates, frame time, shape) and
-return additive noise arrays meant to be summed onto a scene-source
-readout. Splitting the responsibilities:
-
-- coronagraphoto's `*_readout` family = Poisson-realized source counts
-  (depends on a `Scene`)
-- optixstuff's noise primitives = additive hardware noise contributions
-  (independent of any `Scene`)
-
-Both compose into a complete frame:
-
-This example requires a configured optical path, scene sources, and exposure parameters.
-
-```python notest
-source_e = star_readout(star, optical_path, key1, ...)
-dark_e = dark_current(
-    detector.dark_current_rate_e_per_s, exposure_time_s, detector.shape, key2
-)
-cic_e = clock_induced_charge(
-    detector.clock_induced_charge_rate_e_per_frame, num_frames, detector.shape, key3
-)
-read_e = read_noise(detector.read_noise_e, num_frames, detector.shape, key4)
-frame = source_e + dark_e + cic_e + read_e
-```
-
-For most use cases you can let the detector's high-level `readout`
-method handle the composition for you. The standalone primitives are
-exposed for advanced use (custom noise budgets, sensitivity studies).
-
-See [detector models](detector_models) for the full noise-budget
-discussion.
-
-## Where to read next
-
-- [Detector models](detector_models) -- IdealDetector, Detector, and
-  the noise primitives
+See [detector models](detector_models) for units, shapes, timing, and the
+explicit excess-noise distribution.

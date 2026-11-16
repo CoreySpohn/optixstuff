@@ -1,510 +1,293 @@
-"""Detector abstractions and concrete implementations."""
+"""One photon-to-electron contract for detector statistics and sampling."""
 
 import abc
+from dataclasses import fields
 from typing import final
 
 import equinox as eqx
-import interpax
 import jax
 import jax.numpy as jnp
-from equinox import AbstractVar
+from hwoutils.spectral import Quadrature
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from optixstuff.exposure import FramePlan
+from optixstuff.rates import ElectronRates, PhotonRates
+
+
+def _check_range(name, value, low, high=float("inf")):
+    """Reject concrete nonfinite or out-of-range construction parameters."""
+    value = jnp.asarray(value)
+    if not isinstance(value, jax.core.Tracer) and not bool(
+        jnp.all(jnp.isfinite(value) & (value >= low) & (value <= high))
+    ):
+        raise ValueError(f"{name} must be finite and in [{low}, {high}]")
+
 
 class AbstractDetector(eqx.Module):
-    """Abstract interface for a focal-plane detector.
+    """Focal-plane hardware; exposure timing belongs to a separate FramePlan.
 
-    Provides both scalar noise rates (for ETC use) and stochastic noise
-    realization (for image simulation).  All concrete implementations
-    must define the hardware parameters listed as ``AbstractVar`` fields.
+    Noise parameters are per pixel, QE and survival are fractions, and
+    ``excess_noise_factor_sq`` is a variance multiplier, at least one.
+    Shape and read overlap control structure and are static PyTree fields.
+    Subclasses supply QE; statistics and sampling share the electron contract.
     """
 
-    pixel_scale_arcsec: AbstractVar[float]
-    """Detector plate scale in arcsec/pixel."""
+    pixel_scale_arcsec: Array = eqx.field(converter=jnp.asarray)
+    shape: tuple[int, int] = eqx.field(static=True)
+    survival_fraction: Array = eqx.field(default=1.0, converter=jnp.asarray)
+    dark_current_e_per_pixel_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
+    clock_induced_charge_e_per_pixel_frame: Array = eqx.field(
+        default=0.0, converter=jnp.asarray
+    )
+    read_noise_e_rms: Array = eqx.field(default=0.0, converter=jnp.asarray)
+    excess_noise_factor_sq: Array = eqx.field(default=1.0, converter=jnp.asarray)
+    read_time_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
+    overlaps_read: bool = eqx.field(default=False, static=True)
 
-    quantum_efficiency: AbstractVar[float]
-    """Baseline quantum efficiency as a fraction in [0, 1]."""
-
-    dark_current_rate_e_per_s: AbstractVar[float]
-    """Dark current rate in electrons/pixel/second."""
-
-    read_noise_e: AbstractVar[float]
-    """Read noise in electrons RMS per pixel per read."""
-
-    clock_induced_charge_rate_e_per_frame: AbstractVar[float]
-    """Clock-induced charge in electrons/pixel/frame."""
-
-    frame_time_s: AbstractVar[float]
-    """Integration time per frame/read in seconds."""
-
-    read_time_s: AbstractVar[float]
-    """Time per read cycle in seconds (for RN^2/t_read in ETC)."""
-
-    dqe: AbstractVar[float]
-    """QE degradation factor (multiplicative correction over mission life)."""
-
-    shape: AbstractVar[tuple[int, int]]
-    """Detector dimensions (ny, nx) in pixels."""
+    def __check_init__(self):
+        """Validate concrete survival and per-pixel hardware parameters."""
+        _check_range("survival_fraction", self.survival_fraction, 0.0, 1.0)
+        for name in (
+            "dark_current_e_per_pixel_s",
+            "clock_induced_charge_e_per_pixel_frame",
+            "read_noise_e_rms",
+            "read_time_s",
+        ):
+            _check_range(name, getattr(self, name), 0.0)
+        _check_range("excess_noise_factor_sq", self.excess_noise_factor_sq, 1.0)
 
     @abc.abstractmethod
-    def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Quantum efficiency at a given wavelength.
-
-        Args:
-            wavelength_nm: Wavelength in nanometers.
-
-        Returns:
-            QE as a fraction in [0, 1].
-        """
+    def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
+        """Return QE in [0, 1], with the same shape as ``wavelength_nm``."""
         ...
 
-    @abc.abstractmethod
-    def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
-        """Total scalar noise variance rate for the ETC.
+    def electrons(self, rates: PhotonRates, quadrature: Quadrature) -> ElectronRates:
+        """Integrate survival * QE * photons/s/nm into electrons/s per field.
 
-        Returns the combined noise variance per unit time (electrons^2/s)
-        for a photometric aperture of n_pix pixels.
-
-        Args:
-            n_pix: Number of pixels in the photometric aperture.
-            t_photon: Photon counting integration time in seconds.
-
-        Returns:
-            Noise variance rate in electrons^2/second.
+        This is the only place detector yield is applied anywhere in the
+        library. Inputs have shape ``(W, Q, *spatial)``; outputs have shape
+        ``(W, *spatial)``, including scalar-zero absent contributions.
+        QE is evaluated at every node before dimensional integration.
         """
-        ...
-
-    @abc.abstractmethod
-    def readout(
-        self,
-        image_rate: Array,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Apply stochastic noise realization to a photon rate image.
-
-        Converts photon rates to detected electrons including QE,
-        dark current, CIC, and read noise.
-
-        Args:
-            image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time_s: ExposureConfig time in seconds.
-            prng_key: JAX PRNG key (required, no default).
-
-        Returns:
-            Detected electrons array, same shape as image_rate.
-        """
-        ...
-
-    def readout_source_electrons(
-        self,
-        image_rate: Array,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Poisson-sample incident photons and convert to electrons via QE.
-
-        This is the source-dependent half of detector readout: photon
-        arrival statistics and quantum-efficiency selection. Dark current,
-        CIC, and read noise are handled separately by
-        :meth:`readout_noise_electrons` so that multi-source exposures do not
-        double-count the source-independent noise floor.
-
-        Args:
-            image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time_s: ExposureConfig time in seconds.
-            prng_key: JAX PRNG key.
-
-        Returns:
-            Photo-electron counts, same shape as image_rate.
-        """
-        key_phot, key_qe = jax.random.split(prng_key, 2)
-        inc_photons = jax.random.poisson(key_phot, image_rate * exposure_time_s)
-        return jax.random.binomial(key_qe, inc_photons, self.quantum_efficiency)
-
-    def readout_source_electrons_thinned(
-        self,
-        image_rate: Array,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Fast equivalent of :meth:`readout_source_electrons` via Poisson thinning.
-
-        Distributionally identical to the explicit Poisson-then-Binomial
-        chain (Poisson thinning theorem: ``Binomial(Poisson(L), p) ~
-        Poisson(L * p)``), but ~3x faster because it skips the Binomial
-        draw and never materialises the intermediate photon count. Use in
-        performance-critical paths (animation rendering, yield runs)
-        when the photon count is not needed downstream.
-
-        The marginal distribution of returned electrons is identical to
-        :meth:`readout_source_electrons`. The two methods produce
-        different specific realizations even with the same key.
-
-        Args:
-            image_rate: Incident photon rate array in ph/s/pixel.
-            exposure_time_s: ExposureConfig time in seconds.
-            prng_key: JAX PRNG key.
-
-        Returns:
-            Photo-electron counts, same shape as image_rate.
-        """
-        return jax.random.poisson(
-            prng_key, image_rate * exposure_time_s * self.quantum_efficiency
+        shape = rates.total().shape or quadrature.nodes_nm.shape
+        yield_fraction = self.survival_fraction * self.quantum_efficiency(
+            quadrature.nodes_nm
+        )
+        yield_fraction = jnp.reshape(
+            yield_fraction, yield_fraction.shape + (1,) * (len(shape) - 2)
+        )
+        return ElectronRates(
+            **{
+                field.name: quadrature.integrate(
+                    yield_fraction * jnp.broadcast_to(getattr(rates, field.name), shape)
+                )
+                for field in fields(rates)
+            }
         )
 
-    def noise_variance(self, image_rate: Array, exposure_time_s: ArrayLike) -> Array:
-        """Deterministic per-pixel total noise variance in electrons^2.
-
-        The expected variance at each pixel for an incident photon-rate image
-        -- the deterministic companion to :meth:`readout`. Combines source shot
-        noise (Poisson on detected electrons) with the source-independent floor
-        (dark current, clock-induced charge, read noise)::
-
-            N = QE * rate * t
-                + dark_rate * t
-                + CIC_rate * n_frames
-                + read_noise^2 * n_frames
-
-        with ``n_frames = ceil(t / frame_time_s)``. Use ``1 / noise_variance(...)``
-        as inverse-variance weights for least-squares spectral extraction or its
-        GLS covariance, where the shot term carries the wavelength dependence.
-
-        Args:
-            image_rate: Incident photon rate [ph/s/pixel], any shape.
-            exposure_time_s: Exposure time in seconds.
-
-        Returns:
-            Per-pixel noise variance [electrons^2], same shape as image_rate.
-        """
-        n_frames = jnp.ceil(exposure_time_s / self.frame_time_s)
-        shot = self.quantum_efficiency * image_rate * exposure_time_s
-        dark = self.dark_current_rate_e_per_s * exposure_time_s
-        cic = self.clock_induced_charge_rate_e_per_frame * n_frames
-        read = self.read_noise_e**2 * n_frames
-        return shot + dark + cic + read
-
-    @abc.abstractmethod
-    def readout_noise_electrons(
+    def mean_and_variance(
         self,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Source-independent detector noise (dark + CIC + read).
+        electron_rates: ElectronRates,
+        plan: FramePlan,
+        n_pix: ArrayLike = 1.0,
+        *,
+        sum_bands: bool = False,
+    ) -> tuple[Array, Array]:
+        """Return electron count mean and variance, each ``(W, *spatial)``.
 
-        Each call draws a fresh noise realization of shape ``self.shape``;
-        consumers add exactly one such draw per exposure regardless of
-        how many sources were co-added via :meth:`readout_source_electrons`.
-
-        Args:
-            exposure_time_s: ExposureConfig time in seconds.
-            prng_key: JAX PRNG key.
-
-        Returns:
-            Noise-electron array of shape ``self.shape``.
+        Rates are already in electrons/s. Aperture rates use their effective
+        pixel count ``n_pix``; images use one. Dark and CIC contribute to
+        the mean and are multiplied by F2 in the variance; Gaussian read
+        noise contributes only variance. With ``sum_bands=True``, sum axis
+        zero only, returning ``spatial`` (a scalar for aperture rates).
+        Bands and pixels are independent in this model.
         """
-        ...
+        mean = (
+            electron_rates.total() + n_pix * self.dark_current_e_per_pixel_s
+        ) * plan.live_time_s + (
+            n_pix * self.clock_induced_charge_e_per_pixel_frame * plan.n_frames
+        )
+        variance = self.excess_noise_factor_sq * mean + (
+            n_pix * self.read_noise_e_rms**2 * plan.n_frames
+        )
+        if sum_bands:
+            return jnp.sum(mean, axis=0), jnp.sum(variance, axis=0)
+        return mean, variance
 
+    def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
+        """Sample independent pixels/bands, shape ``(W, *spatial)``, n_pix=1.
 
-# -- Pure noise simulation functions -----------------------------------------
+        Draw source plus dark as Poisson, and CIC as an independent Poisson.
+        Their sum N has mean and variance lambda. For F2=1 return N plus
+        independent Gaussian read noise with variance sigma_r^2*n_frames.
+        For F2>1 set theta=F2-1 and draw G|N ~ Gamma(N/theta, scale=theta);
+        G=0 exactly when N=0. This sums independent unit-mean electron gains.
+        E[G|N]=N, Var(G|N)=N*theta, so E[G]=lambda and
+        Var(G)=E[N*theta]+Var(N)=lambda*(theta+1)=F2*lambda.
+        Independent read noise adds sigma_r^2*n_frames to the variance.
 
+        This continuous gain model matches the specified first two moments;
+        it omits saturation, thresholds, gain-register location effects,
+        interpixel correlations, and digitization. It is not a full sensor
+        response model. Yield has already been applied by ``electrons``.
+        """
+        key_source, key_cic, key_gain, key_read = jax.random.split(key, 4)
+        source_mean = (
+            electron_rates.total() + self.dark_current_e_per_pixel_s
+        ) * plan.live_time_s
+        source = jax.random.poisson(key_source, source_mean)
+        cic = jax.random.poisson(
+            key_cic,
+            self.clock_induced_charge_e_per_pixel_frame * plan.n_frames,
+            shape=source.shape,
+        )
+        counts = (source + cic).astype(source_mean.dtype)
 
-def dark_current(
-    dark_current_rate_e_per_s: float,
-    exposure_time_s: ArrayLike,
-    shape: tuple[int, int],
-    prng_key: Array,
-) -> Array:
-    """Draw dark current electrons from a Poisson distribution.
+        def amplified(counts):
+            # Guarded so the unused branch stays finite when a batched
+            # ``cond`` evaluates both sides at F2 = 1.
+            excess = self.excess_noise_factor_sq - 1.0
+            theta = jnp.where(excess > 0, excess, 1.0)
+            gain = jax.random.gamma(key_gain, jnp.maximum(counts, 1.0) / theta)
+            return jnp.where(counts > 0, theta * gain, 0.0)
 
-    Args:
-        dark_current_rate_e_per_s: Dark current rate in electrons/s/pixel.
-        exposure_time_s: ExposureConfig time in seconds.
-        shape: Detector shape (ny, nx).
-        prng_key: PRNG key.
-
-    Returns:
-        Dark current electrons, shape (ny, nx).
-    """
-    return jax.random.poisson(
-        prng_key, dark_current_rate_e_per_s * exposure_time_s, shape=shape
-    )
-
-
-def clock_induced_charge(
-    clock_induced_charge_rate_e_per_frame: float,
-    num_frames: ArrayLike,
-    shape: tuple[int, int],
-    prng_key: Array,
-) -> Array:
-    """Draw clock-induced charge electrons from a Poisson distribution.
-
-    Args:
-        clock_induced_charge_rate_e_per_frame: CIC rate in electrons/pixel/frame.
-        num_frames: Number of frames (kept as float for JIT safety).
-        shape: Detector shape (ny, nx).
-        prng_key: PRNG key.
-
-    Returns:
-        CIC electrons, shape (ny, nx).
-    """
-    return jax.random.poisson(
-        prng_key, clock_induced_charge_rate_e_per_frame * num_frames, shape=shape
-    )
-
-
-def read_noise(
-    read_noise_e: float,
-    num_frames: ArrayLike,
-    shape: tuple[int, int],
-    prng_key: Array,
-) -> Array:
-    """Draw read noise from a Gaussian distribution.
-
-    Total read noise sigma = sqrt(num_frames) * read_noise_per_read.
-
-    Args:
-        read_noise_e: Read noise in electrons/pixel/read.
-        num_frames: Number of frames.
-        shape: Detector shape (ny, nx).
-        prng_key: PRNG key.
-
-    Returns:
-        Read noise electrons, shape (ny, nx).
-    """
-    sigma = read_noise_e * jnp.sqrt(num_frames)
-    return sigma * jax.random.normal(prng_key, shape=shape)
-
-
-# -- Concrete implementations -----------------------------------------------
+        signal = jax.lax.cond(
+            self.excess_noise_factor_sq > 1.0, amplified, lambda n: n, counts
+        )
+        read = (
+            self.read_noise_e_rms
+            * jnp.sqrt(plan.n_frames)
+            * jax.random.normal(key_read, shape=source.shape, dtype=source_mean.dtype)
+        )
+        return signal + read
 
 
 @final
 class IdealDetector(AbstractDetector):
-    """Detector with constant QE and minimal noise sources.
-
-    Suitable for broadband imager studies where wavelength-dependent
-    QE variation is not important and CIC/read noise are negligible.
-
-    ``dqe`` is the multiplicative QE degradation factor; the default 1.0
-    means no degradation, so the effective QE is ``quantum_efficiency * dqe``.
-    """
-
-    pixel_scale_arcsec: float
-    quantum_efficiency: float
-    dark_current_rate_e_per_s: float
-    read_noise_e: float
-    clock_induced_charge_rate_e_per_frame: float
-    frame_time_s: float
-    read_time_s: float
-    dqe: float
-    shape: tuple[int, int] = eqx.field(static=True)
+    """QE-one detector with no dark, CIC, read, or excess noise."""
 
     def __init__(
         self,
-        pixel_scale_arcsec: float,
+        *,
+        pixel_scale_arcsec: ArrayLike,
         shape: tuple[int, int],
-        quantum_efficiency: float = 1.0,
-        dark_current_rate_e_per_s: float = 0.0,
-        read_noise_e: float = 0.0,
-        clock_induced_charge_rate_e_per_frame: float = 0.0,
-        frame_time_s: float = 1.0,
-        read_time_s: float = 0.05,
-        dqe: float = 1.0,
-    ) -> None:
-        """Create a simple constant-QE detector."""
-        self.pixel_scale_arcsec = pixel_scale_arcsec
-        self.shape = shape
-        self.quantum_efficiency = quantum_efficiency
-        self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
-        self.read_noise_e = read_noise_e
-        self.clock_induced_charge_rate_e_per_frame = (
-            clock_induced_charge_rate_e_per_frame
-        )
-        self.frame_time_s = frame_time_s
-        self.read_time_s = read_time_s
-        self.dqe = dqe
-
-    def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Return constant QE, ignoring wavelength."""
-        return self.quantum_efficiency
-
-    def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
-        """Combined dark + CIC noise variance rate.
-
-        Read noise is not included here as it scales per-read, not per-second.
-        Callers add (read_noise_e^2 * n_reads) / t_exp separately.
-        """
-        dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
-        cic_variance_rate = (
-            self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
-        )
-        return dark_variance_rate + cic_variance_rate
-
-    def readout_noise_electrons(
-        self,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Dark current only -- IdealDetector has no CIC or read noise."""
-        return dark_current(
-            self.dark_current_rate_e_per_s, exposure_time_s, self.shape, prng_key
+        survival_fraction: ArrayLike = 1.0,
+        read_time_s: ArrayLike = 0.0,
+        overlaps_read: bool = False,
+    ):
+        """Create ideal hardware; survival and read overhead remain configurable."""
+        super().__init__(
+            pixel_scale_arcsec=pixel_scale_arcsec,
+            shape=shape,
+            survival_fraction=survival_fraction,
+            read_time_s=read_time_s,
+            overlaps_read=overlaps_read,
         )
 
-    def readout(
-        self,
-        image_rate: Array,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Full detector readout: source electrons + dark current."""
-        key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.readout_source_electrons(image_rate, exposure_time_s, key_src)
-        noise = self.readout_noise_electrons(exposure_time_s, key_noise)
-        return source + noise
+    def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
+        """Return ones with the input wavelength shape."""
+        return jnp.ones_like(jnp.asarray(wavelength_nm), dtype=jnp.result_type(float))
+
+    def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
+        """Draw only Poisson source electrons of shape ``(W, *spatial)``."""
+        return jax.random.poisson(key, electron_rates.total() * plan.live_time_s)
 
     def __repr__(self) -> str:
-        """One-line summary of shape, plate scale, QE, and dark current."""
+        """Summarize detector geometry and ideal yield."""
         ny, nx = self.shape
         return (
             f"IdealDetector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
-            f"QE={self.quantum_efficiency:.2f}, "
-            f"dark={self.dark_current_rate_e_per_s:.2g} e-/s/px)"
+            f"QE=1.00, survival={self.survival_fraction:.3g})"
         )
 
 
 @final
 class Detector(AbstractDetector):
-    """Full detector model with dark current, CIC, and read noise.
+    """Constant or tabulated QE with Poisson, gamma gain, and Gaussian noise."""
 
-    Suitable for detailed noise simulations where all detector noise
-    sources matter.  Uses Poisson statistics for dark/CIC and Gaussian
-    for read noise, matching the coronagraphoto convention.
-
-    ``dqe`` is the multiplicative QE degradation factor; the default 1.0
-    means no degradation.
-
-    Warning: ``num_frames = jnp.ceil(exposure_time_s / frame_time_s)`` is
-    kept as a float. Never cast it to int inside JIT -- that triggers a
-    ConcretizationTypeError when exposure_time_s is traced.
-    """
-
-    pixel_scale_arcsec: float
-    quantum_efficiency: float
-    dark_current_rate_e_per_s: float
-    read_noise_e: float
-    clock_induced_charge_rate_e_per_frame: float
-    frame_time_s: float
-    read_time_s: float
-    dqe: float
-    shape: tuple[int, int] = eqx.field(static=True)
-    _qe_interp: interpax.Interpolator1D | None
+    _qe: Array
+    _qe_curve: tuple[Array, Array] | None
 
     def __init__(
         self,
-        pixel_scale_arcsec: float,
+        *,
+        pixel_scale_arcsec: ArrayLike,
         shape: tuple[int, int],
-        quantum_efficiency: float = 1.0,
-        dark_current_rate_e_per_s: float = 0.0,
-        read_noise_e: float = 0.0,
-        clock_induced_charge_rate_e_per_frame: float = 0.0,
-        frame_time_s: float = 1.0,
-        read_time_s: float = 0.05,
-        dqe: float = 1.0,
+        qe: ArrayLike = 1.0,
         qe_curve: tuple[ArrayLike, ArrayLike] | None = None,
-    ) -> None:
-        """Create a full detector with all noise sources.
+        survival_fraction: ArrayLike = 1.0,
+        dark_current_e_per_pixel_s: ArrayLike = 0.0,
+        clock_induced_charge_e_per_pixel_frame: ArrayLike = 0.0,
+        read_noise_e_rms: ArrayLike = 0.0,
+        excess_noise_factor_sq: ArrayLike = 1.0,
+        read_time_s: ArrayLike = 0.0,
+        overlaps_read: bool = False,
+    ):
+        """Create hardware with constant ``qe`` or a measured ``qe_curve``.
 
-        Supplying ``qe_curve`` as a ``(wavelengths_nm, qe)`` pair makes
-        :meth:`get_qe` interpolate it (linear, zero outside the measured range)
-        for wavelength-dependent throughput/ETC use; the scalar
-        ``quantum_efficiency`` remains the operating-point QE used by the
-        per-call (monochromatic) readout path.
+        ``qe_curve=(wavelengths_nm, efficiencies)`` overrides ``qe``.
+        Interpolation is linear and QE is zero outside the measured range.
+        Concrete QE and survival outside [0, 1] raise at construction;
+        traced values must satisfy the same contract.
         """
-        self.pixel_scale_arcsec = pixel_scale_arcsec
-        self.shape = shape
-        self.quantum_efficiency = quantum_efficiency
-        self.dark_current_rate_e_per_s = dark_current_rate_e_per_s
-        self.read_noise_e = read_noise_e
-        self.clock_induced_charge_rate_e_per_frame = (
-            clock_induced_charge_rate_e_per_frame
+        self._qe = jnp.asarray(qe)
+        self._qe_curve = (
+            None if qe_curve is None else tuple(jnp.asarray(x) for x in qe_curve)
         )
-        self.frame_time_s = frame_time_s
-        self.read_time_s = read_time_s
-        self.dqe = dqe
-        if qe_curve is None:
-            self._qe_interp = None
-        else:
-            wavelengths_nm, qe = qe_curve
-            self._qe_interp = interpax.Interpolator1D(
-                jnp.asarray(wavelengths_nm),
-                jnp.asarray(qe),
-                method="linear",
-                extrap=jnp.array([0.0, 0.0]),
-            )
-
-    def get_qe(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Quantum efficiency at a wavelength.
-
-        Interpolates the ``qe_curve`` if one was supplied (linear, zero outside
-        the measured range); otherwise returns the scalar ``quantum_efficiency``.
-        """
-        if self._qe_interp is None:
-            return self.quantum_efficiency
-        return self._qe_interp(wavelength_nm)
-
-    def scalar_noise_rate(self, n_pix: ArrayLike, t_photon: ArrayLike) -> ArrayLike:
-        """Combined dark + CIC noise variance rate."""
-        dark_variance_rate = self.dark_current_rate_e_per_s * n_pix
-        cic_variance_rate = (
-            self.clock_induced_charge_rate_e_per_frame * n_pix / t_photon
+        super().__init__(
+            pixel_scale_arcsec=pixel_scale_arcsec,
+            shape=shape,
+            survival_fraction=survival_fraction,
+            dark_current_e_per_pixel_s=dark_current_e_per_pixel_s,
+            clock_induced_charge_e_per_pixel_frame=clock_induced_charge_e_per_pixel_frame,
+            read_noise_e_rms=read_noise_e_rms,
+            excess_noise_factor_sq=excess_noise_factor_sq,
+            read_time_s=read_time_s,
+            overlaps_read=overlaps_read,
         )
-        return dark_variance_rate + cic_variance_rate
 
-    def readout_noise_electrons(
-        self,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Dark current + CIC + read noise (source-independent)."""
-        key_dark, key_cic, key_read = jax.random.split(prng_key, 3)
-        dark_e = dark_current(
-            self.dark_current_rate_e_per_s, exposure_time_s, self.shape, key_dark
-        )
-        # num_frames stays as a traced float -- never cast to int
-        num_frames = jnp.ceil(exposure_time_s / self.frame_time_s)
-        cic_e = clock_induced_charge(
-            self.clock_induced_charge_rate_e_per_frame, num_frames, self.shape, key_cic
-        )
-        read_e = read_noise(self.read_noise_e, num_frames, self.shape, key_read)
-        return dark_e + cic_e + read_e
+    def __check_init__(self):
+        """Validate concrete QE values and measured wavelength samples."""
+        _check_range("QE", self._qe, 0.0, 1.0)
+        if self._qe.ndim != 0:
+            raise ValueError("constant QE must be scalar")
+        if self._qe_curve is not None:
+            wavelengths_nm, qe = self._qe_curve
+            if (
+                wavelengths_nm.ndim != 1
+                or qe.shape != wavelengths_nm.shape
+                or qe.size < 2
+            ):
+                raise ValueError(
+                    "QE curve requires matching 1D arrays with >=2 samples"
+                )
+            _check_range("QE", qe, 0.0, 1.0)
+            if not isinstance(wavelengths_nm, jax.core.Tracer) and not bool(
+                jnp.all(jnp.isfinite(wavelengths_nm))
+                & jnp.all(jnp.diff(wavelengths_nm) > 0)
+            ):
+                raise ValueError(
+                    "QE wavelengths must be finite and strictly increasing"
+                )
 
-    def readout(
-        self,
-        image_rate: Array,
-        exposure_time_s: ArrayLike,
-        prng_key: Array,
-    ) -> Array:
-        """Full detector readout: source electrons + all noise sources."""
-        key_src, key_noise = jax.random.split(prng_key, 2)
-        source = self.readout_source_electrons(image_rate, exposure_time_s, key_src)
-        noise = self.readout_noise_electrons(exposure_time_s, key_noise)
-        return source + noise
+    def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
+        """Return constant or linearly interpolated QE at every input wavelength."""
+        wavelength_nm = jnp.asarray(wavelength_nm)
+        if self._qe_curve is None:
+            return jnp.broadcast_to(self._qe, wavelength_nm.shape)
+        wavelengths_nm, qe = self._qe_curve
+        return jnp.interp(wavelength_nm, wavelengths_nm, qe, left=0.0, right=0.0)
 
     def __repr__(self) -> str:
-        """One-line summary of shape, plate scale, QE, and noise sources."""
+        """Summarize geometry, yield, and noise parameters."""
         ny, nx = self.shape
-        qe_str = (
-            "spectral"
-            if self._qe_interp is not None
-            else f"{self.quantum_efficiency:.2f}"
-        )
+        qe_str = "spectral" if self._qe_curve is not None else f"{self._qe:.2f}"
         return (
             f"Detector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
-            f"QE={qe_str}, "
-            f"dark={self.dark_current_rate_e_per_s:.2g} e-/s/px, "
-            f"RN={self.read_noise_e:.2g} e-/read, "
-            f"CIC={self.clock_induced_charge_rate_e_per_frame:.2g} e-/frame, "
-            f"frame_time_s={self.frame_time_s:.3g} s)"
+            f"QE={qe_str}, survival={self.survival_fraction:.3g}, "
+            f"dark={self.dark_current_e_per_pixel_s:.2g} e-/s/px, "
+            f"RN={self.read_noise_e_rms:.2g} e-/read, "
+            f"CIC={self.clock_induced_charge_e_per_pixel_frame:.2g} e-/frame, "
+            f"F2={self.excess_noise_factor_sq:.3g})"
         )
