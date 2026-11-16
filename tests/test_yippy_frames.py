@@ -57,7 +57,11 @@ def test_separate_stellar_and_sky_frames(cached_diameter_coro):
 
 
 def test_shared_frame_bit_equality(cached_diameter_coro):
-    """Native Image data is returned without an interpolation or centre change."""
+    """On the native grid, products are box integrals with no centre change.
+
+    The expected value resamples the native Image onto its own grid; a frame,
+    centre or reconstruction change on the consumer side breaks bit equality.
+    """
     c = cached_diameter_coro
     g = c.grid
     for actual, expected in [
@@ -69,4 +73,4 @@ def test_shared_frame_bit_equality(cached_diameter_coro):
         ),
     ]:
         assert isinstance(actual, Image)
-        np.testing.assert_array_equal(actual.data, expected.data)
+        np.testing.assert_array_equal(actual.data, resample(expected, g).data)

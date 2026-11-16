@@ -14,9 +14,12 @@ _DEFAULT_RULE = Circular(0.7)
 
 
 def _on_grid(image: Image, grid: PixelGrid) -> Image:
-    """Resample using the product's frame; reconcile different lod frames via sky."""
-    if image.grid == grid:
-        return image
+    """Resample using the product's frame; reconcile different lod frames via sky.
+
+    There is no shortcut for an identical grid: native samples are point
+    densities under the declared reconstruction, and the target pixels are
+    box integrals of it, so the result must be continuous in the target pitch.
+    """
     source = image.grid
     target = grid
     if source.unit != target.unit or (

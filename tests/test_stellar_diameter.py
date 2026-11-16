@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.grids import resample
 
 from optixstuff import MultiBandCoronagraph
 
@@ -12,7 +13,8 @@ def test_yippy_diameter_forwarding(cached_diameter_coro):
     c = cached_diameter_coro
     for d in (0.0, 0.1, 0.2):
         np.testing.assert_array_equal(
-            c.stellar_map(500.0, d, grid=c.grid).data, c._backend.stellar_intens(d).data
+            c.stellar_map(500.0, d, grid=c.grid).data,
+            resample(c._backend.stellar_intens(d), c.grid).data,
         )
     assert float(c.stellar_map(500.0, 0.2, grid=c.grid).data.sum()) > float(
         c.stellar_map(500.0, 0.0, grid=c.grid).data.sum()

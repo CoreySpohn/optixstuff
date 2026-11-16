@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import concrete_subclasses, synthetic_coronagraph
-from hwoutils.grids import Image, PixelGrid
+from hwoutils.grids import Image, PixelGrid, resample
 from yippy import Circular
 
 import optixstuff as ox
@@ -68,15 +68,18 @@ def test_image_contract(coro):
         assert results[5].quantity == "photons/s"
         assert all(im.measure == "per_pixel" for im in results[:4])
     if isinstance(coro, ox.YippyCoronagraph):
+        # On the native grid, targets are box integrals of the declared
+        # reconstruction, exactly as at any other pitch (no verbatim shortcut).
         np.testing.assert_array_equal(
-            coro.on_axis_psf(500.0, g).data, coro.stellar_intens(0.0).data
+            coro.on_axis_psf(500.0, g).data, resample(coro.stellar_intens(0.0), g).data
         )
         np.testing.assert_array_equal(
             coro.off_axis_psf(500.0, 1.0, g).data,
-            coro._backend.create_psf(1.0, 0.0).data,
+            resample(coro._backend.create_psf(1.0, 0.0), g).data,
         )
         np.testing.assert_array_equal(
-            coro.background_transmission(500.0, grid=g).data, coro.sky_trans.data
+            coro.background_transmission(500.0, grid=g).data,
+            resample(coro.sky_trans, g).data,
         )
 
 
