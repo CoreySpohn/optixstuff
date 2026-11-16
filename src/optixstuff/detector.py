@@ -2,6 +2,7 @@
 
 import abc
 from dataclasses import fields
+from math import isfinite
 from typing import final
 
 import equinox as eqx
@@ -29,11 +30,11 @@ class AbstractDetector(eqx.Module):
 
     Noise parameters are per pixel, QE and survival are fractions, and
     ``excess_noise_factor_sq`` is a variance multiplier, at least one.
-    Shape and read overlap control structure and are static PyTree fields.
+    Pixel scale, shape and read overlap are static PyTree geometry fields.
     Subclasses supply QE; statistics and sampling share the electron contract.
     """
 
-    pixel_scale_arcsec: Array = eqx.field(converter=jnp.asarray)
+    pixel_scale_arcsec: float = eqx.field(static=True, converter=float)
     shape: tuple[int, int] = eqx.field(static=True)
     survival_fraction: Array = eqx.field(default=1.0, converter=jnp.asarray)
     dark_current_e_per_pixel_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
@@ -46,7 +47,9 @@ class AbstractDetector(eqx.Module):
     overlaps_read: bool = eqx.field(default=False, static=True)
 
     def __check_init__(self):
-        """Validate concrete survival and per-pixel hardware parameters."""
+        """Validate host geometry, survival and per-pixel hardware parameters."""
+        if not isfinite(self.pixel_scale_arcsec) or self.pixel_scale_arcsec <= 0:
+            raise ValueError("pixel_scale_arcsec must be finite and positive")
         _check_range("survival_fraction", self.survival_fraction, 0.0, 1.0)
         for name in (
             "dark_current_e_per_pixel_s",
@@ -178,7 +181,7 @@ class IdealDetector(AbstractDetector):
     def __init__(
         self,
         *,
-        pixel_scale_arcsec: ArrayLike,
+        pixel_scale_arcsec: float,
         shape: tuple[int, int],
         survival_fraction: ArrayLike = 1.0,
         read_time_s: ArrayLike = 0.0,
@@ -220,7 +223,7 @@ class Detector(AbstractDetector):
     def __init__(
         self,
         *,
-        pixel_scale_arcsec: ArrayLike,
+        pixel_scale_arcsec: float,
         shape: tuple[int, int],
         qe: ArrayLike = 1.0,
         qe_curve: tuple[ArrayLike, ArrayLike] | None = None,

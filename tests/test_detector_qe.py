@@ -114,7 +114,12 @@ def test_linear_qe():
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())
 def test_concrete_validation(detector_cls):
-    """Fails if concrete out-of-range survival or QE is accepted; exact rejection."""
+    """Fails if invalid geometry, survival or QE is accepted; exact rejection."""
+    det = detector_cls(pixel_scale_arcsec=jnp.asarray(0.01), shape=(1, 1))
+    assert isinstance(det.pixel_scale_arcsec, float)
+    for bad in [-1.0, 0.0, float("inf"), float("-inf"), float("nan")]:
+        with pytest.raises(ValueError, match="pixel_scale_arcsec"):
+            detector_cls(pixel_scale_arcsec=bad, shape=(1, 1))
     for bad in [-0.1, 1.1, float("nan")]:
         with pytest.raises(ValueError, match="survival_fraction"):
             detector_cls(pixel_scale_arcsec=0.01, shape=(1, 1), survival_fraction=bad)
