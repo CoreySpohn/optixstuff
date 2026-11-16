@@ -24,7 +24,7 @@ from optixstuff.optical_elements import (
 from optixstuff.optical_path import OpticalPath
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
-from optixstuff.speckle import AbstractSpeckleField
+from optixstuff.speckle import AbstractSpeckleField, LinearSpeckleField
 from optixstuff.yippy_coronagraph import YippyCoronagraph
 
 __all__ = [
@@ -45,6 +45,7 @@ __all__ = [
     "IdealDetector",
     "IntegratedPhotonRates",
     "LensletDisperser",
+    "LinearSpeckleField",
     "MultiBandCoronagraph",
     "OpticalPath",
     "PhotonRates",

@@ -218,6 +218,41 @@ Finite stellar diameter remains an image capability; scalar records retain the
 diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
 selects a multiband record; `curves()` alone uses the reference band.
 
-Speckle `realize(wavelength_nm=..., time_d=...)` uses days from the scene epoch.
-Implementations subtract their `epoch_d` clock origin internally. Exposure
-averaging takes `start_time_d` and `exposure_s`, converting seconds with hwoutils.
+## Speckle excess
+
+`AbstractSpeckleField` owns a native `lod` `grid` with its `Frame` and an
+`epoch_d` clock origin. It remains the interface for nonlinear implementations,
+including replayed intensity cubes. `LinearSpeckleField` supplies the common
+law for coefficient-driven fields; subclasses implement `coefficients(time_d)`
+and subtract `epoch_d` internally. Wavelengths are nm, absolute times are days
+from the scene epoch, and exposure durations are seconds.
+
+The linear family's `e_nom` and `G` have shapes `(ny, nx)` and
+`(n_modes, ny, nx)`. Amplitudes have squared magnitudes in energy per pixel;
+`G` is amplitude per coefficient unit. `input_energy` is the unocculted energy.
+Density-amplitude producers multiply both arrays by `sqrt(grid.pixel_area)`
+at construction. The stable excess is
+`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`, with the nominal floor
+excluded and `G` scaled by `reference_wavelength_nm / wavelength_nm`.
+
+`realize(wavelength_nm=..., time_d=...)` returns an `Image` on `self.grid`,
+with `per_pixel`, `stellar_flux_fraction`, `band_limited`, and `reflect`
+metadata. Wavelength and time arrays form an outer product; wavelength axes
+lead time axes, followed by `(y, x)`. A `(W, Q)` wavelength array has axes
+`("band", "quadrature")`. Native coordinates describe lambda/D at each node:
+its angular basis is `grid.basis * grid.frame.lod_to_arcsec(node_nm)`.
+Convert each node grid with `grid.to_arcsec(node_nm)` before resampling to a
+fixed detector. The same Frame conversion applies to native coronagraph
+products, whose stored reference grid remains explicit.
+
+`broadened(quadrature=..., time_d=...)` integrates all realized nodes at fixed
+native lambda/D coordinates, dividing the nm weights by their per-band sum.
+The output retains flux-fraction units and the band axis. It cannot replace
+node-level resampling and spectral weighting for a fixed angular detector.
+`realize_average(..., start_time_d=..., exposure_s=..., n_sub=8)` averages
+realized Images with the midpoint rule, retaining metadata.
+
+`epoch_d` is a static host float64 origin. Enable JAX x64 and promote absolute
+timestamps before adding small offsets on device; subtracting the epoch cannot
+recover precision lost in a float32 absolute time. Deep-contrast calculations
+also require float64/complex128 arrays.

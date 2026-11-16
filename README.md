@@ -81,6 +81,30 @@ for one declared aperture; its image methods return zero placeholders.
 Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
 exposure durations remain seconds.
 
+### Linear speckle fields
+
+Subclass `LinearSpeckleField` and implement `coefficients(time_d)`, subtracting
+its static host `epoch_d` internally. Supply complex per-pixel amplitudes `e_nom`,
+sensitivities `G`, unocculted `input_energy`, a native `lod` grid with its frame,
+and `reference_wavelength_nm`. The shared stable law returns only the excess
+`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`, with `G` scaled by
+`reference_wavelength_nm / wavelength_nm`. Density-amplitude inputs must first
+be multiplied by the square root of the native pixel area.
+
+`realize(wavelength_nm=..., time_d=...)` returns an `Image` on the field's own
+grid, with `per_pixel`, `stellar_flux_fraction`, `band_limited`, and `reflect`
+metadata. Wavelength arrays, including quadrature nodes `(W, Q)`, become leading
+axes. Each native lambda/D coordinate uses the node wavelength: convert with
+`image.grid.to_arcsec(node_nm)` before resampling that node onto a detector.
+
+`broadened(quadrature=..., time_d=...)` averages realized nodes at fixed native
+lambda/D coordinates, normalizing the nm weights to sum to one per band.
+Detector-band images instead require resampling and spectral weighting at each
+node before integration. `realize_average(..., exposure_s=..., start_time_d=...)`
+retains its midpoint time-average meaning. Enable JAX x64 for deep contrast and
+for adding small offsets to absolute day timestamps. Nonlinear replay models
+continue to implement `AbstractSpeckleField` directly.
+
 ### Detector chain
 
 Readers supply `PhotonRates` in photons/s/nm at shared quadrature nodes.

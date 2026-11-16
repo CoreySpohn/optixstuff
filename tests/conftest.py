@@ -139,3 +139,44 @@ def simple_detector():
 def throughput_element():
     """A constant 80% throughput optical element."""
     return ox.ConstantThroughput(throughput=0.8, name="test_filter")
+
+
+class SinusoidalSpeckle(ox.LinearSpeckleField):
+    """Two-mode deterministic trajectory; coefficient unit is nm of OPD."""
+
+    offset_nm: object
+    amplitude_nm: object
+    angular_frequency_per_d: object
+
+    def coefficients(self, time_d):
+        import jax.numpy as jnp
+
+        # Subtract on the host when concrete; traced absolute times need x64.
+        elapsed_d = jnp.asarray(time_d - self.epoch_d)
+        return self.offset_nm + self.amplitude_nm * jnp.sin(
+            elapsed_d[..., None] * self.angular_frequency_per_d
+        )
+
+
+@pytest.fixture
+def linear_speckle():
+    """Small asymmetric complex field; scoped x64, never import-order precision."""
+    import jax
+    import jax.numpy as jnp
+
+    with jax.enable_x64():
+        primary = ox.SimplePrimary(
+            circumscribed_diameter_m=6.0, collecting_area_m2=28.0
+        )
+        grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=primary.frame(500.0))
+        y, x = np.indices(grid.shape)
+        yield SinusoidalSpeckle(
+            e_nom=(1 + 0.1 * x) + 1j * (0.4 - 0.2 * y),
+            G=np.stack([(0.3 + 0.2j) * (x + 1), (-0.2 + 0.4j) * (y + 1)]),
+            input_energy=7.3,
+            grid=grid,
+            reference_wavelength_nm=500.0,
+            offset_nm=jnp.array([0.03, -0.02]),
+            amplitude_nm=jnp.array([0.05, 0.04]),
+            angular_frequency_per_d=jnp.array([2.0, 3.0]),
+        )
