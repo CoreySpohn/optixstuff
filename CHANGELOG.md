@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0](https://github.com/CoreySpohn/optixstuff/compare/v4.1.0...v5.0.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **exposure:** exposure start and speckle clock origin are days from the scene epoch
+
+### Features
+
+* **exposure:** exposure start and speckle clock origin are days from the scene epoch ([59ce2c8](https://github.com/CoreySpohn/optixstuff/commit/59ce2c83de150c70ff1875eb0d5a3c20d41c6430))
+
 ## [4.1.0](https://github.com/CoreySpohn/optixstuff/compare/v4.0.1...v4.1.0) (2026-11-12)
 
 
