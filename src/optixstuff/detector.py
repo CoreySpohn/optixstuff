@@ -62,6 +62,14 @@ class AbstractDetector(eqx.Module):
         """Return QE in [0, 1], with the same shape as ``wavelength_nm``."""
         ...
 
+    def quadrature_knots_nm(self) -> Array:
+        """Wavelengths [nm] where the QE is not smooth, for band quadrature.
+
+        A consumer building a ``Quadrature`` splits its bands at these points so
+        that each node interval sees a smooth QE. A constant QE has none.
+        """
+        return jnp.zeros((0,))
+
     def electrons(self, rates: PhotonRates, quadrature: Quadrature) -> ElectronRates:
         """Integrate survival * QE * photons/s/nm into electrons/s per field.
 
@@ -278,6 +286,16 @@ class Detector(AbstractDetector):
             return jnp.broadcast_to(self._qe, wavelength_nm.shape)
         wavelengths_nm, qe = self._qe_curve
         return jnp.interp(wavelength_nm, wavelengths_nm, qe, left=0.0, right=0.0)
+
+    def quadrature_knots_nm(self) -> Array:
+        """Tabulated QE wavelengths [nm]; empty for a constant QE.
+
+        The linear interpolant has a kink at every table point, and the zero
+        extension outside the table has a jump at both ends.
+        """
+        if self._qe_curve is None:
+            return jnp.zeros((0,))
+        return self._qe_curve[0]
 
     def __repr__(self) -> str:
         """Summarize geometry, yield, and noise parameters."""

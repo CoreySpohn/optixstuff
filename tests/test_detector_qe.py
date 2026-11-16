@@ -107,6 +107,9 @@ def test_linear_qe():
         rtol=8 * np.finfo(np.float32).eps,
         atol=0,
     )
+    # Quadrature breakpoints: the table points, none for a constant QE (exact).
+    np.testing.assert_array_equal(det.quadrature_knots_nm(), [400.0, 600.0, 800.0])
+    assert constant.quadrature_knots_nm().shape == (0,)
 
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())
