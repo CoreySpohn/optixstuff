@@ -120,9 +120,9 @@ class LensletDisperser(AbstractDisperser):
         """Disperser optical throughput in [0, 1], shaped like wavelength_nm.
 
         Delegates to the composed throughput element (ConstantThroughput by
-        default; SpectralThroughput for a tabulated blaze/transmission curve) and
-        broadcasts to the wavelength shape so the output shape is canonical
-        regardless of the backing element.
+        default; TransmissiveElement holding a Transmission for a tabulated
+        blaze curve) and broadcasts to the wavelength shape so the output
+        shape is canonical regardless of the backing element.
         """
         w = jnp.asarray(wavelength_nm, dtype=float)
         return self.throughput_element.get_throughput(w) * jnp.ones_like(w)

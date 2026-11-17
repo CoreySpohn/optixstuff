@@ -1,7 +1,10 @@
 """Tests for the IFS disperser descriptors."""
 
 import jax.numpy as jnp
+import pytest
+from hwoutils.spectral import Transmission
 
+from optixstuff import TransmissiveElement
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
 
 
@@ -55,8 +58,6 @@ def test_throughput_default_shape_matches_wavelength():
 
 
 def test_abstract_cannot_instantiate():
-    import pytest
-
     with pytest.raises(TypeError):
         AbstractDisperser()
 
@@ -98,12 +99,10 @@ def test_psflet_pack_path_roundtrips():
 
 
 def test_throughput_spectral_curve():
-    """A SpectralThroughput-backed disperser returns the interpolated curve,
+    """A Transmission-backed disperser returns the interpolated curve,
     shaped like the wavelength input."""
-    from optixstuff import SpectralThroughput
-
-    curve = SpectralThroughput(
-        jnp.array([500.0, 700.0, 900.0]), jnp.array([0.2, 0.8, 0.5])
+    curve = TransmissiveElement(
+        Transmission(jnp.array([500.0, 700.0, 900.0]), jnp.array([0.2, 0.8, 0.5]))
     )
     d = LensletDisperser(
         pitch_m=174e-6,

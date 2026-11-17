@@ -19,7 +19,7 @@ from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
     ConstantThroughput,
-    SpectralThroughput,
+    TransmissiveElement,
 )
 from optixstuff.optical_path import OpticalPath
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
@@ -51,7 +51,7 @@ __all__ = [
     "ScalarCoronagraph",
     "SegmentedPrimary",
     "SimplePrimary",
-    "SpectralThroughput",
+    "TransmissiveElement",
     "YippyCoronagraph",
     "__version__",
     "frames_for_time",

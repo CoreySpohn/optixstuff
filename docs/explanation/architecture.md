@@ -34,7 +34,7 @@ flowchart TB
     AOE[AbstractOpticalElement]
     AUE[AbstractUniformElement]
     CT[ConstantThroughput]
-    ST[SpectralThroughput]
+    ST[TransmissiveElement]
     AP[AbstractPrimary]
     SP[SimplePrimary]
     AC[AbstractCoronagraph]
@@ -68,21 +68,23 @@ into a single `OpticalPath`:
 | Family | Abstract base | Concrete examples |
 |---|---|---|
 | Primary aperture | `AbstractPrimary` | `SimplePrimary` |
-| Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `SpectralThroughput` |
+| Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `TransmissiveElement` |
 | Coronagraph backend | `AbstractCoronagraph` | `YippyCoronagraph` |
 | Detector | `AbstractDetector` | `IdealDetector`, `Detector` |
 | Composition container | (none) | `OpticalPath` |
 
 ## What throughput elements stand in for
 
-`ConstantThroughput` and `SpectralThroughput` are abstract enough to
-represent any wavelength-dependent loss in the optical path. Mapping
-to real hardware:
+`ConstantThroughput` and `TransmissiveElement` represent optical losses.
+Tabulated responses use `hwoutils.spectral.Transmission`,
+which interpolates linearly and is zero outside its table. `Transmission.tophat`
+represents a unit bandpass; constant optical losses use a scalar
+`ConstantThroughput`. Mapping to real hardware:
 
 | Concrete element | Represents |
 |---|---|
 | `ConstantThroughput` | Flat-reflectivity mirror coating, broadband neutral-density filter, fold mirror with achromatic reflectivity |
-| `SpectralThroughput` | Any tabulated wavelength-dependent throughput -- mirror reflectivity curves, bandpass filters, dichroics, other filters |
+| `TransmissiveElement` | An element holding a hwoutils Transmission -- mirror reflectivity curves, bandpass filters, dichroics, other filters |
 
 A real instrument has many individual physical components -- primary
 mirror, secondary, deformable mirror, fold mirrors, polarisers,
@@ -96,14 +98,18 @@ effective throughput is the product of every element's
 This example requires measured throughput curves and a configured coronagraph and detector.
 
 ```python notest
+from hwoutils.spectral import Transmission
+
 path = OpticalPath(
     primary=SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
     attenuating_elements=(
         ConstantThroughput(throughput=0.95),  # primary coating
         ConstantThroughput(throughput=0.95),  # secondary mirror
         ConstantThroughput(throughput=0.97),  # fold mirror
-        SpectralThroughput(wavelengths_nm, mirror_R),  # measured mirror reflectivity
-        SpectralThroughput(wavelengths_nm, filter_T),  # bandpass filter
+        TransmissiveElement(
+            Transmission(wavelengths_nm, mirror_R)
+        ),  # measured mirror reflectivity
+        TransmissiveElement(Transmission(wavelengths_nm, filter_T)),  # bandpass filter
     ),
     coronagraph=...,
     detector=...,

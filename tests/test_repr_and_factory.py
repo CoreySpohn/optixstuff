@@ -46,27 +46,6 @@ class TestReprs:
         assert "test_filter" in s
         assert "throughput=0.8" in s
 
-    def test_linear_throughput_element(self):
-        el = ox.SpectralThroughput(
-            wavelengths_nm=jnp.array([400.0, 500.0, 600.0, 700.0]),
-            throughputs=jnp.array([0.7, 0.8, 0.9, 0.85]),
-        )
-        s = repr(el)
-        assert "SpectralThroughput" in s
-        assert "400-700 nm" in s
-        assert "n=4" in s
-
-    def test_spectral_throughput_bandpass_shape(self):
-        f = ox.SpectralThroughput(
-            wavelengths_nm=jnp.array([500.0, 550.0, 600.0]),
-            throughputs=jnp.array([0.1, 0.95, 0.1]),
-        )
-        s = repr(f)
-        assert "SpectralThroughput" in s
-        assert "500-600 nm" in s
-        assert "n=3" in s
-        assert "0.95" in s
-
     def test_optical_path_is_tree_shaped(self, simple_primary, simple_detector):
         path = ox.OpticalPath(
             primary=simple_primary,

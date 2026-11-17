@@ -1,7 +1,11 @@
 """Tests for optixstuff hardware abstractions."""
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from hwoutils.spectral import Transmission, spectral_knots
 
 import optixstuff as ox
 
@@ -29,8 +33,6 @@ class TestSimplePrimary:
         assert jnp.isclose(p.collecting_area_m2, expected)
 
     def test_is_equinox_module(self, simple_primary):
-        import equinox as eqx
-
         assert isinstance(simple_primary, eqx.Module)
 
 
@@ -49,33 +51,45 @@ class TestConstantThroughputElement:
         assert jnp.allclose(result, 0.8 * jnp.ones((10, 10)))
 
 
-class TestLinearThroughputElement:
-    def test_interpolation(self):
-        wls = jnp.array([400.0, 600.0, 800.0])
-        tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=tps)
-        # At 600 nm should be exactly 0.9
-        assert el.get_throughput(600.0) == pytest.approx(0.9, abs=1e-5)
-
-    def test_extrapolation_returns_zero(self):
-        wls = jnp.array([400.0, 600.0, 800.0])
-        tps = jnp.array([0.5, 0.9, 0.7])
-        el = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=tps)
-        # Outside range should be zero
-        assert el.get_throughput(200.0) == pytest.approx(0.0, abs=1e-5)
-        assert el.get_throughput(1000.0) == pytest.approx(0.0, abs=1e-5)
-
-
-class TestOpticalFilter:
-    def test_interpolation(self):
-        wls = jnp.array([500.0, 550.0, 600.0])
-        trans = jnp.array([0.0, 1.0, 0.0])
-        f = ox.SpectralThroughput(wavelengths_nm=wls, throughputs=trans)
-        # Peak at 550 should be 1.0
-        assert f.get_throughput(550.0) == pytest.approx(1.0, abs=1e-5)
-
-
 class TestOpticalPath:
+    def test_transmission_elements_compose(self, simple_primary, simple_detector):
+        """Fails if held responses lose knots, attenuation or parameter gradients.
+
+        Exact algebra: at 550 nm the linear response is (0.2+0.8)/2;
+        the second element transmits 0.4. Allow 2e-15 floating-point error.
+        """
+        with jax.enable_x64():
+            element = ox.TransmissiveElement(Transmission([500, 600], [0.2, 0.8]))
+            path = ox.OpticalPath(
+                primary=simple_primary,
+                attenuating_elements=(element, ox.ConstantThroughput(0.4)),
+                coronagraph=None,
+                detector=simple_detector,
+            )
+            expected = (0.2 + 0.8) / 2 * 0.4
+            np.testing.assert_allclose(
+                eqx.filter_jit(lambda p: p.system_throughput(550.0))(path),
+                expected,
+                rtol=0,
+                atol=2e-15,
+            )
+            np.testing.assert_array_equal(spectral_knots(path), [500, 600])
+            np.testing.assert_allclose(
+                element.apply(jnp.array([[2.0, 3.0]]), 550),
+                jnp.array([[2.0, 3.0]]) * ((0.2 + 0.8) / 2),
+                rtol=0,
+                atol=2e-15,
+            )
+            gradient = eqx.filter_grad(lambda p: p.system_throughput(550.0))(path)
+            np.testing.assert_allclose(
+                gradient.attenuating_elements[0].transmission.transmission,
+                [0.4 / 2, 0.4 / 2],
+                rtol=0,
+                atol=2e-15,
+            )
+            assert path.system_throughput(499.0) == 0
+            assert path.system_throughput(601.0) == 0
+
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
         path = ox.OpticalPath(

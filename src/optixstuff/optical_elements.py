@@ -4,8 +4,7 @@ import abc
 from typing import final
 
 import equinox as eqx
-import interpax
-import jax.numpy as jnp
+from hwoutils.spectral import Transmission
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -83,41 +82,17 @@ class ConstantThroughput(AbstractUniformElement):
 
 
 @final
-class SpectralThroughput(AbstractUniformElement):
-    """Wavelength-dependent throughput from sampled (wavelength, throughput) pairs.
+class TransmissiveElement(AbstractUniformElement):
+    """Spatially uniform optical element holding a spectral Transmission.
 
-    Linear interpolation between samples; throughput is zero outside
-    the defined wavelength range.
-
-    Represents any tabulated wavelength-dependent throughput in the
-    optical path: bandpass filters, dichroics, mirror reflectivity,
-    coating losses, ADCs, blocking filters, etc.
+    The response table, interpolation and support belong to Transmission.
+    This element supplies the optical-path apply/get_throughput interface;
+    an OpticalPath multiplies the responses of its individual elements.
+    Use ConstantThroughput for a wavelength-independent scalar efficiency.
     """
 
-    wavelengths_nm: Array
-    throughputs: Array
-    interp: interpax.Interpolator1D
-
-    def __init__(self, wavelengths_nm: Array, throughputs: Array) -> None:
-        """Create a spectral throughput element from sampled pairs."""
-        self.wavelengths_nm = wavelengths_nm
-        self.throughputs = throughputs
-        self.interp = interpax.Interpolator1D(
-            wavelengths_nm, throughputs, method="linear", extrap=jnp.array([0.0, 0.0])
-        )
+    transmission: Transmission
 
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Interpolate throughput at the requested wavelength."""
-        return self.interp(wavelength_nm)
-
-    def __repr__(self) -> str:
-        """One-line summary of throughput-table extent and sample count."""
-        n = int(self.wavelengths_nm.shape[0])
-        wl_min = float(self.wavelengths_nm.min())
-        wl_max = float(self.wavelengths_nm.max())
-        t_min = float(self.throughputs.min())
-        t_max = float(self.throughputs.max())
-        return (
-            f"SpectralThroughput(wl={wl_min:.0f}-{wl_max:.0f} nm, "
-            f"n={n}, throughput={t_min:.3g}-{t_max:.3g})"
-        )
+        """Evaluate the held response at wavelengths in nanometers."""
+        return self.transmission(wavelength_nm)

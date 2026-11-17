@@ -57,7 +57,7 @@ from optixstuff import (
     SimplePrimary,
     IdealDetector,
     ConstantThroughput,
-    SpectralThroughput,
+    TransmissiveElement,
 )
 from optixstuff import YippyCoronagraph
 
@@ -93,7 +93,7 @@ provides:
 - **Abstract interfaces** -- `AbstractPrimary`,
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
 - **Concrete implementations** -- `SimplePrimary`, `ConstantThroughput`,
-  `SpectralThroughput`, `IdealDetector`, `Detector`, `YippyCoronagraph`
+  `TransmissiveElement`, `IdealDetector`, `Detector`, `YippyCoronagraph`
 - **Container** -- `OpticalPath`, a composable hardware configuration
   passed to all downstream simulators
 
