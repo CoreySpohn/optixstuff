@@ -42,9 +42,8 @@ def _convolve_quadrants(flux, psf_datacube, grid: PixelGrid):
     Odd grids share the zero-offset axes, supplied by the positive quadrant;
     reflected negative halves receive one leading zero on each shared axis.
     """
-    ny, nx = grid.shape
     cx, cy = grid.center_x, grid.center_y
-    if (cx, cy) != ((nx - 1) / 2, (ny - 1) / 2):
+    if not grid.is_geometric:
         raise ValueError("quarter datacubes require a geometric grid center")
     sx, sy = math.ceil(cx), math.ceil(cy)
     padx, pady = int(cx == sx), int(cy == sy)

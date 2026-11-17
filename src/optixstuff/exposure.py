@@ -1,39 +1,7 @@
-"""ExposureConfig: physical parameters defining a single detector integration.
-
-Relocated from coronagraphoto so the same object can be consumed by
-both image-level (coronagraphoto) and analytic (jaxedith) code paths.
-"""
-
-from dataclasses import fields
+"""Whole-frame detector integration plans."""
 
 import equinox as eqx
 import jax.numpy as jnp
-
-
-class ExposureConfig(eqx.Module):
-    """The physical parameters defining a single detector integration.
-
-    All fields can be scalars (for a single event) or vectors (for a
-    sequence), depending on how the factories are composed.
-    """
-
-    start_time_d: jnp.ndarray  # Days from the scene epoch
-    exposure_time_s: jnp.ndarray  # Seconds
-    central_wavelength_nm: jnp.ndarray  # Nanometers
-    bin_width_nm: jnp.ndarray  # Nanometers
-    position_angle_deg: jnp.ndarray  # Degrees
-
-    @classmethod
-    def in_axes(cls, **vectorized_axes):
-        """Helper to generate in_axes structure for JAX vmap over an ExposureConfig.
-
-        Usage:
-            # Vectorize over wavelength (axis 0), keep time constant
-            in_axes = ExposureConfig.in_axes(central_wavelength_nm=0, bin_width_nm=0)
-        """
-        spec_dict = {f.name: None for f in fields(cls)}
-        spec_dict.update(vectorized_axes)
-        return cls(**spec_dict)
 
 
 class FramePlan(eqx.Module):

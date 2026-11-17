@@ -93,7 +93,7 @@ class LensletDisperser(AbstractDisperser):
     sky_pitch_arcsec: float | None = None
     psflet_pack_path: str | None = eqx.field(static=True, default=None)
 
-    def _dispersion_px(self, wavelength_nm):
+    def dispersion_px(self, wavelength_nm):
         """Spectral-axis detector offset [px] for the wavelength(s)."""
         u = jnp.log(jnp.asarray(wavelength_nm, dtype=float) / self.lam_ref_nm)
         return jnp.polyval(self.dispersion_coeffs, u)
@@ -111,8 +111,8 @@ class LensletDisperser(AbstractDisperser):
     def n_pix_spread(self, wavelength_min_nm, wavelength_max_nm):
         """Spectral trace length [px] across a band, plus a PSFlet-width margin."""
         span = jnp.abs(
-            self._dispersion_px(wavelength_max_nm)
-            - self._dispersion_px(wavelength_min_nm)
+            self.dispersion_px(wavelength_max_nm)
+            - self.dispersion_px(wavelength_min_nm)
         )
         return span + self.psflet_params[0]
 

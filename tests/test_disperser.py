@@ -125,3 +125,20 @@ def test_throughput_spectral_curve():
     assert t.shape == lam.shape  # array in -> array out
     assert jnp.allclose(t, jnp.array([0.2, 0.8, 0.5]), atol=1e-6)  # sample points
     assert jnp.allclose(d.throughput(600.0), 0.5, atol=1e-6)  # linear midpoint
+
+
+def test_dispersion_px_polynomial_and_wavelength_derivative():
+    """Floating-point floor: expanded quadratic and its analytic derivative."""
+    import jax
+
+    d = _lenslet(dispersion_coeffs=jnp.array([3.0, 100.0, -2.0]))
+    wl = jnp.array([620.0, 660.0, 700.0])
+    u = jnp.log(wl / 660.0)
+    assert jnp.allclose(
+        d.dispersion_px(wl), 3 * u**2 + 100 * u - 2, rtol=4 * jnp.finfo(u.dtype).eps
+    )
+    assert jnp.allclose(
+        jax.grad(d.dispersion_px)(700.0),
+        (6 * jnp.log(700.0 / 660.0) + 100) / 700.0,
+        rtol=4 * jnp.finfo(u.dtype).eps,
+    )
