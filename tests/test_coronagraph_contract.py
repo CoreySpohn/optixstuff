@@ -1,5 +1,7 @@
 """Grid, fold, aperture-record and JAX contracts on synthetic optics."""
 
+from dataclasses import replace
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -11,7 +13,7 @@ from conftest import (
     synthetic_coronagraph,
 )
 from hwoutils.grids import Image, PixelGrid, resample
-from hwoutils.spectral import Band
+from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
@@ -173,6 +175,11 @@ def test_curve_contract(coro):
             getattr(coro, name)(UnitBearingSeparation())
     rule = Circular(0.7)
     record = coro.curves(rule)
+    model, prepared_record = coro.prepared(rule)
+    assert model is (
+        coro.band(500.0) if isinstance(coro, ox.MultiBandCoronagraph) else coro
+    )
+    assert prepared_record is record
     s = jnp.asarray(record.separation_lod)
     np.testing.assert_array_equal(
         coro.throughput(s, stellar_diam_lod=0.1), record.evaluate("throughput", s)
@@ -250,6 +257,64 @@ def test_rule_records_and_constants(table):
         is None
     )
     np.testing.assert_array_equal(mb.throughput(2.0, 800.0), c.throughput(2.0))
+
+
+def test_stellar_frame(coro):
+    """Frame metadata agrees with the native stellar product in each band."""
+    if isinstance(coro, ox.MultiBandCoronagraph):
+        other_grid = replace(
+            coro.bands[1].grid,
+            frame=replace(coro.bands[1].grid.frame, reference_wavelength_nm=800.0),
+        )
+        coro = ox.MultiBandCoronagraph(
+            (500.0, 800.0), (coro.bands[0], scalar(other_grid))
+        )
+        assert coro.stellar_frame(800.0) == other_grid.frame
+        assert coro.stellar_frame(500.0) != other_grid.frame
+    assert coro.stellar_frame(500.0) == coro.stellar_map(500.0, 0.0).grid.frame
+
+
+def test_prepare_fixed_angle_preserves_centre_and_reference():
+    """The exact radii at 480, 600 and 720 nm keep the requested peak centre."""
+    rules = tuple(Circular(radius, centre="peak") for radius in (0.75, 0.6, 0.5))
+    coro = synthetic_coronagraph(n=8, rules=rules)
+    path = ox.OpticalPath.from_default_setup(coro, detector_shape=(4, 4))
+    band = Band(450.0, 750.0)
+    q = Quadrature(jnp.array([[480.0, 600.0, 720.0]]), jnp.ones((1, 3)))
+
+    aperture = ox.prepare_aperture(path, band, q, rule=rules[1])
+    (reference,) = aperture.references
+    assert aperture.quadrature is q
+    assert reference.wavelength_nm == 600.0
+    assert reference.record is coro.curves(rules[1])
+    assert tuple(node.record.rule for node in reference.nodes) == rules
+    assert reference.nodes[1].record is reference.record
+
+
+@pytest.mark.parametrize("rule", [ox.HalfMaximum(), ox.Matched()])
+def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
+    """A shifted reference requires template dilation only for table models."""
+    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    band = Band(499.0, 501.0)
+    q = Quadrature(jnp.array([[500.0]]), jnp.ones((1, 1)))
+    with pytest.raises(NotImplementedError, match="frozen reference"):
+        ox.prepare_aperture(path, band, q, rule=rule, reference_wavelength_nm=490.0)
+
+    coro = ox.ScalarCoronagraph(
+        grid=table.grid,
+        throughput_fraction=0.4,
+        aperture_area_lod2=1.5,
+        stellar_leakage_density_lod2=2e-9,
+        rule=rule,
+    )
+    path = eqx.tree_at(lambda p: p.coronagraph, path, coro)
+    aperture = ox.prepare_aperture(
+        path, band, q, rule=rule, reference_wavelength_nm=490.0
+    )
+    (reference,) = aperture.references
+    (node,) = reference.nodes
+    assert reference.wavelength_nm == 490.0
+    assert node.record.rule == reference.record.rule == rule
 
 
 def test_jit_and_gradient(table):

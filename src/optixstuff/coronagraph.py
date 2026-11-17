@@ -9,10 +9,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
-from hwoutils.grids import Image, PixelGrid, resample
+from hwoutils.grids import Frame, Image, PixelGrid, resample
 from hwoutils.spectral import Band
 
-from optixstuff.apertures import DEFAULT_APERTURE_RULE
+from optixstuff.apertures import DEFAULT_APERTURE_RULE, ApertureRule
 from optixstuff.performance import PerformanceCurves
 
 
@@ -82,6 +82,12 @@ class AbstractCoronagraph(eqx.Module):
         self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"
     ) -> PerformanceCurves:
         """Return the prepared performance record for an explicit aperture rule."""
+
+    def prepared(
+        self, rule: ApertureRule, *, leakage_rule="aperture_mean"
+    ) -> tuple["AbstractCoronagraph", PerformanceCurves]:
+        """Return a model and its usable record, preparing on the host if supported."""
+        return self, self.curves(rule, leakage_rule=leakage_rule)
 
     def _performance_band(self, wavelength_nm):
         return self
@@ -274,6 +280,14 @@ class AbstractCoronagraph(eqx.Module):
         )
         return replace(image, data=image.data[0], leading_axes=())
 
+    def stellar_frame(self, wavelength_nm) -> Frame:
+        """Return the native frame for stellar diameters from model metadata.
+
+        Models with a separate stellar product grid override this method.
+        Scalar and point-source models use their native grid frame.
+        """
+        return self.grid.frame
+
     @abc.abstractmethod
     def stellar_map(
         self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None = None
@@ -313,6 +327,7 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
     Finite-star leakage uses _prepared_leakage_weights, built at construction
     with aperture operators for each supported record. Tables
     without prepared stellar-image weights retain the point-source contract.
+    Tables with a separate stellar grid expose its frame via stellar_frame.
     """
 
     sky_trans: AbstractVar[Image]
@@ -602,6 +617,12 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             rule, leakage_rule=leakage_rule
         )
 
+    def prepared(
+        self, rule: ApertureRule, *, leakage_rule="aperture_mean"
+    ) -> tuple[AbstractCoronagraph, PerformanceCurves]:
+        """Return the reference band's prepared model and record."""
+        return self._performance_band(None).prepared(rule, leakage_rule=leakage_rule)
+
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Selected band's sky transmission."""
         if hasattr(separation_lod, "unit"):
@@ -615,6 +636,10 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         return self._performance_band(wavelength_nm).stellar_map(
             wavelength_nm, stellar_diam_lod, grid=grid
         )
+
+    def stellar_frame(self, wavelength_nm) -> Frame:
+        """Return the selected band's native stellar frame."""
+        return self._performance_band(wavelength_nm).stellar_frame(wavelength_nm)
 
     def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid=None):
         """Selected band's source Images on grid."""

@@ -1,6 +1,7 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
+from optixstuff.aperture_binding import PreparedAperture, prepare_aperture
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
     ApertureRule,
@@ -61,10 +62,12 @@ __all__ = [
     "OpticalPath",
     "PerformanceCurves",
     "PhotonRates",
+    "PreparedAperture",
     "ScalarCoronagraph",
     "SegmentedPrimary",
     "SimplePrimary",
     "TransmissiveElement",
     "__version__",
     "frames_for_time",
+    "prepare_aperture",
 ]
