@@ -9,9 +9,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from equinox import AbstractVar
 from hwoutils.grids import Image, PixelGrid, resample
-from yippy import Circular, PerformanceCurves
-
-_DEFAULT_RULE = Circular(0.7)
+from yippy import DEFAULT_APERTURE_RULE, PerformanceCurves
 
 
 def _on_grid(image: Image, grid: PixelGrid) -> Image:
@@ -71,7 +69,7 @@ class AbstractCoronagraph(eqx.Module):
 
     @abc.abstractmethod
     def curves(
-        self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"
+        self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"
     ) -> PerformanceCurves:
         """Return the prepared performance record for an explicit aperture rule."""
 
@@ -84,7 +82,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Weighted planet flux fraction, from the selected rule's record."""
@@ -100,7 +98,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Aperture or noise-equivalent area in (lambda/D)^2."""
@@ -116,7 +114,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Absolute stellar flux fraction integrated with the rule's weights."""
@@ -132,7 +130,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Stellar flux fraction per (lambda/D)^2 under the named averaging rule."""
@@ -148,7 +146,7 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Rule-defined stellar intensity divided by planet intensity."""
@@ -286,7 +284,7 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
         aperture_area_lod2,
         stellar_leakage_density_lod2,
         sky_transmission=1.0,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         outer_working_angle_lod=None,
     ):
         """Prepare one constant record from explicitly unit-labelled constants."""
@@ -316,7 +314,7 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
         )
 
     @abc.abstractmethod
-    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
         """Read an eagerly prepared constant record; never build inside tracing."""
         for record in self._records:
             if record.rule == rule and record.leakage_rule == leakage_rule:
@@ -358,7 +356,7 @@ class ScalarCoronagraph(AbstractScalarCoronagraph):
     Data extent describes the supplied grid; a design OWA is separate.
     """
 
-    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
         """Select the constant record built by AbstractScalarCoronagraph."""
         return super().curves(rule, leakage_rule=leakage_rule)
 
@@ -421,7 +419,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         """Reference band's design outer working angle, or None when unknown."""
         return self.band(self.reference_wavelength_nm).outer_working_angle_lod
 
-    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
         """Reference band's cached performance record."""
         return self.band(self.reference_wavelength_nm).curves(
             rule, leakage_rule=leakage_rule

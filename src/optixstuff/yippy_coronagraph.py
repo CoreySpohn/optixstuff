@@ -5,10 +5,10 @@ from typing import final
 import jax
 import jax.numpy as jnp
 import numpy as np
-from yippy import EqxCoronagraph
+from yippy import DEFAULT_APERTURE_RULE, EqxCoronagraph
 from yippy.performance import performance_curves
 
-from optixstuff.coronagraph import _DEFAULT_RULE, AbstractTableCoronagraph
+from optixstuff.coronagraph import AbstractTableCoronagraph
 
 
 @final
@@ -69,7 +69,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         """Native off-axis lod grid with its explicit circumscribed Frame."""
         return self._backend.grid
 
-    def curves(self, rule=_DEFAULT_RULE, *, leakage_rule="aperture_mean"):
+    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
         """Select a retained yippy record for this rule and density convention."""
         for record in self._records:
             if record.rule == rule and record.leakage_rule == leakage_rule:
@@ -87,7 +87,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         separation_lod,
         ppf=30.0,
         *,
-        rule=_DEFAULT_RULE,
+        rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Record leakage_density_lod2 divided by ppf, in (lambda/D)^-2.
