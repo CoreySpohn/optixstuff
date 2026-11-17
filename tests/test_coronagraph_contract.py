@@ -187,6 +187,15 @@ def test_curve_contract(coro):
     np.testing.assert_array_equal(
         coro.core_area(s, stellar_diam_lod=0.1), record.evaluate("core_area_lod2", s)
     )
+    for accessor, field in (
+        (coro.throughput, "throughput_variance"),
+        (coro.core_area, "core_area_variance_lod2"),
+        (coro.leakage_fraction, "leakage_fraction_variance"),
+        (coro.leakage_density_lod2, "leakage_density_variance_lod2"),
+    ):
+        np.testing.assert_array_equal(
+            accessor(s, variance=True), record.evaluate(field, s)
+        )
     expected = coro.leakage_density_lod2(s) * coro.core_area(s) / coro.throughput(s)
     np.testing.assert_allclose(
         expected, coro.raw_contrast(s), rtol=16 * np.finfo(np.float32).eps
@@ -195,15 +204,22 @@ def test_curve_contract(coro):
     # Maps are inherited once and project the same contract records on the grid.
     radius = jnp.hypot(*coro.grid.coordinates())
     np.testing.assert_array_equal(coro.separation_map(), radius)
-    for method, field in [
-        (coro.throughput_map, "throughput"),
-        (coro.core_area_map, "core_area_lod2"),
+    for method, field, variance_field in [
+        (coro.throughput_map, "throughput", "throughput_variance"),
+        (coro.core_area_map, "core_area_lod2", "core_area_variance_lod2"),
+        (
+            coro.leakage_density_map,
+            "leakage_density_lod2",
+            "leakage_density_variance_lod2",
+        ),
     ]:
-        expected_map = record.evaluate(field, radius)
-        np.testing.assert_array_equal(method(), expected_map)
-        np.testing.assert_array_equal(
-            method([rule, rule]), jnp.stack([expected_map, expected_map], axis=-1)
-        )
+        for variance, name in ((False, field), (True, variance_field)):
+            expected_map = record.evaluate(name, radius)
+            np.testing.assert_array_equal(method(variance=variance), expected_map)
+            np.testing.assert_array_equal(
+                method([rule, rule], variance=variance),
+                jnp.stack([expected_map, expected_map], axis=-1),
+            )
     floor, ppf = 1e-7, 25.0
     expected_noise = np.maximum(np.abs(np.asarray(record.raw_contrast)), floor) / ppf
     np.testing.assert_allclose(

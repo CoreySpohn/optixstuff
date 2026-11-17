@@ -101,14 +101,17 @@ class AbstractCoronagraph(eqx.Module):
         stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
+        variance=False,
     ):
-        """Weighted planet flux fraction, independent of stellar diameter."""
+        """Planet flux fraction using weights, or squared weights for variance."""
         if hasattr(separation_lod, "unit"):
             raise TypeError("separation_lod must be dimensionless numeric values")
         return (
             self._performance_band(wavelength_nm)
             .curves(rule, leakage_rule=leakage_rule)
-            .evaluate("throughput", separation_lod)
+            .evaluate(
+                "throughput_variance" if variance else "throughput", separation_lod
+            )
         )
 
     def core_area(
@@ -120,14 +123,18 @@ class AbstractCoronagraph(eqx.Module):
         stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
+        variance=False,
     ):
-        """Aperture area in (lambda/D)^2, independent of stellar diameter."""
+        """Collecting area in (lambda/D)^2, using squared weights for variance."""
         if hasattr(separation_lod, "unit"):
             raise TypeError("separation_lod must be dimensionless numeric values")
         return (
             self._performance_band(wavelength_nm)
             .curves(rule, leakage_rule=leakage_rule)
-            .evaluate("core_area_lod2", separation_lod)
+            .evaluate(
+                "core_area_variance_lod2" if variance else "core_area_lod2",
+                separation_lod,
+            )
         )
 
     def leakage_fraction(
@@ -139,12 +146,13 @@ class AbstractCoronagraph(eqx.Module):
         stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
+        variance=False,
     ):
-        """Absolute stellar flux fraction integrated with the rule's weights."""
+        """Stellar flux fraction using weights, or squared weights for variance."""
         if hasattr(separation_lod, "unit"):
             raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm)._leakage_query(
-            "leakage_fraction",
+            "leakage_fraction_variance" if variance else "leakage_fraction",
             separation_lod,
             wavelength_nm,
             stellar_diam_lod,
@@ -161,12 +169,13 @@ class AbstractCoronagraph(eqx.Module):
         stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
+        variance=False,
     ):
-        """Stellar flux fraction per (lambda/D)^2 under the named averaging rule."""
+        """Stellar fraction per collecting or variance area in (lambda/D)^2."""
         if hasattr(separation_lod, "unit"):
             raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm)._leakage_query(
-            "leakage_density_lod2",
+            "leakage_density_variance_lod2" if variance else "leakage_density_lod2",
             separation_lod,
             wavelength_nm,
             stellar_diam_lod,
@@ -212,7 +221,12 @@ class AbstractCoronagraph(eqx.Module):
         return jnp.where(jnp.asarray(diameter) == 0, value, jnp.nan)
 
     def leakage_density_map(
-        self, rules=None, *, stellar_diam_lod=0.0, leakage_rule="aperture_mean"
+        self,
+        rules=None,
+        *,
+        stellar_diam_lod=0.0,
+        leakage_rule="aperture_mean",
+        variance=False,
     ):
         """Project density per (lambda/D)^2 on the native separation map.
 
@@ -222,13 +236,17 @@ class AbstractCoronagraph(eqx.Module):
         radius = self.separation_map()
         if rules is None:
             return self.leakage_density_lod2(
-                radius, stellar_diam_lod=stellar_diam_lod, leakage_rule=leakage_rule
+                radius,
+                stellar_diam_lod=stellar_diam_lod,
+                leakage_rule=leakage_rule,
+                variance=variance,
             )
         return jnp.stack(
             [
                 self.leakage_density_lod2(
                     radius,
                     rule=r,
+                    variance=variance,
                     stellar_diam_lod=stellar_diam_lod,
                     leakage_rule=leakage_rule,
                 )
@@ -242,19 +260,23 @@ class AbstractCoronagraph(eqx.Module):
         x, y = self.grid.coordinates()
         return jnp.hypot(x, y)
 
-    def throughput_map(self, rules=None):
+    def throughput_map(self, rules=None, *, variance=False):
         """Project throughput, stacking explicitly prepared rules on the last axis."""
         radius = self.separation_map()
         if rules is None:
-            return self.throughput(radius)
-        return jnp.stack([self.throughput(radius, rule=r) for r in rules], axis=-1)
+            return self.throughput(radius, variance=variance)
+        return jnp.stack(
+            [self.throughput(radius, rule=r, variance=variance) for r in rules], axis=-1
+        )
 
-    def core_area_map(self, rules=None):
+    def core_area_map(self, rules=None, *, variance=False):
         """Project aperture area, stacking prepared rules on the last axis."""
         radius = self.separation_map()
         if rules is None:
-            return self.core_area(radius)
-        return jnp.stack([self.core_area(radius, rule=r) for r in rules], axis=-1)
+            return self.core_area(radius, variance=variance)
+        return jnp.stack(
+            [self.core_area(radius, rule=r, variance=variance) for r in rules], axis=-1
+        )
 
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Read dimensionless sky transmission when the record carries that profile.
@@ -352,25 +374,32 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
 
         def finite(d):
             image = self.stellar_map(wavelength, d, grid=None).data
-            aperture, ring = operators
-            leakage = jnp.einsum("syx,yx->s", aperture, image)
-            area, tau = (
-                jnp.asarray(record.core_area_lod2),
-                jnp.asarray(record.throughput),
+            aperture, aperture_variance, ring = operators
+            is_variance = name in (
+                "leakage_fraction_variance",
+                "leakage_density_variance_lod2",
             )
-            density = (
-                jnp.einsum("syx,yx->s", ring, image)
-                if ring is not None
-                else jnp.where(area > 0, leakage / jnp.where(area > 0, area, 1), 0)
-            )
-            values = {
-                "leakage_fraction": leakage,
-                "leakage_density_lod2": density,
-                "raw_contrast": jnp.where(
-                    tau > 0, density * area / jnp.where(tau > 0, tau, 1), 1e20
-                ),
-            }
-            return record.evaluate_samples(name, separation, values[name]).astype(
+            operator = aperture_variance if is_variance else aperture
+            leakage = jnp.einsum("syx,yx->s", operator, image)
+            if name in ("leakage_fraction", "leakage_fraction_variance"):
+                samples = leakage
+            else:
+                area = jnp.asarray(
+                    record.core_area_variance_lod2
+                    if is_variance
+                    else record.core_area_lod2
+                )
+                samples = (
+                    jnp.einsum("syx,yx->s", ring, image)
+                    if ring is not None
+                    else jnp.where(area > 0, leakage / jnp.where(area > 0, area, 1), 0)
+                )
+                if name == "raw_contrast":
+                    tau = jnp.asarray(record.throughput)
+                    samples = jnp.where(
+                        tau > 0, samples * area / jnp.where(tau > 0, tau, 1), 1e20
+                    )
+            return record.evaluate_samples(name, separation, samples).astype(
                 jnp.asarray(point).dtype
             )
 
@@ -488,6 +517,10 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
                 [density * area / tau if tau > 0 else 1e20],
                 0.0 if tau > 0 else float("nan"),
                 min(grid.shape) * grid.step / 2,
+                throughput_variance=[tau],
+                core_area_variance_lod2=[area],
+                leakage_fraction_variance=[density * area],
+                leakage_density_variance_lod2=[density],
             ),
         )
 
@@ -532,6 +565,7 @@ class ScalarCoronagraph(AbstractScalarCoronagraph):
 
     The one-knot record has tau=throughput_fraction, A=aperture_area_lod2,
     density=stellar_leakage_density_lod2, ell=density*A and C=ell/tau.
+    Scalar constants prescribe identical mean and variance moments.
     A positive constant curve first has positive throughput at zero (iwa=0).
     Data extent describes the supplied grid; a design OWA is separate.
     """

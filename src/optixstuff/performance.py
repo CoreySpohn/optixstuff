@@ -21,7 +21,7 @@ from hwoutils.transforms import downsample_psf
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import root_scalar
 
-from .apertures import ApertureRule, Circular, HalfMaximum
+from .apertures import ApertureRule, Circular, HalfMaximum, Matched
 
 CORE_OVERSAMPLE = 10
 PEAK_SEARCH_RADIUS_LOD = 1.0
@@ -243,6 +243,17 @@ def _refine_peak(psf, center, oversample, nominal_center=None, search_radius_pix
             point,
         )
     return point, evaluate(point)[0]
+
+
+@jax.jit
+def _template_peak(data):
+    """Find the DFT maximum locally around the brightest native sample."""
+    factor = 4
+    fine, sy, sx = core_subpixel_window(data, oversample=factor, half_width_pix=1)
+    row, col = _peak_index(fine)
+    seed = jnp.array([sy, sx]) + (jnp.array([row, col]) + 0.5) / factor - 0.5
+    _, peak = _refine_peak(data, seed, factor)
+    return jnp.maximum(jnp.max(data), peak)
 
 
 def _circle_square_weights(rows, cols, radius):
@@ -872,8 +883,6 @@ def _connected_core(weights, seed_index):
 
 def _rule_samples(rule, psf, source_position, oversample=CORE_OVERSAMPLE):
     """Shared quadrature: per-native-pixel samples, weights, window origin, factor."""
-    from .apertures import Matched
-
     _validate_photometry_image(psf)
     if not isinstance(oversample, int) or oversample < 1:
         raise ValueError("oversample must be a positive integer")
@@ -922,7 +931,9 @@ def _rule_samples(rule, psf, source_position, oversample=CORE_OVERSAMPLE):
         weights = _connected_core(weights, seed.astype(jnp.int32))
         weights = jnp.where(jnp.max(data) > 0, weights, 0)
     elif isinstance(rule, Matched):
-        return data, rule.weights(psf, source_position), 0, 0, 1
+        # Keep the template's normalization, then accumulate and square in float64.
+        weights = jnp.asarray(rule.weights(psf, source_position), dtype=data.dtype)
+        return data, weights, 0, 0, 1
     else:
         raise TypeError("rule must be Circular, HalfMaximum or Matched")
     return fine, weights, sy, sx, oversample
@@ -941,9 +952,16 @@ def _rule_weights(rule, psf, source_position, oversample):
         return jax.lax.dynamic_update_slice(jnp.zeros(psf.grid.shape), native, (sy, sx))
 
 
-def _stellar_samples(stellar, planet_grid, sy, sx, shape, factor):
+def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     """Band-limited stellar per-pixel fractions in the planet's pixel units."""
-    sg = stellar.grid
+    data = jnp.asarray(data, dtype=jnp.float64)
+    if sg == planet_grid:
+        if factor == 1:
+            return jax.lax.dynamic_slice(data, (sy, sx), shape)
+        spectrum = jnp.fft.fft2(data)
+        by = _band_limited_samples(spectrum, sy, shape[0] // factor, factor)
+        bx = _band_limited_samples(spectrum.T, sx, shape[1] // factor, factor)
+        return jnp.real(by @ spectrum @ bx.T)
     sf, pf = sg.frame, planet_grid.frame
     ratio = (
         planet_grid.step
@@ -960,7 +978,7 @@ def _stellar_samples(stellar, planet_grid, sy, sx, shape, factor):
         + (sx + (jnp.arange(shape[1]) + 0.5) / factor - 0.5 - planet_grid.center_x)
         * ratio
     )
-    spectrum = jnp.fft.fft2(jnp.asarray(stellar.data, dtype=jnp.float64))
+    spectrum = jnp.fft.fft2(data)
     by = (
         jnp.exp(2j * jnp.pi * rows[:, None] * jnp.fft.fftfreq(sg.shape[0]))
         / sg.shape[0]
@@ -981,35 +999,42 @@ def _stellar_samples(stellar, planet_grid, sy, sx, shape, factor):
 def leakage_weights(offaxis, stellar, record, *, samples=None):
     """Prepare linear native-image operators for a performance record.
 
-    Returns aperture weights and, for ring averaging, density weights, each
-    with shape (separation, stellar_y, stellar_x). All aperture construction
-    and image-coordinate transforms happen here, before runtime queries.
+    Returns mean and variance aperture operators and, for ring averaging,
+    a density operator, each with shape (separation, stellar_y, stellar_x).
+    Aperture construction and coordinate transforms precede runtime queries.
     Optional samples are (Image, (x_lod, y_lod)) pairs on the record axis.
     Otherwise the offaxis callable is sampled at (separation, 0).
     """
-    from dataclasses import replace
-
     with jax.enable_x64():
-        aperture = []
+        aperture, aperture_variance = [], []
         for index, separation in enumerate(np.asarray(record.separation_lod)):
             psf, position = (
                 (offaxis(float(separation)), (float(separation), 0.0))
                 if samples is None
                 else samples[index]
             )
-            weights = _rule_weights(record.rule, psf, position, CORE_OVERSAMPLE)
-            if stellar.grid == psf.grid:
-                aperture.append(weights)
+            _, weights, sy, sx, factor = _rule_samples(
+                record.rule, psf, position, CORE_OVERSAMPLE
+            )
+            sample = functools.partial(
+                _stellar_samples,
+                sg=stellar.grid,
+                planet_grid=psf.grid,
+                sy=sy,
+                sx=sx,
+                shape=weights.shape,
+                factor=factor,
+            )
+            transpose = jax.linear_transpose(sample, jnp.zeros(stellar.grid.shape))
+            (mean,) = transpose(weights / factor**2)
+            if isinstance(record.rule, Matched):
+                (squared,) = transpose(weights**2)
             else:
-
-                def integrate(data, psf=psf, weights=weights):
-                    samples = _stellar_samples(
-                        replace(stellar, data=data), psf.grid, 0, 0, psf.grid.shape, 1
-                    )
-                    return jnp.sum(samples * weights)
-
-                aperture.append(jax.grad(integrate)(jnp.zeros(stellar.grid.shape)))
+                squared = mean
+            aperture.append(mean)
+            aperture_variance.append(squared)
         aperture = jnp.stack(aperture)
+        aperture_variance = jnp.stack(aperture_variance)
         ring = None
         if record.leakage_rule == "azimuthal_ring_mean":
             sg, pf = stellar.grid, record.frame
@@ -1030,6 +1055,7 @@ def leakage_weights(offaxis, stellar, record, *, samples=None):
     dtype = jnp.result_type(float)
     return (
         jnp.asarray(np.asarray(aperture), dtype=dtype),
+        jnp.asarray(np.asarray(aperture_variance), dtype=dtype),
         None if ring is None else jnp.asarray(np.asarray(ring), dtype=dtype),
     )
 
@@ -1041,10 +1067,15 @@ class PerformanceCurves(eqx.Module):
     ``frame``: wavelength and circumscribed/inscribed diameter defining lambda/D.
     ``rule``: the static, hashable aperture or matched weighting rule.
     ``throughput``: weighted fraction of unocculted planet flux, tau.
-    ``core_area_lod2``: geometric area or Matched noise-equivalent area, A.
+    ``throughput_variance``: planet flux fraction integrated with squared weights.
+    ``core_area_lod2``: pixel area times the sum of weights, A.
+    ``core_area_variance_lod2``: pixel area times the sum of squared weights.
     ``leakage_fraction``: stellar per-pixel fractions integrated with the weights.
+    ``leakage_fraction_variance``: stellar fractions integrated with squared weights.
     ``leakage_density_lod2``: selected mean, ell/A for aperture_mean; the radial
     azimuthal mean per unit area for azimuthal_ring_mean. These differ in general.
+    ``leakage_density_variance_lod2``: variance leakage per variance area for
+    aperture_mean, or the same azimuthal density for azimuthal_ring_mean.
     ``raw_contrast``: leakage_density_lod2 * A / tau, with 1e20 when tau <= 0.
     ``iwa_lod``: first half-maximum-throughput crossing of PCHIP; if no crossing
     exists, the first positive-throughput separation (NaN for an all-zero curve).
@@ -1055,6 +1086,12 @@ class PerformanceCurves(eqx.Module):
     sampled interval and linear end-segment tails in that same space. Exact
     zeros use a 1e-300 floor for log interpolation and remain zero at their knots.
 
+    Circular and HalfMaximum describe an idealized aperture in the limit of
+    infinitely fine detector pixels; detector pixelization is not modelled here.
+    Their indicator function equals its square, so all variance moments equal
+    the corresponding means. Matched has no mask: its mean area and leakage
+    grow with the field of view while its squared-weight moments converge.
+
     Host NumPy inputs retain float64. JAX inputs use the same stored polynomial
     coefficients and evaluator, and support jit/vmap/grad. An Equinox consumer
     can convert the array leaves to its active JAX dtype once at construction.
@@ -1064,9 +1101,13 @@ class PerformanceCurves(eqx.Module):
     frame: Frame = eqx.field(static=True)
     rule: ApertureRule = eqx.field(static=True)
     throughput: np.ndarray
+    throughput_variance: np.ndarray
     core_area_lod2: np.ndarray
+    core_area_variance_lod2: np.ndarray
     leakage_fraction: np.ndarray
+    leakage_fraction_variance: np.ndarray
     leakage_density_lod2: np.ndarray
+    leakage_density_variance_lod2: np.ndarray
     raw_contrast: np.ndarray
     iwa_lod: float
     data_extent_lod: float = eqx.field(static=True)
@@ -1079,9 +1120,13 @@ class PerformanceCurves(eqx.Module):
     interpolation: ClassVar = MappingProxyType(
         {
             "throughput": "linear",
+            "throughput_variance": "linear",
             "core_area_lod2": "linear",
+            "core_area_variance_lod2": "linear",
             "leakage_fraction": "log",
+            "leakage_fraction_variance": "log",
             "leakage_density_lod2": "log",
+            "leakage_density_variance_lod2": "log",
             "raw_contrast": "log",
             "occulter_transmission": "linear",
             "core_mean_intensity": "linear",
@@ -1103,14 +1148,16 @@ class PerformanceCurves(eqx.Module):
         leakage_rule="aperture_mean",
         stellar_diameter=None,
         *,
+        throughput_variance,
+        core_area_variance_lod2,
+        leakage_fraction_variance,
+        leakage_density_variance_lod2,
         extra=None,
         _coefficients=None,
         _tails=None,
         _extra=None,
     ):
         """Validate measured arrays and prepare one set of PCHIP coefficients."""
-        from .apertures import Matched
-
         if not isinstance(rule, (Circular, HalfMaximum, Matched)):
             raise TypeError("rule must be Circular, HalfMaximum or Matched")
         if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
@@ -1133,9 +1180,13 @@ class PerformanceCurves(eqx.Module):
         self.leakage_rule, self.stellar_diameter = leakage_rule, stellar_diameter
         values = dict(
             throughput=throughput,
+            throughput_variance=throughput_variance,
             core_area_lod2=core_area_lod2,
+            core_area_variance_lod2=core_area_variance_lod2,
             leakage_fraction=leakage_fraction,
+            leakage_fraction_variance=leakage_fraction_variance,
             leakage_density_lod2=leakage_density_lod2,
+            leakage_density_variance_lod2=leakage_density_variance_lod2,
             raw_contrast=raw_contrast,
         )
         self._extra = {}
@@ -1283,16 +1334,15 @@ def performance_curves(
     positive axis-aligned square lod grid, carrying per-pixel source fractions.
     Stellar is a per-pixel stellar-flux Image, potentially on a distinct grid
     and frame; its samples are mapped through the frames' angular scales.
-    Leakage is the native per-pixel stellar map times the rule's fractional
-    native weights; distinct grids use band-limited stellar samples at the
-    planet pixel centers, zero outside the stellar footprint. Planet throughput
-    retains subpixel band-limited integration for encircled-energy accuracy.
+    Geometric rules integrate both images on the same subpixel region.
+    Matched uses native template samples and their squares. Stellar samples
+    outside the stellar footprint are zero.
     Circular's ``centre`` chooses the supplied source position (default) or
     its refined local peak; every field, including IWA, uses that same rule.
 
     ``stellar_diameter`` records the provenance of the already evaluated map;
-    it does not broaden or reevaluate that map. All integration uses the
-    existing band-limited aperture machinery at CORE_OVERSAMPLE subpixels.
+    it does not broaden or reevaluate that map. Geometric rules resolve
+    coverage at CORE_OVERSAMPLE subpixels per side.
     """
     return _performance_curves(
         offaxis,
@@ -1316,8 +1366,6 @@ def _performance_curves(
     stellar_diameter=None,
     oversample=CORE_OVERSAMPLE,
 ):
-
-    from .apertures import Matched
 
     _validate_photometry_image(stellar)
     if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
@@ -1345,6 +1393,7 @@ def _performance_curves(
         raise ValueError("no off-axis source positions lie inside the image")
     grid = images[0].grid
     tau, area, leakage = [], [], []
+    tau_var, area_var, leakage_var = [], [], []
     with jax.enable_x64():
         for psf, position in zip(images, locations, strict=True):
             if psf.grid != grid:
@@ -1352,29 +1401,29 @@ def _performance_curves(
             fine, weights, sy, sx, factor = _rule_samples(
                 rule, psf, position, oversample
             )
-            ny, nx = weights.shape[0] // factor, weights.shape[1] // factor
-            # Coverage is a fraction, not the integrated weight of a detector bin.
-            native_weights, _ = downsample_psf(weights, 1.0, (ny, nx))
-            native_weights = native_weights / factor**2
-            if stellar.grid == grid:
-                star = jax.lax.dynamic_slice(
-                    jnp.asarray(stellar.data, dtype=jnp.float64), (sy, sx), (ny, nx)
-                )
-            else:
-                star = _stellar_samples(stellar, grid, sy, sx, (ny, nx), 1)
+            star = _stellar_samples(
+                stellar.data, stellar.grid, grid, sy, sx, weights.shape, factor
+            )
             tau.append(float(jnp.sum(fine * weights) / factor**2))
-            leakage.append(float(jnp.sum(star * native_weights)))
+            area.append(float(jnp.sum(weights)) * grid.pixel_area / factor**2)
+            leakage.append(float(jnp.sum(star * weights) / factor**2))
             if isinstance(rule, Matched):
-                w2 = float(jnp.sum(weights**2))
-                area.append(
-                    float(jnp.sum(weights)) ** 2 / w2 * grid.pixel_area
-                    if w2 > 0
-                    else 0.0
-                )
+                squared = weights**2
+                tau_var.append(float(jnp.sum(fine * squared)))
+                area_var.append(float(jnp.sum(squared)) * grid.pixel_area)
+                leakage_var.append(float(jnp.sum(star * squared)))
             else:
-                area.append(float(jnp.sum(weights)) * grid.pixel_area / factor**2)
+                tau_var.append(tau[-1])
+                area_var.append(area[-1])
+                leakage_var.append(leakage[-1])
         tau, area, leakage = map(np.asarray, (tau, area, leakage))
+        tau_var, area_var, leakage_var = map(
+            np.asarray, (tau_var, area_var, leakage_var)
+        )
         density = np.divide(leakage, area, out=np.zeros_like(leakage), where=area > 0)
+        density_var = np.divide(
+            leakage_var, area_var, out=np.zeros_like(leakage_var), where=area_var > 0
+        )
         if leakage_rule == "azimuthal_ring_mean":
             sf, pf = stellar.grid.frame, grid.frame
             angular_ratio = pf.lod_to_arcsec(
@@ -1391,6 +1440,7 @@ def _performance_curves(
                 / stellar.grid.pixel_area
                 * angular_ratio**2
             )
+            density_var = density
     contrast = np.divide(
         density * area, tau, out=np.full_like(tau, 1e20), where=tau > 0
     )
@@ -1407,4 +1457,8 @@ def _performance_curves(
         min(grid.shape) * grid.step / 2,
         leakage_rule,
         stellar_diameter,
+        throughput_variance=tau_var,
+        core_area_variance_lod2=area_var,
+        leakage_fraction_variance=leakage_var,
+        leakage_density_variance_lod2=density_var,
     )

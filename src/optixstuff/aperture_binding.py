@@ -54,15 +54,24 @@ class PreparedAperture(eqx.Module):
     references: tuple[_ApertureReference, ...]
 
     def response(self, node: _ApertureNode, separation_lod, time_d, stellar_diam_lod):
-        """Return traceable throughput, aperture leakage and sky transmission."""
+        """Stack throughput, leakage, sky transmission and both variance fractions.
+
+        Entries 3 and 4 integrate planet and stellar flux with squared aperture
+        weights. For a geometric region these equal the mean fractions.
+        Scalar calibrations supply the same fractions for both moments.
+        """
         coro = node.coronagraph
         wave = node.wavelength_nm
         rule = node.record.rule
         if isinstance(coro, AbstractScalarCoronagraph):
             tau = coro.throughput(separation_lod, wave, time_d=time_d, rule=rule)
+            tau_variance = coro.throughput(
+                separation_lod, wave, time_d=time_d, rule=rule, variance=True
+            )
             sky = coro.occulter_transmission(separation_lod, wave, time_d=time_d)
         else:
             tau = node.record.evaluate("throughput", separation_lod)
+            tau_variance = node.record.evaluate("throughput_variance", separation_lod)
             px, py = coro.grid.unit_to_pixel(separation_lod, 0.0)
             coordinates = jnp.array([[py], [px]])
             sky = map_coordinates(
@@ -72,14 +81,16 @@ class PreparedAperture(eqx.Module):
                 mode="constant",
                 cval=jnp.nan,
             )[0]
-        leak = coro.leakage_fraction(
-            separation_lod,
-            wave,
+        leakage_args = dict(
             time_d=time_d,
             rule=rule,
             stellar_diam_lod=stellar_diam_lod,
         )
-        return jnp.stack((tau, leak, sky))
+        leak = coro.leakage_fraction(separation_lod, wave, **leakage_args)
+        leak_variance = coro.leakage_fraction(
+            separation_lod, wave, variance=True, **leakage_args
+        )
+        return jnp.stack((tau, leak, sky, tau_variance, leak_variance))
 
 
 def prepare_aperture(

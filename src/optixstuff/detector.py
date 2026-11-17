@@ -103,24 +103,39 @@ class AbstractDetector(eqx.Module):
         plan: FramePlan,
         n_pix: ArrayLike = 1.0,
         *,
+        variance_rates: ElectronRates | None = None,
+        n_pix_variance: ArrayLike | None = None,
         sum_bands: bool = False,
     ) -> tuple[Array, Array]:
         """Return electron count mean and variance, each ``(W, *spatial)``.
 
-        Rates are already in electrons/s. Aperture rates use their effective
-        pixel count ``n_pix``; images use one. Dark and CIC contribute to
-        the mean and are multiplied by F2 in the variance; Gaussian read
-        noise contributes only variance. With ``sum_bands=True``, sum axis
+        Rates are already in electrons/s. For a weighted aperture, supply
+        rates summed with w and w**2 in electron_rates and variance_rates,
+        and the corresponding sums of weights in n_pix and n_pix_variance.
+        Omitted variance inputs default individually to their mean inputs.
+        F2 scales source, dark and CIC variance. Read noise adds independent
+        per-frame variance. With ``sum_bands=True``, sum axis
         zero only, returning ``spatial`` (a scalar for aperture rates).
         Bands and pixels are independent in this model.
         """
-        mean = (
-            electron_rates.total() + n_pix * self.dark_current_e_per_pixel_s
-        ) * plan.live_time_s + (
-            n_pix * self.clock_induced_charge_e_per_pixel_frame * plan.n_frames
-        )
-        variance = self.excess_noise_factor_sq * mean + (
-            n_pix * self.read_noise_e_rms**2 * plan.n_frames
+
+        def poisson_counts(rates, pixels):
+            return (
+                rates.total() + pixels * self.dark_current_e_per_pixel_s
+            ) * plan.live_time_s + (
+                pixels * self.clock_induced_charge_e_per_pixel_frame * plan.n_frames
+            )
+
+        mean = poisson_counts(electron_rates, n_pix)
+        variance_pixels = n_pix if n_pix_variance is None else n_pix_variance
+        shot_variance = mean
+        if variance_rates is not None or n_pix_variance is not None:
+            shot_variance = poisson_counts(
+                electron_rates if variance_rates is None else variance_rates,
+                variance_pixels,
+            )
+        variance = self.excess_noise_factor_sq * shot_variance + (
+            variance_pixels * self.read_noise_e_rms**2 * plan.n_frames
         )
         if sum_bands:
             return jnp.sum(mean, axis=0), jnp.sum(variance, axis=0)

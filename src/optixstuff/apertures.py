@@ -1,9 +1,10 @@
 """Static photometric aperture rules on per-pixel source-flux Images.
 
 Source positions are (x, y) in the Image's lambda/D frame. ``weights`` returns
-fractional coverage on that Image's grid. Planet throughput uses the same
-subpixel weights with band-limited PSF samples. Stellar leakage is the absolute
-sum of the native stellar per-pixel fractions times the native weights.
+weights on that Image's grid. Each hard-edged rule represents an idealized
+aperture in the limit of infinitely fine detector pixels; detector pixelization
+is not modelled here. Its native weights report coverage. Photometry integrates
+the reconstructed planet and stellar intensities over the geometric region.
 """
 
 import math
@@ -68,21 +69,23 @@ class HalfMaximum:
 class Matched:
     """Weighting about the PSF peak by construction, using the PSF template.
 
-    w=p/max(p), tau=sum(w*p), A=sum(w)**2/sum(w**2)*pixel_area.
-    A is the noise-equivalent area, not the integral of the weights.
-    A zero template has zero weights, throughput and effective area.
+    For w=p/peak, where peak is the band-limited subpixel maximum, the planet mean
+    and variance fractions are sum(w*p) and sum(w**2*p). The collecting and variance
+    areas are the pixel area times sum(w) and sum(w**2), respectively. A zero
+    template has zero moments.
     Reference: Kasdin & Braems (2006), ApJ 646, 1260,
     https://doi.org/10.1086/505017 (PSF matched-filter photometry).
-    This peak normalization is the explicit weighting convention.
+    Matched has no mask. The mean area and mean leakage grow with the field
+    of view while the squared-weight variance moments converge.
     """
 
     def weights(self, psf, source_position, *, oversample=10):
         """Peak-normalized template on the supplied grid (no mask or recentering)."""
-        from .performance import _validate_photometry_image
+        from .performance import _template_peak, _validate_photometry_image
 
         _validate_photometry_image(psf)
-        data = jnp.asarray(psf.data)
-        peak = jnp.max(data)
+        data = jnp.asarray(psf.data, dtype=float)
+        peak = _template_peak(data)
         return jnp.where(peak > 0, data / jnp.where(peak > 0, peak, 1), 0)
 
 

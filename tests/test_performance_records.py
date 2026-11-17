@@ -126,6 +126,10 @@ def test_record_interpolation_spaces():
         frame=Frame(500, 6, "circumscribed"),
         rule=Circular(0.7),
         throughput=np.array([0.1, 0.9]),
+        throughput_variance=np.array([0.05, 0.45]),
+        core_area_variance_lod2=np.array([0.5, 1.0]),
+        leakage_fraction_variance=np.array([1e-10, 1e-6]),
+        leakage_density_variance_lod2=np.array([1e-10, 1e-6]),
         core_area_lod2=np.ones(2),
         leakage_fraction=np.array([1e-8, 1e-4]),
         leakage_density_lod2=np.array([1e-8, 1e-4]),
@@ -136,6 +140,10 @@ def test_record_interpolation_spaces():
     for name in ("leakage_fraction", "leakage_density_lod2", "raw_contrast"):
         np.testing.assert_allclose(record.evaluate(name, 1.0), 1e-6, rtol=2e-14)
     np.testing.assert_allclose(record.evaluate("throughput", 1.0), 0.5, rtol=2e-14)
+    for name in ("leakage_fraction_variance", "leakage_density_variance_lod2"):
+        np.testing.assert_allclose(record.evaluate(name, 1.0), 1e-8, rtol=2e-14)
+    np.testing.assert_allclose(record.evaluate("throughput_variance", 1.0), 0.25)
+    np.testing.assert_allclose(record.evaluate("core_area_variance_lod2", 1.0), 0.75)
     with jax.enable_x64():
         slope = np.log(1e4) / 2
         for point in (0.0, 1.0, 2.0):
@@ -148,12 +156,89 @@ def test_record_interpolation_spaces():
         assert np.isposinf(record.evaluate("raw_contrast", jnp.asarray(10000.0)))
 
 
+def test_exact_weighted_and_binary_moments():
+    """Fails if noise uses linear weights or the matched noise-equivalent area.
+
+    The three-point row interpolates to a sinusoid plus a constant. A source-centred
+    circle enclosing this integer-centred grid covers every pixel completely.
+    """
+    with jax.enable_x64():
+        grid = PixelGrid.focal(3, 0.5, Frame(500, 6, "circumscribed"))
+        planet = np.zeros(grid.shape, dtype=np.float32)
+        planet[1, 1:] = [0.5, 0.25]
+        stellar = np.zeros(grid.shape)
+        stellar[1, 1:] = [0.125, 0.25]
+        star = Image(stellar, grid, (), "per_pixel", "stellar_flux_fraction")
+
+        def measure(data, star, rule):
+            psf = Image(data, star.grid, (), "per_pixel", "stellar_flux_fraction")
+            return performance_curves(lambda s: psf, star, rule, separations_lod=[0.0])
+
+        matched = measure(planet, star, Matched())
+        # The row has DC 1/4 and first-harmonic amplitude 1/sqrt(12).
+        # The separable column interpolant peaks at the central row.
+        normalization = 0.5 / (0.25 + 1 / np.sqrt(12))
+        for name, expected in (
+            ("throughput", 0.625 * normalization),
+            ("throughput_variance", 0.5625 * normalization**2),
+            ("core_area_lod2", 0.375 * normalization),
+            ("core_area_variance_lod2", 0.3125 * normalization**2),
+            ("leakage_fraction", 0.25 * normalization),
+            ("leakage_fraction_variance", 0.1875 * normalization**2),
+            ("leakage_density_lod2", 2 / 3),
+            ("leakage_density_variance_lod2", 0.6),
+            ("raw_contrast", 0.4),
+        ):
+            np.testing.assert_allclose(getattr(matched, name), [expected], rtol=2e-14)
+
+        # Transpose the stellar sampler after squaring on the aperture grid.
+        # A constant 1/8 per stellar pixel gives 1/2 per planet pixel here.
+        from optixstuff.performance import leakage_weights
+
+        finer_grid = PixelGrid.focal(7, 0.25, grid.frame)
+        finer_star = Image(
+            np.full(finer_grid.shape, 0.125),
+            finer_grid,
+            (),
+            "per_pixel",
+            "stellar_flux_fraction",
+        )
+        psf = Image(planet, grid, (), "per_pixel", "stellar_flux_fraction")
+        mean_op, variance_op, _ = leakage_weights(lambda s: psf, finer_star, matched)
+        for op, expected in (
+            (mean_op, 0.75 * normalization),
+            (variance_op, 0.625 * normalization**2),
+        ):
+            np.testing.assert_allclose(
+                np.sum(op * finer_star.data), expected, rtol=2e-14
+            )
+
+        binary_grid = PixelGrid.focal(3, 0.3, grid.frame)
+        binary_star = Image(
+            stellar, binary_grid, (), "per_pixel", "stellar_flux_fraction"
+        )
+        # The full-field DFT integral preserves flux to summation roundoff.
+        binary = measure(planet, binary_star, Circular(2.0))
+        for mean, variance, expected in (
+            ("throughput", "throughput_variance", 0.75),
+            ("core_area_lod2", "core_area_variance_lod2", 0.81),
+            ("leakage_fraction", "leakage_fraction_variance", 0.375),
+            ("leakage_density_lod2", "leakage_density_variance_lod2", 0.375 / 0.81),
+        ):
+            np.testing.assert_allclose(
+                getattr(binary, mean), [expected], rtol=32 * np.finfo(float).eps, atol=0
+            )
+            np.testing.assert_array_equal(
+                getattr(binary, variance), getattr(binary, mean)
+            )
+
+
 def test_matched_gaussian_definition():
-    """Fails if matched weights or noise-equivalent area use geometric area.
+    """Fails if matched throughput or area moments lose peak normalization.
 
     For p=T exp(-r^2/(2 sigma^2))/(2 pi sigma^2), peak-centered samples give
-    tau=T/2 and A=4 pi sigma^2. At sigma/step=4 the stricter p^2 lattice
-    error is O(exp(-pi^2 * 16)) < 1e-68; the border is over ten sigma away
+    tau=T/2, A=2 pi sigma^2 and variance area pi sigma^2. At sigma/step=4
+    the p^3 lattice error is below 1e-43; the border is over ten sigma away
     (omitted p flux < 1e-20). The 2e-12 bound permits float64 arithmetic
     and summation, comfortably above both pixelization and finite-box errors.
     """
@@ -180,8 +265,12 @@ def test_matched_gaussian_definition():
         )
         np.testing.assert_allclose(record.throughput, total / 2, rtol=2e-12)
         np.testing.assert_allclose(
-            record.core_area_lod2, 4 * np.pi * sigma * sigma, rtol=2e-12
+            record.core_area_lod2, 2 * np.pi * sigma * sigma, rtol=2e-12
         )
+        np.testing.assert_allclose(
+            record.core_area_variance_lod2, np.pi * sigma**2, rtol=2e-12
+        )
+        np.testing.assert_allclose(record.throughput_variance, total / 3, rtol=2e-12)
         assert hash(rule) == hash(Matched())
         assert not hasattr(record, "OWA")
         assert record.data_extent_lod == 81 * 0.1 / 2
@@ -212,6 +301,7 @@ def test_geometric_rules_preserve_primitive_curves():
     mean uses the parent's spatial reader, divided by typed pixel area.
     """
     from optixstuff.performance import (
+        _rule_samples,
         azimuthal_mean_profile,
         circular_aperture,
         truncation_core,
@@ -257,6 +347,24 @@ def test_geometric_rules_preserve_primitive_curves():
                     )
                 np.testing.assert_allclose(record.throughput[i], tau, rtol=2e-12)
                 np.testing.assert_allclose(record.core_area_lod2[i], area, rtol=2e-12)
+                fine, coverage, _, _, factor = _rule_samples(
+                    rule, source(sep), (sep, 0.0)
+                )
+                assert record.throughput[i] == float(
+                    jnp.sum(fine * coverage) / factor**2
+                )
+                assert record.core_area_lod2[i] == (
+                    float(jnp.sum(coverage)) * grid.pixel_area / factor**2
+                )
+            for mean, variance in (
+                ("throughput", "throughput_variance"),
+                ("core_area_lod2", "core_area_variance_lod2"),
+                ("leakage_fraction", "leakage_fraction_variance"),
+                ("leakage_density_lod2", "leakage_density_variance_lod2"),
+            ):
+                np.testing.assert_array_equal(
+                    getattr(record, mean), getattr(record, variance)
+                )
             parent_mean = azimuthal_mean_profile(star.data, (24.0, 24.0), seps / 0.25)
             np.testing.assert_allclose(
                 record.leakage_density_lod2, parent_mean / 0.25**2, rtol=2e-12
@@ -266,36 +374,24 @@ def test_geometric_rules_preserve_primitive_curves():
 def test_absolute_leakage_sampling():
     """Fails if leakage is density, contrast, or normalized by PSF throughput.
 
-    A varying per-pixel stellar map has an exact aperture sum at either
-    oversampling. The difference is bounded by the independent native-weight
-    sampling gap plus 2e-12 relative float64 DFT/summation roundoff.
+    A star with one eighth the local planet intensity gives one eighth its
+    throughput, including partially covered boundary cells.
     """
     from optixstuff.performance import _performance_curves
 
     with jax.enable_x64():
-        source, x, y, grid = _gaussian_source()
-        star = Image(
-            3e-9 * (2 + np.sin(x) + 0.03 * y**2),
-            grid,
-            (),
-            "per_pixel",
-            "stellar_flux_fraction",
-        )
+        source, _, _, grid = _gaussian_source()
         rule, sep = Circular(0.7), 1.0
-        measured, primitive = [], []
+        star = Image(
+            source(sep).data / 8, grid, (), "per_pixel", "stellar_flux_fraction"
+        )
         for factor in (5, 10):
             record = _performance_curves(
                 source, star, rule, separations_lod=[sep], oversample=factor
             )
-            weights = rule.weights(source(sep), (sep, 0.0), oversample=factor)
-            expected = float(np.sum(np.asarray(star.data) * np.asarray(weights)))
-            measured.append(record.leakage_fraction[0])
-            primitive.append(expected)
-            np.testing.assert_allclose(measured[-1], expected, rtol=2e-12, atol=0)
-        assert (
-            abs(measured[1] - measured[0])
-            <= abs(primitive[1] - primitive[0]) + 2e-12 * primitive[1]
-        )
+            np.testing.assert_allclose(
+                record.leakage_fraction, record.throughput / 8, rtol=2e-14
+            )
         small_grid = PixelGrid.focal(5, 0.25, grid.frame)
         small_star = Image(
             np.full(small_grid.shape, 3e-9),

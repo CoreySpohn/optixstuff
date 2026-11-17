@@ -104,6 +104,38 @@ def test_moment_contract(detector_cls):
     expected_mean = (source + n_pix * dark) * 12.0 + n_pix * cic * 4.0
     expected_var = f2 * expected_mean + n_pix * rn**2 * 4.0
     eager = det.mean_and_variance(rates, plan, n_pix=n_pix)
+    old_mean = (
+        rates.total() + n_pix * det.dark_current_e_per_pixel_s
+    ) * plan.live_time_s + (
+        n_pix * det.clock_induced_charge_e_per_pixel_frame * plan.n_frames
+    )
+    old_var = det.excess_noise_factor_sq * old_mean + (
+        n_pix * det.read_noise_e_rms**2 * plan.n_frames
+    )
+    np.testing.assert_array_equal(eager[0], old_mean)
+    np.testing.assert_array_equal(eager[1], old_var)
+    weighted_rates = ox.ElectronRates(planet=rates.planet / 2, thermal=rates.thermal)
+    for source_override, pixel_override in [
+        (weighted_rates, None),
+        (None, 3.5),
+        (weighted_rates, 3.5),
+    ]:
+        variance_source = source if source_override is None else (source - 2) / 2 + 2
+        pixels = n_pix if pixel_override is None else pixel_override
+        mean, variance = det.mean_and_variance(
+            rates,
+            plan,
+            n_pix,
+            variance_rates=source_override,
+            n_pix_variance=pixel_override,
+            sum_bands=True,
+        )
+        poisson = (variance_source + pixels * dark) * 12 + pixels * cic * 4
+        expected = f2 * poisson + pixels * rn**2 * 4
+        np.testing.assert_array_equal(mean, jnp.sum(old_mean, axis=0))
+        np.testing.assert_allclose(
+            variance, expected.sum(axis=0), rtol=16 * np.finfo(np.float32).eps
+        )
     compiled = eqx.filter_jit(lambda d, r, p: d.mean_and_variance(r, p, n_pix=5.0))(
         det, rates, plan
     )

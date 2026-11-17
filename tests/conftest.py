@@ -96,6 +96,10 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
                     density * area / tau,
                     0.0,
                     min(self.grid.shape) * self.grid.step / 2,
+                    throughput_variance=tau,
+                    core_area_variance_lod2=area,
+                    leakage_fraction_variance=density * area,
+                    leakage_density_variance_lod2=density,
                 )
             )
         self._records = tuple(records)
