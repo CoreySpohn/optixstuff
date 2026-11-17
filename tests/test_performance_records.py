@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from hwoutils.grids import Frame, Image, PixelGrid
 
-from optixstuff.apertures import Circular, HalfMaximum, Matched
+from optixstuff.apertures import Circular, HalfMaximum
 from optixstuff.performance import PerformanceCurves, performance_curves
 
 
@@ -156,8 +156,8 @@ def test_record_interpolation_spaces():
         assert np.isposinf(record.evaluate("raw_contrast", jnp.asarray(10000.0)))
 
 
-def test_exact_weighted_and_binary_moments():
-    """Fails if noise uses linear weights or the matched noise-equivalent area.
+def test_exact_binary_moments():
+    """Fails if binary variance differs from integrated full-field flux.
 
     The three-point row interpolates to a sinusoid plus a constant. A source-centred
     circle enclosing this integer-centred grid covers every pixel completely.
@@ -168,50 +168,10 @@ def test_exact_weighted_and_binary_moments():
         planet[1, 1:] = [0.5, 0.25]
         stellar = np.zeros(grid.shape)
         stellar[1, 1:] = [0.125, 0.25]
-        star = Image(stellar, grid, (), "per_pixel", "stellar_flux_fraction")
 
         def measure(data, star, rule):
             psf = Image(data, star.grid, (), "per_pixel", "stellar_flux_fraction")
             return performance_curves(lambda s: psf, star, rule, separations_lod=[0.0])
-
-        matched = measure(planet, star, Matched())
-        # The row has DC 1/4 and first-harmonic amplitude 1/sqrt(12).
-        # The separable column interpolant peaks at the central row.
-        normalization = 0.5 / (0.25 + 1 / np.sqrt(12))
-        for name, expected in (
-            ("throughput", 0.625 * normalization),
-            ("throughput_variance", 0.5625 * normalization**2),
-            ("core_area_lod2", 0.375 * normalization),
-            ("core_area_variance_lod2", 0.3125 * normalization**2),
-            ("leakage_fraction", 0.25 * normalization),
-            ("leakage_fraction_variance", 0.1875 * normalization**2),
-            ("leakage_density_lod2", 2 / 3),
-            ("leakage_density_variance_lod2", 0.6),
-            ("raw_contrast", 0.4),
-        ):
-            np.testing.assert_allclose(getattr(matched, name), [expected], rtol=2e-14)
-
-        # Transpose the stellar sampler after squaring on the aperture grid.
-        # A constant 1/8 per stellar pixel gives 1/2 per planet pixel here.
-        from optixstuff.performance import leakage_weights
-
-        finer_grid = PixelGrid.focal(7, 0.25, grid.frame)
-        finer_star = Image(
-            np.full(finer_grid.shape, 0.125),
-            finer_grid,
-            (),
-            "per_pixel",
-            "stellar_flux_fraction",
-        )
-        psf = Image(planet, grid, (), "per_pixel", "stellar_flux_fraction")
-        mean_op, variance_op, _ = leakage_weights(lambda s: psf, finer_star, matched)
-        for op, expected in (
-            (mean_op, 0.75 * normalization),
-            (variance_op, 0.625 * normalization**2),
-        ):
-            np.testing.assert_allclose(
-                np.sum(op * finer_star.data), expected, rtol=2e-14
-            )
 
         binary_grid = PixelGrid.focal(3, 0.3, grid.frame)
         binary_star = Image(
@@ -233,47 +193,51 @@ def test_exact_weighted_and_binary_moments():
             )
 
 
-def test_matched_gaussian_definition():
-    """Fails if matched throughput or area moments lose peak normalization.
+def test_matched_band_moments():
+    """Check uniform-noise SNR and shared spectral weights against pixel sums."""
+    from optixstuff.aperture_binding import MatchedStamps, matched_moments
 
-    For p=T exp(-r^2/(2 sigma^2))/(2 pi sigma^2), peak-centered samples give
-    tau=T/2, A=2 pi sigma^2 and variance area pi sigma^2. At sigma/step=4
-    the p^3 lattice error is below 1e-43; the border is over ten sigma away
-    (omitted p flux < 1e-20). The 2e-12 bound permits float64 arithmetic
-    and summation, comfortably above both pixelization and finite-box errors.
-    """
     with jax.enable_x64():
-        grid = PixelGrid.focal(81, 0.1, Frame(500, 6, "circumscribed"))
-        x, y = grid.coordinates()
-        sigma, total = 0.4, 0.3
-        p = (
-            total
-            * np.exp(-(x * x + y * y) / (2 * sigma * sigma))
-            / (2 * np.pi * sigma * sigma)
-            * 0.1**2
-        )
-        psf = Image(p, grid, (), "per_pixel", "stellar_flux_fraction")
-        star = Image(
-            np.full(grid.shape, 1e-8), grid, (), "per_pixel", "stellar_flux_fraction"
-        )
-        rule = Matched()
-        record = performance_curves(
-            lambda s: psf, star, rule, separations_lod=[0.0, 1.0]
+        p = jnp.array([[[[0.1, 0.2]]], [[[0.3, 0.1]]]])
+        s = jnp.array([[[0.03, 0.01]], [[0.02, 0.04]]])
+        k = jnp.array([[[0.6, 0.9]], [[0.4, 0.8]]])
+        a = 0.25
+        stamps = MatchedStamps(p, s, k, a)
+        spectrum = jnp.array([1.0, 3.0])
+        A, B, D = jnp.array([2.0, 4.0]), jnp.array([5.0, 1.0]), 0.3
+        m = matched_moments(stamps, A, B, D, planet_spectrum=spectrum)
+        v = np.einsum("q,qyx->yx", A, s) + a * np.einsum("q,qyx->yx", B, k) + D
+        profile = np.average(np.asarray(p)[:, 0], axis=0, weights=spectrum)
+        w = profile / v
+        for weight, tau, leak, omega, npix in (
+            (w, m.tau1, m.L1, m.Omega1, m.n_pix1),
+            (w**2, m.tau2, m.L2, m.Omega2, m.n_pix2),
+        ):
+            for samples, result in ((p[:, 0], tau), (s, leak), (k * a, omega)):
+                np.testing.assert_allclose(
+                    result[:, 0], (samples * weight).sum((-2, -1))
+                )
+            np.testing.assert_allclose(npix, weight.sum())
+
+        def signal(A, B, D):
+            moments = matched_moments(stamps, A, B, D, planet_spectrum=spectrum)
+            return jnp.average(moments.tau1[:, 0], weights=spectrum)
+
+        gradients = jax.jit(jax.grad(signal, (0, 1, 2)))(A, B, D)
+        for actual, dv in zip(gradients, (s, k * a, 1), strict=True):
+            np.testing.assert_allclose(actual, -np.sum(w**2 * dv, axis=(-2, -1)))
+
+        uniform = MatchedStamps(p, s, jnp.ones_like(k), a)
+        m = matched_moments(uniform, A * 0, B, 0.0, planet_spectrum=spectrum)
+        t, flux = 120.0, 0.6
+        snr2 = (
+            t
+            * (flux * np.average(m.tau1[:, 0], weights=spectrum)) ** 2
+            / (B @ m.Omega2[:, 0])
         )
         np.testing.assert_allclose(
-            rule.weights(psf, (0.0, 0.0)), p / p.max(), rtol=2e-14
+            snr2, t * flux**2 * np.sum(profile**2) / (a * B.sum()), rtol=2e-14
         )
-        np.testing.assert_allclose(record.throughput, total / 2, rtol=2e-12)
-        np.testing.assert_allclose(
-            record.core_area_lod2, 2 * np.pi * sigma * sigma, rtol=2e-12
-        )
-        np.testing.assert_allclose(
-            record.core_area_variance_lod2, np.pi * sigma**2, rtol=2e-12
-        )
-        np.testing.assert_allclose(record.throughput_variance, total / 3, rtol=2e-12)
-        assert hash(rule) == hash(Matched())
-        assert not hasattr(record, "OWA")
-        assert record.data_extent_lod == 81 * 0.1 / 2
 
 
 def _gaussian_source():

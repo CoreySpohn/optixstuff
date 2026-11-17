@@ -1,7 +1,12 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
-from optixstuff.aperture_binding import PreparedAperture, prepare_aperture
+from optixstuff.aperture_binding import (
+    MatchedStamps,
+    PreparedAperture,
+    matched_moments,
+    prepare_aperture,
+)
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
     ApertureRule,
@@ -58,6 +63,7 @@ __all__ = [
     "LensletDisperser",
     "LinearSpeckleField",
     "Matched",
+    "MatchedStamps",
     "MultiBandCoronagraph",
     "OpticalPath",
     "PerformanceCurves",
@@ -69,5 +75,6 @@ __all__ = [
     "TransmissiveElement",
     "__version__",
     "frames_for_time",
+    "matched_moments",
     "prepare_aperture",
 ]

@@ -12,7 +12,7 @@ from equinox import AbstractVar
 from hwoutils.grids import Frame, Image, PixelGrid, resample
 from hwoutils.spectral import Band
 
-from optixstuff.apertures import DEFAULT_APERTURE_RULE, ApertureRule
+from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
 from optixstuff.performance import PerformanceCurves
 
 
@@ -84,7 +84,7 @@ class AbstractCoronagraph(eqx.Module):
         """Return the prepared performance record for an explicit aperture rule."""
 
     def prepared(
-        self, rule: ApertureRule, *, leakage_rule="aperture_mean"
+        self, rule: RecordRule, *, leakage_rule="aperture_mean"
     ) -> tuple["AbstractCoronagraph", PerformanceCurves]:
         """Return a model and its usable record, preparing on the host if supported."""
         return self, self.curves(rule, leakage_rule=leakage_rule)
@@ -354,6 +354,11 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
 
     sky_trans: AbstractVar[Image]
     psf_datacube: AbstractVar[object]
+
+    def aperture_psfs(self, wavelength_nm, separations_lod):
+        """Native source images at the separation knots used for photometry."""
+        offsets = jnp.asarray(separations_lod)
+        return self.source_psfs(wavelength_nm, offsets, jnp.zeros_like(offsets))
 
     def _prepared_leakage_weights(self, rule, leakage_rule):
         """Return native-image weights, or None for a table without stellar maps."""
@@ -652,7 +657,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         )
 
     def prepared(
-        self, rule: ApertureRule, *, leakage_rule="aperture_mean"
+        self, rule: RecordRule, *, leakage_rule="aperture_mean"
     ) -> tuple[AbstractCoronagraph, PerformanceCurves]:
         """Return the reference band's prepared model and record."""
         return self._performance_band(None).prepared(rule, leakage_rule=leakage_rule)

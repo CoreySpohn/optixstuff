@@ -316,6 +316,16 @@ def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
     with pytest.raises(NotImplementedError, match="frozen reference"):
         ox.prepare_aperture(path, band, q, rule=rule, reference_wavelength_nm=490.0)
 
+    if isinstance(rule, ox.Matched):
+        with pytest.raises(ValueError, match=r"native.*images"):
+            ox.prepare_aperture(
+                eqx.tree_at(lambda p: p.coronagraph, path, scalar(table.grid)),
+                band,
+                q,
+                rule=rule,
+            )
+        return
+
     coro = ox.ScalarCoronagraph(
         grid=table.grid,
         throughput_fraction=0.4,
@@ -356,3 +366,23 @@ def test_jit_and_gradient(table):
     derivative = jax.grad(f)(s)
     assert np.isfinite(derivative)
     np.testing.assert_allclose(derivative, (f(s + h) - f(s - h)) / (2 * h), rtol=0.002)
+
+    # In this table the stellar map is spatially uniform and proportional
+    # to (1 + diameter**2). With 2 uniform counts/s the entire inverse
+    # variance profile, including its interpolated throughput, scales as
+    # 1/(3 + diameter**2).
+    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    band = Band(499.5, 500.5)
+    aperture = ox.prepare_aperture(
+        path, band, Quadrature.build((band,), None, 1), rule=ox.Matched()
+    )
+    reference = aperture.references[0]
+
+    def tau(diameter):
+        return aperture.response(reference, s, 0.0, diameter, A=1e8, B=0.0, D=2.0).tau1[
+            0
+        ]
+
+    value, slope = jax.jit(jax.value_and_grad(tau))(0.5)
+    np.testing.assert_allclose(slope, -value / 3.25, rtol=2e-5)
+    np.testing.assert_allclose(value, tau(0.0) * 3.0 / 3.25, rtol=2e-5)

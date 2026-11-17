@@ -10,8 +10,6 @@ the reconstructed planet and stellar intensities over the geometric region.
 import math
 from dataclasses import dataclass
 
-import jax.numpy as jnp
-
 
 @dataclass(frozen=True)
 class Circular:
@@ -67,26 +65,13 @@ class HalfMaximum:
 
 @dataclass(frozen=True)
 class Matched:
-    """Weighting about the PSF peak by construction, using the PSF template.
+    """Inverse-variance planet photometry evaluated with the exposure's rates.
 
-    For w=p/peak, where peak is the band-limited subpixel maximum, the planet mean
-    and variance fractions are sum(w*p) and sum(w**2*p). The collecting and variance
-    areas are the pixel area times sum(w) and sum(w**2), respectively. A zero
-    template has zero moments.
-    Reference: Kasdin & Braems (2006), ApJ 646, 1260,
-    https://doi.org/10.1086/505017 (PSF matched-filter photometry).
-    Matched has no mask. The mean area and mean leakage grow with the field
-    of view while the squared-weight variance moments converge.
+    One set of native-pixel weights per band divides the planet profile by
+    the background variance rate. The planet contributes its own shot noise
+    to the measured variance after weighting (Kasdin & Braems 2006).
     """
 
-    def weights(self, psf, source_position, *, oversample=10):
-        """Peak-normalized template on the supplied grid (no mask or recentering)."""
-        from .performance import _template_peak, _validate_photometry_image
 
-        _validate_photometry_image(psf)
-        data = jnp.asarray(psf.data, dtype=float)
-        peak = _template_peak(data)
-        return jnp.where(peak > 0, data / jnp.where(peak > 0, peak, 1), 0)
-
-
-ApertureRule = Circular | HalfMaximum | Matched
+RecordRule = Circular | HalfMaximum
+ApertureRule = RecordRule | Matched
