@@ -10,7 +10,10 @@ import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
 from hwoutils.grids import Image, PixelGrid, resample
-from yippy import DEFAULT_APERTURE_RULE, PerformanceCurves
+from hwoutils.spectral import Band
+
+from optixstuff.apertures import DEFAULT_APERTURE_RULE
+from optixstuff.performance import PerformanceCurves
 
 
 def _on_grid(image: Image, grid: PixelGrid) -> Image:
@@ -70,6 +73,8 @@ class AbstractCoronagraph(eqx.Module):
     """
 
     grid: AbstractVar[PixelGrid]
+    bandpass: AbstractVar[Band | None]
+    """Calibrated wavelength interval in nm, or None for unknown coverage."""
     outer_working_angle_lod: AbstractVar[float | None]
 
     @abc.abstractmethod
@@ -87,10 +92,13 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
+        stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
-        """Weighted planet flux fraction, from the selected rule's record."""
+        """Weighted planet flux fraction, independent of stellar diameter."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return (
             self._performance_band(wavelength_nm)
             .curves(rule, leakage_rule=leakage_rule)
@@ -103,10 +111,13 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
+        stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
-        """Aperture or noise-equivalent area in (lambda/D)^2."""
+        """Aperture area in (lambda/D)^2, independent of stellar diameter."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return (
             self._performance_band(wavelength_nm)
             .curves(rule, leakage_rule=leakage_rule)
@@ -124,6 +135,8 @@ class AbstractCoronagraph(eqx.Module):
         leakage_rule="aperture_mean",
     ):
         """Absolute stellar flux fraction integrated with the rule's weights."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm)._leakage_query(
             "leakage_fraction",
             separation_lod,
@@ -144,6 +157,8 @@ class AbstractCoronagraph(eqx.Module):
         leakage_rule="aperture_mean",
     ):
         """Stellar flux fraction per (lambda/D)^2 under the named averaging rule."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm)._leakage_query(
             "leakage_density_lod2",
             separation_lod,
@@ -164,6 +179,8 @@ class AbstractCoronagraph(eqx.Module):
         leakage_rule="aperture_mean",
     ):
         """Rule-defined stellar intensity divided by planet intensity."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm)._leakage_query(
             "raw_contrast",
             separation_lod,
@@ -238,6 +255,8 @@ class AbstractCoronagraph(eqx.Module):
 
         Backends with a separate sky product may override this concrete helper.
         """
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return (
             self._performance_band(wavelength_nm)
             .curves()
@@ -257,13 +276,13 @@ class AbstractCoronagraph(eqx.Module):
 
     @abc.abstractmethod
     def stellar_map(
-        self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None
+        self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None = None
     ) -> Image:
         """Finite-star per_pixel fractions; table grid=None retains native samples."""
 
     @abc.abstractmethod
     def source_psfs(
-        self, wavelength_nm, x_lod, y_lod, *, grid: PixelGrid | None
+        self, wavelength_nm, x_lod, y_lod, *, grid: PixelGrid | None = None
     ) -> Image:
         """Source fractions; table grid=None retains native samples and metadata."""
 
@@ -292,7 +311,7 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
     twice when a consumer subsequently samples onto detector pixels.
 
     Finite-star leakage uses _prepared_leakage_weights, built at construction
-    with yippy.performance.leakage_weights for each supported record. Tables
+    with aperture operators for each supported record. Tables
     without prepared stellar-image weights retain the point-source contract.
     """
 
@@ -359,12 +378,12 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
         """Supply native PSFs when the table supports point-source images."""
         raise NotImplementedError("table has no native source image provider")
 
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid=None):
         """Per-pixel stellar fraction on grid, using the stellar product's frame."""
         image = self._native_stellar_map(stellar_diam_lod)
         return image if grid is None else _on_grid(image, grid)
 
-    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid=None):
         """Per-pixel source fractions on grid; x indexes columns, y indexes rows."""
         image = self._native_source_psfs(x_lod, y_lod)
         return image if grid is None else _on_grid(image, grid)
@@ -413,6 +432,7 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
     """
 
     grid: PixelGrid
+    bandpass: Band | None
     _records: tuple
     sky_transmission: float
     outer_working_angle_lod: float | None
@@ -425,6 +445,7 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
         aperture_area_lod2,
         stellar_leakage_density_lod2,
         sky_transmission=1.0,
+        bandpass=None,
         rule=DEFAULT_APERTURE_RULE,
         outer_working_angle_lod=None,
     ):
@@ -432,6 +453,7 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
         if grid.unit != "lod":
             raise ValueError("native grid must use lod")
         self.grid = grid
+        self.bandpass = bandpass
         self.sky_transmission = sky_transmission
         self.outer_working_angle_lod = outer_working_angle_lod
         tau, area, density = (
@@ -462,14 +484,16 @@ class AbstractScalarCoronagraph(AbstractCoronagraph):
                 return record
         raise ValueError("No prepared record for this rule and leakage_rule")
 
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid=None):
         """Zero per-pixel stellar fraction; scalar models do not synthesize PSFs."""
+        grid = self.grid if grid is None else grid
         return Image(
             jnp.zeros(grid.shape), grid, (), "per_pixel", "stellar_flux_fraction"
         )
 
-    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid=None):
         """Zero source PSFs, shape (source,ny,nx), for a scalar-only model."""
+        grid = self.grid if grid is None else grid
         k = jnp.atleast_1d(x_lod).shape[0]
         return Image(
             jnp.zeros((k, *grid.shape)),
@@ -503,6 +527,8 @@ class ScalarCoronagraph(AbstractScalarCoronagraph):
 
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Constant dimensionless sky transmission."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return jnp.full_like(jnp.asarray(separation_lod) * 1.0, self.sky_transmission)
 
 
@@ -540,6 +566,16 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         return self.bands[index]
 
     @property
+    def bandpass(self):
+        """Span all declared band edges, or None if any band has unknown coverage."""
+        if any(band.bandpass is None for band in self.bands):
+            return None
+        return Band(
+            min(band.bandpass.lo_nm for band in self.bands),
+            max(band.bandpass.hi_nm for band in self.bands),
+        )
+
+    @property
     def quadrature_knots_nm(self):
         """Nearest-band dispatch breakpoints: midpoints between band centres [nm]."""
         centers = sorted(self.band_centers_nm)
@@ -568,19 +604,21 @@ class MultiBandCoronagraph(AbstractCoronagraph):
 
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Selected band's sky transmission."""
+        if hasattr(separation_lod, "unit"):
+            raise TypeError("separation_lod must be dimensionless numeric values")
         return self._performance_band(wavelength_nm).occulter_transmission(
             separation_lod, wavelength_nm, time_d=time_d
         )
 
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
+    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid=None):
         """Selected band's stellar Image on grid."""
-        return self.band(wavelength_nm).stellar_map(
+        return self._performance_band(wavelength_nm).stellar_map(
             wavelength_nm, stellar_diam_lod, grid=grid
         )
 
-    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
+    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid=None):
         """Selected band's source Images on grid."""
-        return self.band(wavelength_nm).source_psfs(
+        return self._performance_band(wavelength_nm).source_psfs(
             wavelength_nm, x_lod, y_lod, grid=grid
         )
 

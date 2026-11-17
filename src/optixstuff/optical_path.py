@@ -5,7 +5,6 @@ from __future__ import annotations
 import functools
 import math
 from math import pi
-from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -84,7 +83,7 @@ class OpticalPath(eqx.Module):
     @classmethod
     def from_default_setup(
         cls,
-        coronagraph: AbstractCoronagraph | str | Path,
+        coronagraph: AbstractCoronagraph,
         *,
         circumscribed_diameter_m: float | None = None,
         obscuration: float = 0.0,
@@ -105,14 +104,7 @@ class OpticalPath(eqx.Module):
         parameters get sensible defaults that can be overridden.
 
         Args:
-            coronagraph: One of:
-
-                - an :class:`AbstractCoronagraph` instance (used as-is),
-                - a YIP path (str or :class:`pathlib.Path`, wrapped with
-                  :class:`YippyCoronagraph`),
-                - a ``yippy.EqxCoronagraph`` instance (wrapped via
-                  ``YippyCoronagraph(backend=...)`` so callers can keep
-                  using existing yippy code without rebuilding).
+            coronagraph: An AbstractCoronagraph instance.
             circumscribed_diameter_m: Primary mirror diameter [m]. Default: the
                 coronagraph frame's diameter (when that frame is circumscribed),
                 so the tables and the primary describe one telescope.
@@ -137,19 +129,7 @@ class OpticalPath(eqx.Module):
         Returns:
             A ready-to-use :class:`OpticalPath`.
         """
-        if isinstance(coronagraph, AbstractCoronagraph):
-            coro = coronagraph
-        elif isinstance(coronagraph, (str, Path)):
-            from optixstuff.yippy_coronagraph import YippyCoronagraph
-
-            coro = YippyCoronagraph(str(coronagraph))
-        else:
-            # Anything else -- expected to be a ``yippy.EqxCoronagraph``
-            # or compatible backend. Defer the import so optixstuff stays
-            # decoupled from yippy at the type-check level.
-            from optixstuff.yippy_coronagraph import YippyCoronagraph
-
-            coro = YippyCoronagraph(backend=coronagraph)
+        coro = coronagraph
 
         if circumscribed_diameter_m is None:
             frame = coro.grid.frame

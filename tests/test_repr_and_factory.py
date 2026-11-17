@@ -145,19 +145,3 @@ class TestFromDefaultSetup:
         # eqx.tree_at can walk it (sanity check that nothing is non-pytree).
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None
-
-    def test_accepts_yippy_eqx_coronagraph(self, tmp_path):
-        """A bare ``yippy.EqxCoronagraph`` is wrapped via the ``backend`` kwarg.
-
-        Catches the regression where any non-``AbstractCoronagraph`` /
-        non-path argument was unconditionally ``str()``-ified and fed
-        to ``YippyCoronagraph`` as a path.
-        """
-        from conftest import synthetic_coronagraph
-
-        from optixstuff.yippy_coronagraph import YippyCoronagraph
-
-        backend = synthetic_coronagraph(tmp_path)._backend
-        path = ox.OpticalPath.from_default_setup(backend)
-        assert isinstance(path.coronagraph, YippyCoronagraph)
-        assert path.coronagraph._backend is backend

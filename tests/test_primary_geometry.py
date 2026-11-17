@@ -1,12 +1,9 @@
 """Primary geometry from independent dimensions and header metadata."""
 
 import inspect
-from types import SimpleNamespace
 
-import astropy.units as u
 import numpy as np
 import pytest
-from astropy.io import fits
 
 from optixstuff import AbstractPrimary, SegmentedPrimary, SimplePrimary
 
@@ -58,44 +55,3 @@ def test_primary_contract(cls):
     assert frame.diameter_convention == "inscribed"
     for name in ("diameter_m", "area_m2"):
         assert not hasattr(primary, name)
-
-
-@pytest.mark.parametrize("source", ["path", "header"])
-def test_simple_primary_from_yip(source, tmp_path):
-    """Exact header diameters; changing area alone must never change D_INSC."""
-
-    def make(obscured):
-        if source == "header":
-            return SimpleNamespace(
-                header=SimpleNamespace(
-                    diameter=600 * u.cm,
-                    diameter_inscribed=470 * u.cm,
-                    obscured=obscured,
-                )
-            )
-        fits.PrimaryHDU(
-            header=fits.Header(
-                {"D": 6.0, "D_INSC": 4.7, "OBSCURED": obscured, "PIXSCALE": 0.25}
-            )
-        ).writeto(tmp_path / "stellar_intens.fits", overwrite=True)
-        return tmp_path
-
-    for obscured in (0.2, 0.7):
-        p = SimplePrimary.from_yip(make(obscured), shape_factor=0.9)
-        assert p.diameter("circumscribed") == 6.0
-        assert p.diameter("inscribed") == 4.7
-        np.testing.assert_allclose(
-            p.collecting_area_m2,
-            np.pi * 9 * (1 - obscured) * 0.9,
-            rtol=16 * np.finfo(float).eps,
-        )
-
-
-@pytest.mark.parametrize("key", ["D", "D_INSC", "OBSCURED"])
-def test_simple_primary_from_yip_requires_geometry(key, tmp_path):
-    """Missing geometry raises instead of deriving a diameter from collecting area."""
-    h = fits.Header({"D": 6.0, "D_INSC": 5.0, "OBSCURED": 0.2})
-    del h[key]
-    fits.PrimaryHDU(header=h).writeto(tmp_path / "stellar_intens.fits")
-    with pytest.raises(ValueError, match=key):
-        SimplePrimary.from_yip(tmp_path)

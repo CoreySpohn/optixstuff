@@ -9,7 +9,7 @@
   <a href="https://doi.org/10.5281/zenodo.20819379"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20819379-blue?style=flat-square" alt="DOI"/></a>
 </p>
 
-Shared hardware objects — with standard values — for the HWO direct-imaging
+Shared hardware objects - with standard values - for the HWO direct-imaging
 simulation suite.
 
 ## What optixstuff is
@@ -31,8 +31,8 @@ Change a value here and every downstream tool picks it up on the next import.
 
 - **Not a wavefront tool.** Diffraction, E-field propagation, and PSFs-from-first-principles
   belong to [dLux](https://github.com/LouisDesdoigts/dLux) and [HCIPy](https://github.com/ehpor/hcipy).
-- **Not a PSF interpolator.** That's [yippy](https://github.com/CoreySpohn/yippy)'s job;
-  optixstuff wraps a PSF backend via `YippyCoronagraph` but does not compute PSFs.
+- **Not a PSF interpolator.** Image providers implement the shared
+  `AbstractCoronagraph` contract; optixstuff owns the contract and scalar models.
 - **Not a scene model.** Stars, planets, disks, and zodi live in
   [skyscapes](https://github.com/CoreySpohn/skyscapes).
 - **Not a simulator.** Downstream tools (coronagraphoto, coronachrome, jaxEDITH)
@@ -43,17 +43,17 @@ Change a value here and every downstream tool picks it up on the next import.
 Built on [JAX](https://github.com/google/jax) and
 [Equinox](https://github.com/patrick-kidger/equinox), `optixstuff` provides:
 
-- **Abstract interfaces** — `AbstractPrimary`, `AbstractOpticalElement`,
+- **Abstract interfaces** - `AbstractPrimary`, `AbstractOpticalElement`,
   `AbstractCoronagraph`, `AbstractDetector`, `AbstractDisperser`
-- **Concrete implementations** — `SimplePrimary`, `SegmentedPrimary` (carries
+- **Concrete implementations** - `SimplePrimary`, `SegmentedPrimary` (carries
   hex segment geometry for a diffraction backend), `ConstantThroughput`,
   `IdealDetector`, `Detector` (with optional wavelength-dependent QE),
   `LensletDisperser`
-- **Container** — `OpticalPath`, a composable hardware configuration passed to all
+- **Container** - `OpticalPath`, a composable hardware configuration passed to all
   simulators
 
-Optical elements and coronagraphs accept fidelity axes — **wavelength**, **position**, and
-**time** — with defaults so that simple implementations can ignore unused axes while
+Optical elements and coronagraphs accept fidelity axes - **wavelength**, **position**, and
+**time** - with defaults so that simple implementations can ignore unused axes while
 future high-fidelity models (wavelength-dependent coatings, position-dependent vignetting,
 time-dependent detector degradation) can use them without breaking the interface.
 
@@ -71,8 +71,8 @@ per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
 `extended_scene(scene_image, 500.0, grid=target)` retains the scene quantity.
 
 `coro.curves(Circular(0.7))` is the single performance record for that aperture.
-Import `Circular` from `yippy`; prepare additional rules with
-`YippyCoronagraph(backend=backend, rules=(Circular(1.0),))` before JIT.
+Import `Circular` from `optixstuff`; prepare every required rule before JIT
+when constructing an image provider.
 Records contain throughput, core area, stellar leakage fraction, leakage density,
 raw contrast, `iwa_lod`, and `data_extent_lod`. A known design limit is separately
 named `outer_working_angle_lod`. `ScalarCoronagraph` stores calibrated constants
@@ -136,15 +136,15 @@ for noise parameters, gain statistics, and readout overlap.
 
 ```mermaid
 flowchart TB
-    physopt["<b>Physical optics</b><br/>dLux · HCIPy · PROPER<br/>E-fields → PSFs"]
-    yippy["<b>yippy</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope · Coronagraph · Detector · OpticalPath<br/>Throughput chains · QE · Noise rates"]
+    physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
+    provider["<b>Image provider</b><br/>PSF interpolation"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / OpticalPath<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
     coronachrome["<b>coronachrome</b><br/>Lenslet-IFS dispersion<br/>Spectral extraction"]
 
-    physopt -- YIP --> yippy
-    yippy -- flux patterns --> optix
+    physopt -- PSF tables --> provider
+    provider -- AbstractCoronagraph --> optix
     optix --> jaxedith
     optix --> corono
     optix --> coronachrome

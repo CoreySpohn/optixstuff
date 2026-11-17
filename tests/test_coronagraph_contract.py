@@ -5,24 +5,28 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from conftest import concrete_subclasses, synthetic_coronagraph
+from conftest import (
+    GaussianTableCoronagraph,
+    concrete_subclasses,
+    synthetic_coronagraph,
+)
 from hwoutils.grids import Image, PixelGrid, resample
-from yippy import Circular
+from hwoutils.spectral import Band
 
 import optixstuff as ox
+from optixstuff.apertures import Circular
 from optixstuff.coronagraph import _convolve_quadrants
 
 
 @pytest.fixture(scope="module")
-def table(tmp_path_factory):
-    return synthetic_coronagraph(
-        tmp_path_factory.mktemp("grid_yip"), rules=(Circular(0.7), Circular(1.0))
-    )
+def table():
+    return synthetic_coronagraph(rules=(Circular(0.7), Circular(1.0)))
 
 
-def scalar(grid):
+def scalar(grid, *, bandpass=None):
     return ox.ScalarCoronagraph(
         grid=grid,
+        bandpass=bandpass,
         throughput_fraction=0.4,
         aperture_area_lod2=1.5,
         stellar_leakage_density_lod2=2e-9,
@@ -32,7 +36,7 @@ def scalar(grid):
 @pytest.fixture(params=concrete_subclasses(ox.AbstractCoronagraph))
 def coro(request, table):
     cls = request.param
-    if cls is ox.YippyCoronagraph:
+    if cls is GaussianTableCoronagraph:
         return table
     if cls is ox.ScalarCoronagraph:
         return scalar(table.grid)
@@ -67,15 +71,15 @@ def test_image_contract(coro):
         assert results[4].quantity == "transmission"
         assert results[5].quantity == "photons/s"
         assert all(im.measure == "per_pixel" for im in results[:4])
-    if isinstance(coro, ox.YippyCoronagraph):
+    if isinstance(coro, GaussianTableCoronagraph):
         for native, expected_native in [
             (
                 coro.stellar_map(500.0, 0.1, grid=None),
-                coro._backend.stellar_intens(0.1),
+                coro._native_stellar_map(0.1),
             ),
             (
                 coro.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.0]), grid=None),
-                coro._backend.create_psfs(jnp.array([1.0]), jnp.array([0.0])),
+                coro._native_source_psfs(jnp.array([1.0]), jnp.array([0.0])),
             ),
         ]:
             assert native.grid == expected_native.grid
@@ -90,7 +94,7 @@ def test_image_contract(coro):
         )
         np.testing.assert_array_equal(
             coro.off_axis_psf(500.0, 1.0, g).data,
-            resample(coro._backend.create_psf(1.0, 0.0), g).data,
+            resample(coro._native_source_psfs(1.0, 0.0), g).data[0],
         )
         np.testing.assert_array_equal(
             coro.background_transmission(500.0, grid=g).data,
@@ -99,15 +103,15 @@ def test_image_contract(coro):
 
 
 @pytest.mark.parametrize("n", [24, 25])
-def test_fold_and_direction(n, tmp_path):
+def test_fold_and_direction(n):
     """32 float32 eps for fold sums; centroid 0.02 px rejects the old 0.5 px shift."""
-    c = synthetic_coronagraph(tmp_path, n)
+    c = synthetic_coronagraph(n)
     g = c.grid
     x, y = g.coordinates()
     full = c.source_psfs(500.0, x.ravel(), y.ravel(), grid=None).data.reshape(
         n, n, n, n
     )
-    flux = jnp.asarray(np.random.default_rng(7).uniform(size=(n, n)))
+    flux = jnp.asarray(np.random.default_rng(0).uniform(size=(n, n)))
     folded = _convolve_quadrants(flux, c.psf_datacube, g)
     direct = jnp.einsum("ij,ijyx->yx", flux, full)
     np.testing.assert_allclose(
@@ -153,10 +157,29 @@ def test_flux_resampling(table, ratio):
 
 def test_curve_contract(coro):
     """Exact delegation; ratio identity uses 16 eps and floor arithmetic uses 4 eps."""
+
+    class UnitBearingSeparation:
+        unit = "lod"
+
+    for name in (
+        "throughput",
+        "core_area",
+        "leakage_fraction",
+        "leakage_density_lod2",
+        "raw_contrast",
+        "occulter_transmission",
+    ):
+        with pytest.raises(TypeError, match="dimensionless"):
+            getattr(coro, name)(UnitBearingSeparation())
     rule = Circular(0.7)
     record = coro.curves(rule)
     s = jnp.asarray(record.separation_lod)
-    np.testing.assert_array_equal(coro.throughput(s), record.evaluate("throughput", s))
+    np.testing.assert_array_equal(
+        coro.throughput(s, stellar_diam_lod=0.1), record.evaluate("throughput", s)
+    )
+    np.testing.assert_array_equal(
+        coro.core_area(s, stellar_diam_lod=0.1), record.evaluate("core_area_lod2", s)
+    )
     expected = coro.leakage_density_lod2(s) * coro.core_area(s) / coro.throughput(s)
     np.testing.assert_allclose(
         expected, coro.raw_contrast(s), rtol=16 * np.finfo(np.float32).eps
@@ -181,25 +204,6 @@ def test_curve_contract(coro):
         expected_noise,
         rtol=4 * np.finfo(np.float32).eps,
     )
-    if isinstance(coro, ox.YippyCoronagraph):
-        for name in (
-            "iwa_lod",
-            "data_extent_lod",
-            "throughput",
-            "raw_contrast",
-            "core_area",
-            "core_mean_intensity",
-            "noise_floor_ayo",
-            "noise_floor_exosims",
-            "occulter_transmission",
-            "source_psfs",
-            "stellar_map",
-            "background_transmission",
-            "separation_map",
-            "throughput_map",
-            "core_area_map",
-        ):
-            assert not hasattr(coro._backend, name)
     for name in (
         "core_mean_intensity",
         "stellar_intens",
@@ -216,12 +220,15 @@ def test_curve_contract(coro):
 
 
 def test_rule_records_and_constants(table):
-    """Exact record identity; derived constants allow two float64 rounding eps."""
+    """Exact band bounds/record identity; constants allow two float64 rounding eps.
+
+    Fails if multiband coverage clips a child edge or invents unknown coverage.
+    """
     a, b = table.curves(Circular(0.7)), table.curves(Circular(1.0))
     assert a is table.curves(Circular(0.7))
     assert b is table.curves(Circular(1.0))
     assert np.all(np.asarray(b.throughput) > np.asarray(a.throughput))
-    prepared = ox.YippyCoronagraph(backend=table._backend, rules=(Circular(0.9),))
+    prepared = synthetic_coronagraph(rules=(Circular(0.9),))
     extra = prepared.curves(Circular(0.9))
     assert extra is prepared.curves(Circular(0.9))
     assert float(prepared.throughput(2.0, rule=Circular(0.9))) > float(
@@ -229,7 +236,7 @@ def test_rule_records_and_constants(table):
     )
     with pytest.raises(ValueError, match="prepared"):
         table.curves(Circular(0.9))
-    c = scalar(table.grid)
+    c = scalar(table.grid, bandpass=Band(750.0, 850.0))
     np.testing.assert_array_equal(c.curves().throughput, [0.4])
     np.testing.assert_array_equal(c.curves().core_area_lod2, [1.5])
     np.testing.assert_allclose(
@@ -237,6 +244,11 @@ def test_rule_records_and_constants(table):
     )
     mb = ox.MultiBandCoronagraph([500.0, 800.0], [table, c])
     assert mb.curves() is a
+    assert mb.bandpass == Band(450.0, 850.0)
+    assert (
+        ox.MultiBandCoronagraph([500.0, 800.0], [table, scalar(table.grid)]).bandpass
+        is None
+    )
     np.testing.assert_array_equal(mb.throughput(2.0, 800.0), c.throughput(2.0))
 
 

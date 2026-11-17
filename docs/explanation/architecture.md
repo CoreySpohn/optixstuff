@@ -39,7 +39,7 @@ flowchart TB
     SP[SimplePrimary]
     AC[AbstractCoronagraph]
     ASC[AbstractScalarCoronagraph]
-    YC[YippyCoronagraph]
+    SC[ScalarCoronagraph]
     AD[AbstractDetector]
     ID[IdealDetector]
     D[Detector]
@@ -50,14 +50,14 @@ flowchart TB
     AUE --> ST
     AP --> SP
     AC --> ASC
-    AC --> YC
+    ASC --> SC
     AD --> ID
     AD --> D
 
     SP -.-> OP
     CT -.-> OP
     ST -.-> OP
-    YC -.-> OP
+    SC -.-> OP
     ID -.-> OP
     D -.-> OP
 ```
@@ -69,7 +69,7 @@ into a single `OpticalPath`:
 |---|---|---|
 | Primary aperture | `AbstractPrimary` | `SimplePrimary` |
 | Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `TransmissiveElement` |
-| Coronagraph backend | `AbstractCoronagraph` | `YippyCoronagraph` |
+| Coronagraph backend | `AbstractCoronagraph` | `ScalarCoronagraph`, `MultiBandCoronagraph` |
 | Detector | `AbstractDetector` | `IdealDetector`, `Detector` |
 | Composition container | (none) | `OpticalPath` |
 
@@ -214,7 +214,7 @@ dimensionless despite the density-like resampling measure. PSFs are fractions
 of the unocculted source flux per pixel, not normalized to post-coronagraph flux.
 
 `curves(rule=Circular(0.7), *, leakage_rule="aperture_mean")` selects a prepared
-yippy record. The five scalar convenience methods call its `evaluate` method.
+`PerformanceCurves` record. The five scalar convenience methods call its `evaluate` method.
 `leakage_density_lod2` is already per square lambda/D; no pixel-area correction
 belongs in consumers. Post-processing may divide that density, or raw contrast,
 by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the residual.
@@ -224,12 +224,14 @@ projections on each implementation's native grid.
 For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
 return native samples and product metadata. An explicit grid requests pixel
 integration, including at native pitch.
-The record's contrast identity holds at measured knots; yippy interpolates the
+The record's contrast identity holds at measured knots; `PerformanceCurves` interpolates the
 five fields in their declared spaces independently between knots.
 Additional rules and leakage conventions must be prepared during construction.
 Finite stellar diameter remains an image capability; scalar records retain the
 diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
 selects a multiband record; `curves()` alone uses the reference band.
+`bandpass` is a `hwoutils.spectral.Band` or `None` for unknown coverage;
+a multiband model spans its children when every child declares its edges.
 
 ## Speckle excess
 

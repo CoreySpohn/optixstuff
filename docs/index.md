@@ -22,9 +22,9 @@ on the next import.
 - **Not a wavefront tool.** Diffraction and E-field propagation belong
   to [dLux](https://github.com/LouisDesdoigts/dLux) and
   [HCIPy](https://github.com/ehpor/hcipy).
-- **Not a PSF interpolator.** That's {mod}`yippy`'s job; optixstuff
-  wraps a PSF backend via {class}`~optixstuff.YippyCoronagraph` but
-  does not compute PSFs.
+- **Not a PSF interpolator.** Image providers implement
+  {class}`~optixstuff.AbstractCoronagraph`; optixstuff owns the contract
+  and scalar performance models.
 - **Not a scene model.** Stars, planets, disks, and zodi live in
   {mod}`skyscapes`.
 - **Not a simulator.** Downstream tools ({mod}`coronagraphoto`,
@@ -35,21 +35,21 @@ on the next import.
 
 ```mermaid
 flowchart TB
-    physopt["<b>Physical optics</b><br/>dLux · HCIPy · PROPER<br/>E-fields → PSFs"]
-    yippy["<b>yippy</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope · Coronagraph · Detector · OpticalPath<br/>Throughput chains · QE · Noise rates"]
+    physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
+    provider["<b>Image provider</b><br/>PSF interpolation"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / OpticalPath<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
 
-    physopt -- YIP --> yippy
-    yippy -- flux patterns --> optix
+    physopt -- PSF tables --> provider
+    provider -- AbstractCoronagraph --> optix
     optix --> jaxedith
     optix --> corono
 ```
 
 ## Quick start
 
-This example requires a user-supplied YIP directory.
+This example declares constant performance for one calibrated aperture.
 
 ```python notest
 from optixstuff import (
@@ -59,11 +59,17 @@ from optixstuff import (
     ConstantThroughput,
     TransmissiveElement,
 )
-from optixstuff import YippyCoronagraph
+from hwoutils.grids import PixelGrid
+from optixstuff import ScalarCoronagraph
 
 primary = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
 detector = IdealDetector(pixel_scale_arcsec=0.01, shape=(512, 512))
-coronagraph = YippyCoronagraph("path/to/yip")
+coronagraph = ScalarCoronagraph(
+    grid=PixelGrid.focal(24, 0.5, primary.frame(500.0)),
+    throughput_fraction=0.4,
+    aperture_area_lod2=1.5,
+    stellar_leakage_density_lod2=1e-10,
+)
 throughput = ConstantThroughput(throughput=0.85)
 
 path = OpticalPath(
@@ -93,7 +99,7 @@ provides:
 - **Abstract interfaces** -- `AbstractPrimary`,
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
 - **Concrete implementations** -- `SimplePrimary`, `ConstantThroughput`,
-  `TransmissiveElement`, `IdealDetector`, `Detector`, `YippyCoronagraph`
+  `TransmissiveElement`, `IdealDetector`, `Detector`, `ScalarCoronagraph`
 - **Container** -- `OpticalPath`, a composable hardware configuration
   passed to all downstream simulators
 

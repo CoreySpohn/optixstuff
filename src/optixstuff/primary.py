@@ -1,8 +1,7 @@
 """Primary apertures with explicit diameter conventions and collecting areas."""
 
 import abc
-from math import pi, sqrt
-from pathlib import Path
+from math import sqrt
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -55,52 +54,6 @@ class SimplePrimary(AbstractPrimary):
         if convention == "inscribed":
             return self.inscribed_diameter_m
         raise ValueError(f"Unknown diameter convention: {convention!r}")
-
-    @classmethod
-    def from_yip(cls, yip, shape_factor=1.0):
-        """Read D and D_INSC directly; area is pi*D**2/4*(1-OBSCURED)*factor.
-
-        Accept a YIP directory/FITS path or an object retaining its header.
-        Backends which discarded D_INSC cannot reconstruct it from an area.
-        """
-        from astropy.io import fits
-        from yippy.header import HeaderData
-
-        from optixstuff.yippy_coronagraph import YippyCoronagraph
-
-        if isinstance(yip, YippyCoronagraph):
-            yip = yip._backend
-        if isinstance(yip, (str, Path)):
-            path = Path(yip)
-            raw = fits.getheader(
-                path / "stellar_intens.fits" if path.is_dir() else path
-            )
-            for key in ("D", "D_INSC", "OBSCURED"):
-                if raw.get(key) is None:
-                    raise ValueError(f"YIP header is missing {key}")
-            header = HeaderData.from_fits_header(raw)
-        else:
-            header = getattr(yip, "header", None)
-        values = []
-        for key, attr in (
-            ("D", "diameter"),
-            ("D_INSC", "diameter_inscribed"),
-            ("OBSCURED", "obscured"),
-        ):
-            value = getattr(header, attr, None)
-            if value is None:
-                raise ValueError(f"YIP metadata is missing {key}; use the original YIP")
-            values.append(
-                float(value.to_value("m"))
-                if hasattr(value, "to_value")
-                else float(value)
-            )
-        circ, insc, obscured = values
-        return cls(
-            circumscribed_diameter_m=circ,
-            inscribed_diameter_m=insc,
-            collecting_area_m2=pi * circ**2 / 4 * (1 - obscured) * shape_factor,
-        )
 
     def __repr__(self):
         """Summarize the two diameter conventions and collecting area."""

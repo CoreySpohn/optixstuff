@@ -4,15 +4,17 @@ import importlib.util
 import inspect
 import os
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
-from astropy.io import fits
-from hwoutils.grids import PixelGrid
+from hwoutils.grids import Image, PixelGrid
+from hwoutils.spectral import Band
 from hypothesis import settings
-from yippy import Coronagraph, EqxCoronagraph
 
 import optixstuff as ox
-from optixstuff import ScalarCoronagraph, SimplePrimary, YippyCoronagraph
+from optixstuff import ScalarCoronagraph, SimplePrimary
+from optixstuff.apertures import DEFAULT_APERTURE_RULE
+from optixstuff.performance import PerformanceCurves
 
 # Released hwoutils versions may not include the optional budget plugin yet.
 pytest_plugins = []
@@ -26,7 +28,7 @@ settings.register_profile("nightly", max_examples=200, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
 
 
-# Small analytic YIP fixtures with independent pixel-centre coordinates.
+# Small analytic optics with independent pixel-centre coordinates.
 
 
 def concrete_subclasses(base):
@@ -38,65 +40,109 @@ def concrete_subclasses(base):
     return classes
 
 
-def synthetic_coronagraph(path, n=24, *, rules=()):
-    path.mkdir(exist_ok=True)
-    scale, center, sigma = 0.5, (n - 1) / 2, 0.7
-    yy, xx = np.indices((n, n))
-    xx, yy = (xx - center) * scale, (yy - center) * scale
-    offsets = np.array(
-        [(x, y) for x in (0.0, 1.0, 2.0, 3.0) for y in (0.0, 1.0, 2.0, 3.0)]
-    )
-    psfs = np.array(
-        [
-            0.6
-            * (1 - 0.9 * np.exp(-(x * x + y * y) / 4))
-            * scale**2
-            / (2 * np.pi * sigma**2)
-            * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma**2))
-            for x, y in offsets
-        ]
-    )
-    header = fits.Header(
-        {
-            "D": 6.0,
-            "D_INSC": 4.7,
-            "OBSCURED": 0.2,
-            "PIXSCALE": scale,
-            "LAMBDA": 500.0,
-            "MINLAM": 450.0,
-            "MAXLAM": 550.0,
-            "XCENTER": center + 0.5,
-            "YCENTER": center + 0.5,
-            "N_LAM": 1,
-            "N_STAR": 3,
-        }
-    )
-    for key, unit in (
-        ("D", "m"),
-        ("D_INSC", "m"),
-        ("LAMBDA", "nm"),
-        ("MINLAM", "nm"),
-        ("MAXLAM", "nm"),
-    ):
-        header.comments[key] = f"value in {unit}"
-    for filename, data in (
-        ("offax_psf", psfs),
-        ("offax_psf_offset_list", offsets),
-        (
-            "stellar_intens",
-            np.stack([np.full((n, n), 1e-8 * (1 + d * d)) for d in (0.0, 0.1, 0.2)]),
-        ),
-        ("stellar_intens_diam_list", np.array([0.0, 0.1, 0.2])),
-        ("sky_trans", 1 - np.exp(-(xx * xx + yy * yy) / 4)),
-    ):
-        fits.PrimaryHDU(data, header).writeto(path / f"{filename}.fits", overwrite=True)
-    host = Coronagraph(path)
-    for rule in rules:
-        host.compute_all_performance_curves(rule)
-    host.create_psf_datacube()
-    return YippyCoronagraph(
-        backend=EqxCoronagraph(yippy_coro=host, ensure_psf_datacube=True)
-    )
+class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
+    """Gaussian source fractions and a uniform diameter-dependent stellar table.
+
+    Native samples are amplitude*pixel_area*exp(-r^2/(2*sigma^2))/(2*pi*sigma^2),
+    with sigma=0.7. Circular records use the analytic encircled fraction
+    amplitude*(1-exp(-radius^2/(2*sigma^2))) and geometric area pi*radius^2.
+    """
+
+    grid: PixelGrid
+    bandpass: Band
+    sky_trans: Image
+    psf_datacube: object
+    _records: tuple
+    outer_working_angle_lod: float | None = None
+
+    def __init__(self, n=24, *, rules=()):
+        self.grid = PixelGrid.focal(
+            n,
+            0.5,
+            SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0).frame(
+                500.0
+            ),
+        )
+        self.bandpass = Band(450.0, 550.0)
+        x, y = self.grid.coordinates()
+        self.sky_trans = Image(
+            1 - jnp.exp(-(x * x + y * y) / 4),
+            self.grid,
+            (),
+            "per_unit_area",
+            "transmission",
+        )
+        start = n // 2
+        self.psf_datacube = self._native_source_psfs(
+            x[start:, start:].ravel(), y[start:, start:].ravel()
+        ).data.reshape((n - start, n - start, n, n))
+        axis = jnp.arange(4.0)
+        amplitude = 0.6 * (1 - 0.9 * jnp.exp(-(axis**2) / 4))
+        records = []
+        for rule in dict.fromkeys((DEFAULT_APERTURE_RULE, *rules)):
+            radius = rule.radius_lod
+            tau = amplitude * (1 - jnp.exp(-(radius**2) / (2 * 0.7**2)))
+            area = jnp.full_like(axis, np.pi * radius**2)
+            density = jnp.full_like(axis, 1e-8 / self.grid.pixel_area)
+            records.append(
+                PerformanceCurves(
+                    axis,
+                    self.grid.frame,
+                    rule,
+                    tau,
+                    area,
+                    density * area,
+                    density,
+                    density * area / tau,
+                    0.0,
+                    min(self.grid.shape) * self.grid.step / 2,
+                )
+            )
+        self._records = tuple(records)
+
+    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
+        for record in self._records:
+            if record.rule == rule and record.leakage_rule == leakage_rule:
+                return record
+        raise ValueError("No prepared record for this rule and leakage_rule")
+
+    def _native_stellar_map(self, stellar_diam_lod):
+        return Image(
+            jnp.full(self.grid.shape, 1e-8) * (1 + stellar_diam_lod**2),
+            self.grid,
+            (),
+            "per_pixel",
+            "stellar_flux_fraction",
+            reconstruction="band_limited",
+            outside="reflect",
+        )
+
+    def _native_source_psfs(self, x_lod, y_lod):
+        x, y = self.grid.coordinates()
+        dx, dy = jnp.atleast_1d(x_lod), jnp.atleast_1d(y_lod)
+        amplitude = 0.6 * (1 - 0.9 * jnp.exp(-(dx**2 + dy**2) / 4))
+        data = (
+            amplitude[:, None, None]
+            * self.grid.pixel_area
+            / (2 * np.pi * 0.7**2)
+            * jnp.exp(
+                -((x - dx[:, None, None]) ** 2 + (y - dy[:, None, None]) ** 2)
+                / (2 * 0.7**2)
+            )
+        )
+        return Image(
+            data,
+            self.grid,
+            ("source",),
+            "per_pixel",
+            "stellar_flux_fraction",
+            reconstruction="band_limited",
+            outside="zero",
+        )
+
+
+def synthetic_coronagraph(n=24, *, rules=()):
+    return GaussianTableCoronagraph(n, rules=rules)
 
 
 # Constant coronagraph shared by hardware-container tests.
@@ -111,12 +157,6 @@ def scalar_coronagraph(diameter_m=6.0):
         stellar_leakage_density_lod2=1e-10,
         outer_working_angle_lod=30.0,
     )
-
-
-@pytest.fixture(scope="session")
-def cached_diameter_coro(tmp_path_factory):
-    """Synthetic diameter-dependent package; all generated files stay in tmp_path."""
-    return synthetic_coronagraph(tmp_path_factory.mktemp("stellar_diameter_yip"))
 
 
 @pytest.fixture
@@ -182,3 +222,35 @@ def linear_speckle():
             amplitude_nm=jnp.array([0.05, 0.04]),
             angular_frequency_per_d=jnp.array([2.0, 3.0]),
         )
+
+
+@pytest.fixture
+def displaced_gaussian_source():
+    """Gaussian source displaced by (0.08, -0.06) lod from its nominal point."""
+    from hwoutils.grids import Frame, Image, PixelGrid
+
+    def build(step):
+        grid = PixelGrid.focal(int(12 / step), step, Frame(500, 6, "circumscribed"))
+        x, y = grid.coordinates()
+
+        def source(separation):
+            data = (
+                0.31
+                * np.exp(
+                    -((x - separation - 0.08) ** 2 + (y + 0.06) ** 2) / (2 * 0.6**2)
+                )
+                / (2 * np.pi * 0.6**2)
+                * step**2
+            )
+            return Image(data, grid, (), "per_pixel", "stellar_flux_fraction")
+
+        star = Image(
+            np.full(grid.shape, 1e-9 * step**2),
+            grid,
+            (),
+            "per_pixel",
+            "stellar_flux_fraction",
+        )
+        return source, star
+
+    return build

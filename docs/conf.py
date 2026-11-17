@@ -26,7 +26,6 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest/", None),
     "skyscapes": ("https://skyscapes.readthedocs.io/en/latest/", None),
     "coronagraphoto": ("https://coronagraphoto.readthedocs.io/en/latest/", None),
-    "yippy": ("https://yippy.readthedocs.io/en/latest/", None),
     "coronalyze": ("https://coronalyze.readthedocs.io/en/latest/", None),
 }
 

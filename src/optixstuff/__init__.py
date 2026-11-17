@@ -1,6 +1,13 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
+from optixstuff.apertures import (
+    DEFAULT_APERTURE_RULE,
+    ApertureRule,
+    Circular,
+    HalfMaximum,
+    Matched,
+)
 from optixstuff.coronagraph import (
     AbstractCoronagraph,
     AbstractScalarCoronagraph,
@@ -22,12 +29,13 @@ from optixstuff.optical_elements import (
     TransmissiveElement,
 )
 from optixstuff.optical_path import OpticalPath
+from optixstuff.performance import PerformanceCurves
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
 from optixstuff.speckle import AbstractSpeckleField, LinearSpeckleField
-from optixstuff.yippy_coronagraph import YippyCoronagraph
 
 __all__ = [
+    "DEFAULT_APERTURE_RULE",
     "AbstractCoronagraph",
     "AbstractDetector",
     "AbstractDisperser",
@@ -37,22 +45,26 @@ __all__ = [
     "AbstractSpeckleField",
     "AbstractTableCoronagraph",
     "AbstractUniformElement",
+    "ApertureRule",
+    "Circular",
     "ConstantThroughput",
     "Detector",
     "ElectronRates",
     "FramePlan",
+    "HalfMaximum",
     "IdealDetector",
     "IntegratedPhotonRates",
     "LensletDisperser",
     "LinearSpeckleField",
+    "Matched",
     "MultiBandCoronagraph",
     "OpticalPath",
+    "PerformanceCurves",
     "PhotonRates",
     "ScalarCoronagraph",
     "SegmentedPrimary",
     "SimplePrimary",
     "TransmissiveElement",
-    "YippyCoronagraph",
     "__version__",
     "frames_for_time",
 ]
