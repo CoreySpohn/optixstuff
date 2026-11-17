@@ -120,7 +120,9 @@ class TestYippyCoronagraph:
         """
         coro = yippy_coronagraph
         ppf = 30.0
-        floor = float(coro.noise_floor_ayo(separation_lod, ppf))
+        floor = float(
+            coro.curves().evaluate("leakage_density_lod2", separation_lod) / ppf
+        )
         cmi = float(coro.leakage_density_lod2(separation_lod, 500.0))
         assert floor == pytest.approx(cmi / ppf, rel=1e-6)
 

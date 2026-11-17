@@ -68,10 +68,25 @@ def test_image_contract(coro):
         assert results[5].quantity == "photons/s"
         assert all(im.measure == "per_pixel" for im in results[:4])
     if isinstance(coro, ox.YippyCoronagraph):
+        for native, expected_native in [
+            (
+                coro.stellar_map(500.0, 0.1, grid=None),
+                coro._backend.stellar_intens(0.1),
+            ),
+            (
+                coro.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.0]), grid=None),
+                coro._backend.create_psfs(jnp.array([1.0]), jnp.array([0.0])),
+            ),
+        ]:
+            assert native.grid == expected_native.grid
+            assert native.leading_axes == expected_native.leading_axes
+            assert native.reconstruction == expected_native.reconstruction
+            np.testing.assert_array_equal(native.data, expected_native.data)
         # On the native grid, targets are box integrals of the declared
         # reconstruction, exactly as at any other pitch (no verbatim shortcut).
         np.testing.assert_array_equal(
-            coro.on_axis_psf(500.0, g).data, resample(coro.stellar_intens(0.0), g).data
+            coro.on_axis_psf(500.0, g).data,
+            resample(coro.stellar_map(500.0, 0.0, grid=None), g).data,
         )
         np.testing.assert_array_equal(
             coro.off_axis_psf(500.0, 1.0, g).data,
@@ -89,7 +104,9 @@ def test_fold_and_direction(n, tmp_path):
     c = synthetic_coronagraph(tmp_path, n)
     g = c.grid
     x, y = g.coordinates()
-    full = c.create_psfs(x.ravel(), y.ravel()).data.reshape(n, n, n, n)
+    full = c.source_psfs(500.0, x.ravel(), y.ravel(), grid=None).data.reshape(
+        n, n, n, n
+    )
     flux = jnp.asarray(np.random.default_rng(7).uniform(size=(n, n)))
     folded = _convolve_quadrants(flux, c.psf_datacube, g)
     direct = jnp.einsum("ij,ijyx->yx", flux, full)
@@ -135,7 +152,7 @@ def test_flux_resampling(table, ratio):
 
 
 def test_curve_contract(coro):
-    """Exact evaluator delegation; ratio identity at measured knots uses 16 eps."""
+    """Exact delegation; ratio identity uses 16 eps and floor arithmetic uses 4 eps."""
     rule = Circular(0.7)
     record = coro.curves(rule)
     s = jnp.asarray(record.separation_lod)
@@ -144,8 +161,51 @@ def test_curve_contract(coro):
     np.testing.assert_allclose(
         expected, coro.raw_contrast(s), rtol=16 * np.finfo(np.float32).eps
     )
+    # Post-processing uses max(abs(raw contrast), engineering floor) / ppf.
+    # Maps are inherited once and project the same contract records on the grid.
+    radius = jnp.hypot(*coro.grid.coordinates())
+    np.testing.assert_array_equal(coro.separation_map(), radius)
+    for method, field in [
+        (coro.throughput_map, "throughput"),
+        (coro.core_area_map, "core_area_lod2"),
+    ]:
+        expected_map = record.evaluate(field, radius)
+        np.testing.assert_array_equal(method(), expected_map)
+        np.testing.assert_array_equal(
+            method([rule, rule]), jnp.stack([expected_map, expected_map], axis=-1)
+        )
+    floor, ppf = 1e-7, 25.0
+    expected_noise = np.maximum(np.abs(np.asarray(record.raw_contrast)), floor) / ppf
+    np.testing.assert_allclose(
+        jnp.maximum(jnp.abs(coro.raw_contrast(s)), floor) / ppf,
+        expected_noise,
+        rtol=4 * np.finfo(np.float32).eps,
+    )
+    if isinstance(coro, ox.YippyCoronagraph):
+        for name in (
+            "iwa_lod",
+            "data_extent_lod",
+            "throughput",
+            "raw_contrast",
+            "core_area",
+            "core_mean_intensity",
+            "noise_floor_ayo",
+            "noise_floor_exosims",
+            "occulter_transmission",
+            "source_psfs",
+            "stellar_map",
+            "background_transmission",
+            "separation_map",
+            "throughput_map",
+            "core_area_map",
+        ):
+            assert not hasattr(coro._backend, name)
     for name in (
         "core_mean_intensity",
+        "stellar_intens",
+        "create_psfs",
+        "noise_floor_ayo",
+        "noise_floor_exosims",
         "IWA",
         "OWA",
         "diameter_m",

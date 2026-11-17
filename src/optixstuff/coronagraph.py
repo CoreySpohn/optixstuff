@@ -156,6 +156,25 @@ class AbstractCoronagraph(eqx.Module):
             .evaluate("raw_contrast", separation_lod)
         )
 
+    def separation_map(self):
+        """Native off-axis pixel radii in lambda/D, including the full grid basis."""
+        x, y = self.grid.coordinates()
+        return jnp.hypot(x, y)
+
+    def throughput_map(self, rules=None):
+        """Project throughput, stacking explicitly prepared rules on the last axis."""
+        radius = self.separation_map()
+        if rules is None:
+            return self.throughput(radius)
+        return jnp.stack([self.throughput(radius, rule=r) for r in rules], axis=-1)
+
+    def core_area_map(self, rules=None):
+        """Project aperture area, stacking prepared rules on the last axis."""
+        radius = self.separation_map()
+        if rules is None:
+            return self.core_area(radius)
+        return jnp.stack([self.core_area(radius, rule=r) for r in rules], axis=-1)
+
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Read dimensionless sky transmission when the record carries that profile.
 
@@ -179,12 +198,16 @@ class AbstractCoronagraph(eqx.Module):
         return replace(image, data=image.data[0], leading_axes=())
 
     @abc.abstractmethod
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid) -> Image:
-        """Finite-star per_pixel stellar_flux_fraction, shape (ny,nx)."""
+    def stellar_map(
+        self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None
+    ) -> Image:
+        """Finite-star per_pixel fractions; table grid=None retains native samples."""
 
     @abc.abstractmethod
-    def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid: PixelGrid) -> Image:
-        """Per_pixel stellar_flux_fraction PSFs, shape (source,ny,nx)."""
+    def source_psfs(
+        self, wavelength_nm, x_lod, y_lod, *, grid: PixelGrid | None
+    ) -> Image:
+        """Source fractions; table grid=None retains native samples and metadata."""
 
     @abc.abstractmethod
     def background_transmission(self, wavelength_nm, *, grid: PixelGrid) -> Image:
@@ -202,7 +225,14 @@ class AbstractCoronagraph(eqx.Module):
 
 
 class AbstractTableCoronagraph(AbstractCoronagraph):
-    """Native Image tables resampled once through hwoutils.grids.resample."""
+    """Native Image tables resampled once through hwoutils.grids.resample.
+
+    For stellar_map and source_psfs, grid=None returns the native samples and
+    their product grid without integration. An explicit grid requests pixel
+    integrals, even at native pitch. This distinction preserves the native
+    reconstruction needed for aperture measurements and avoids integrating
+    twice when a consumer subsequently samples onto detector pixels.
+    """
 
     sky_trans: AbstractVar[Image]
     psf_datacube: AbstractVar[object]
@@ -212,21 +242,23 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
         """Native image shape (ny,nx)."""
         return self.grid.shape
 
-    @abc.abstractmethod
-    def stellar_intens(self, stellar_diam_lod) -> Image:
-        """Native per-pixel stellar fraction Image, retaining its stellar grid."""
+    def _native_stellar_map(self, stellar_diam_lod) -> Image:
+        """Supply native stellar samples when the table supports stellar images."""
+        raise NotImplementedError("table has no native stellar image provider")
 
-    @abc.abstractmethod
-    def create_psfs(self, x_lod, y_lod) -> Image:
-        """Native source PSFs Image with leading axis 'source'."""
+    def _native_source_psfs(self, x_lod, y_lod) -> Image:
+        """Supply native PSFs when the table supports point-source images."""
+        raise NotImplementedError("table has no native source image provider")
 
     def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid):
         """Per-pixel stellar fraction on grid, using the stellar product's frame."""
-        return _on_grid(self.stellar_intens(stellar_diam_lod), grid)
+        image = self._native_stellar_map(stellar_diam_lod)
+        return image if grid is None else _on_grid(image, grid)
 
     def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid):
         """Per-pixel source fractions on grid; x indexes columns, y indexes rows."""
-        return _on_grid(self.create_psfs(x_lod, y_lod), grid)
+        image = self._native_source_psfs(x_lod, y_lod)
+        return image if grid is None else _on_grid(image, grid)
 
     def background_transmission(self, wavelength_nm, *, grid):
         """Sample dimensionless transmission without multiplying by pixel area."""

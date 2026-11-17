@@ -80,32 +80,15 @@ class YippyCoronagraph(AbstractTableCoronagraph):
 
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
         """Dimensionless sky transmission from the backend's ancillary record."""
-        return self._backend.occulter_transmission(separation_lod)
-
-    def noise_floor_ayo(
-        self,
-        separation_lod,
-        ppf=30.0,
-        *,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-    ):
-        """Record leakage_density_lod2 divided by ppf, in (lambda/D)^-2.
-
-        No pixel-area conversion occurs: the record already stores density.
-        """
-        return (
-            self.curves(rule, leakage_rule=leakage_rule).evaluate(
-                "leakage_density_lod2", separation_lod
-            )
-            / ppf
+        return self._backend.occultation_record.evaluate(
+            "occulter_transmission", separation_lod
         )
 
-    def stellar_intens(self, stellar_diam_lod):
+    def _native_stellar_map(self, stellar_diam_lod):
         """Native per-pixel stellar fraction Image at the requested diameter."""
         return self._backend.stellar_intens(stellar_diam_lod)
 
-    def create_psfs(self, x_lod, y_lod):
+    def _native_source_psfs(self, x_lod, y_lod):
         """Native per-pixel source fractions with leading axis 'source'."""
         return self._backend.create_psfs(x_lod, y_lod)
 

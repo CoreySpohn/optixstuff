@@ -69,7 +69,7 @@ def test_shared_frame_bit_equality(cached_diameter_coro):
         (c.background_transmission(500.0, grid=g), c.sky_trans),
         (
             c.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.0]), grid=g),
-            c.create_psfs(jnp.array([1.0]), jnp.array([0.0])),
+            c.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.0]), grid=None),
         ),
     ]:
         assert isinstance(actual, Image)

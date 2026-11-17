@@ -210,7 +210,14 @@ of the unocculted source flux per pixel, not normalized to post-coronagraph flux
 `curves(rule=Circular(0.7), *, leakage_rule="aperture_mean")` selects a prepared
 yippy record. The five scalar convenience methods call its `evaluate` method.
 `leakage_density_lod2` is already per square lambda/D; no pixel-area correction
-belongs in consumers. `noise_floor_ayo` reads that density and divides by `ppf`.
+belongs in consumers. Post-processing may divide that density, or raw contrast,
+by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the residual.
+No noise floor is a coronagraph property.
+`separation_map`, `throughput_map`, and `core_area_map` are shared contract
+projections on each implementation's native grid.
+For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
+return native samples and product metadata. An explicit grid requests pixel
+integration, including at native pitch.
 The record's contrast identity holds at measured knots; yippy interpolates the
 five fields in their declared spaces independently between knots.
 Additional rules and leakage conventions must be prepared during construction.
