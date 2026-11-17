@@ -6,6 +6,7 @@ from dataclasses import replace
 from itertools import pairwise
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
 from hwoutils.grids import Image, PixelGrid, resample
@@ -60,6 +61,10 @@ class AbstractCoronagraph(eqx.Module):
 
     Source coordinates and stellar diameters are in each native product's
     lambda/D. Image output sampling is defined entirely by the target grid.
+    Leakage queries accept stellar_diam_lod=0.0 for the stored point-source
+    record. Finite diameters use prepared image weights. Models without them
+    raise ValueError for concrete nonzero diameters and return NaN for traced
+    nonzero diameters.
     Wavelength selects a band; monochromatic tables have no further chromatic
     dependence. time_d is always days from the scene epoch.
     """
@@ -114,14 +119,18 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
+        stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Absolute stellar flux fraction integrated with the rule's weights."""
-        return (
-            self._performance_band(wavelength_nm)
-            .curves(rule, leakage_rule=leakage_rule)
-            .evaluate("leakage_fraction", separation_lod)
+        return self._performance_band(wavelength_nm)._leakage_query(
+            "leakage_fraction",
+            separation_lod,
+            wavelength_nm,
+            stellar_diam_lod,
+            rule,
+            leakage_rule,
         )
 
     def leakage_density_lod2(
@@ -130,14 +139,18 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
+        stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Stellar flux fraction per (lambda/D)^2 under the named averaging rule."""
-        return (
-            self._performance_band(wavelength_nm)
-            .curves(rule, leakage_rule=leakage_rule)
-            .evaluate("leakage_density_lod2", separation_lod)
+        return self._performance_band(wavelength_nm)._leakage_query(
+            "leakage_density_lod2",
+            separation_lod,
+            wavelength_nm,
+            stellar_diam_lod,
+            rule,
+            leakage_rule,
         )
 
     def raw_contrast(
@@ -146,14 +159,59 @@ class AbstractCoronagraph(eqx.Module):
         wavelength_nm=None,
         *,
         time_d=0.0,
+        stellar_diam_lod=0.0,
         rule=DEFAULT_APERTURE_RULE,
         leakage_rule="aperture_mean",
     ):
         """Rule-defined stellar intensity divided by planet intensity."""
-        return (
-            self._performance_band(wavelength_nm)
-            .curves(rule, leakage_rule=leakage_rule)
-            .evaluate("raw_contrast", separation_lod)
+        return self._performance_band(wavelength_nm)._leakage_query(
+            "raw_contrast",
+            separation_lod,
+            wavelength_nm,
+            stellar_diam_lod,
+            rule,
+            leakage_rule,
+        )
+
+    def _leakage_query(
+        self, name, separation, wavelength, diameter, rule, leakage_rule
+    ):
+        """Point-source fallback; models without prepared images reject finite stars.
+
+        A concrete nonzero diameter raises ValueError. A traced nonzero value
+        returns NaN, so jit/vmap cannot silently substitute a point source.
+        """
+        if not isinstance(diameter, jax.core.Tracer) and float(diameter) != 0:
+            raise ValueError("finite stellar diameter requires a prepared stellar map")
+        value = self.curves(rule, leakage_rule=leakage_rule).evaluate(name, separation)
+        if not isinstance(diameter, jax.core.Tracer):
+            return value
+        return jnp.where(jnp.asarray(diameter) == 0, value, jnp.nan)
+
+    def leakage_density_map(
+        self, rules=None, *, stellar_diam_lod=0.0, leakage_rule="aperture_mean"
+    ):
+        """Project density per (lambda/D)^2 on the native separation map.
+
+        Explicit prepared rules are stacked on the last axis. Diameter uses
+        the stellar product's native lambda/D, as in stellar_map.
+        """
+        radius = self.separation_map()
+        if rules is None:
+            return self.leakage_density_lod2(
+                radius, stellar_diam_lod=stellar_diam_lod, leakage_rule=leakage_rule
+            )
+        return jnp.stack(
+            [
+                self.leakage_density_lod2(
+                    radius,
+                    rule=r,
+                    stellar_diam_lod=stellar_diam_lod,
+                    leakage_rule=leakage_rule,
+                )
+                for r in rules
+            ],
+            axis=-1,
         )
 
     def separation_map(self):
@@ -232,10 +290,61 @@ class AbstractTableCoronagraph(AbstractCoronagraph):
     integrals, even at native pitch. This distinction preserves the native
     reconstruction needed for aperture measurements and avoids integrating
     twice when a consumer subsequently samples onto detector pixels.
+
+    Finite-star leakage uses _prepared_leakage_weights, built at construction
+    with yippy.performance.leakage_weights for each supported record. Tables
+    without prepared stellar-image weights retain the point-source contract.
     """
 
     sky_trans: AbstractVar[Image]
     psf_datacube: AbstractVar[object]
+
+    def _prepared_leakage_weights(self, rule, leakage_rule):
+        """Return native-image weights, or None for a table without stellar maps."""
+        return None
+
+    def _leakage_query(
+        self, name, separation, wavelength, diameter, rule, leakage_rule
+    ):
+        record = self.curves(rule, leakage_rule=leakage_rule)
+        point = record.evaluate(name, separation)
+        if not isinstance(diameter, jax.core.Tracer) and float(diameter) == 0:
+            return point
+        operators = self._prepared_leakage_weights(rule, leakage_rule)
+        if operators is None:
+            return super()._leakage_query(
+                name, separation, wavelength, diameter, rule, leakage_rule
+            )
+
+        def finite(d):
+            image = self.stellar_map(wavelength, d, grid=None).data
+            aperture, ring = operators
+            leakage = jnp.einsum("syx,yx->s", aperture, image)
+            area, tau = (
+                jnp.asarray(record.core_area_lod2),
+                jnp.asarray(record.throughput),
+            )
+            density = (
+                jnp.einsum("syx,yx->s", ring, image)
+                if ring is not None
+                else jnp.where(area > 0, leakage / jnp.where(area > 0, area, 1), 0)
+            )
+            values = {
+                "leakage_fraction": leakage,
+                "leakage_density_lod2": density,
+                "raw_contrast": jnp.where(
+                    tau > 0, density * area / jnp.where(tau > 0, tau, 1), 1e20
+                ),
+            }
+            return record.evaluate_samples(name, separation, values[name]).astype(
+                jnp.asarray(point).dtype
+            )
+
+        if not isinstance(diameter, jax.core.Tracer):
+            return finite(diameter)
+        return jax.lax.cond(
+            jnp.asarray(diameter) == 0, lambda d: jnp.asarray(point), finite, diameter
+        )
 
     @property
     def psf_shape(self):

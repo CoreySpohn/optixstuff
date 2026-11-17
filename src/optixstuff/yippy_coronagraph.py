@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from yippy import DEFAULT_APERTURE_RULE, EqxCoronagraph
-from yippy.performance import performance_curves
+from yippy.performance import leakage_weights, performance_curves
 
 from optixstuff.coronagraph import AbstractTableCoronagraph
 
@@ -20,10 +20,14 @@ class YippyCoronagraph(AbstractTableCoronagraph):
     Prepare every rule before JIT; curves() only selects stored records and
     raises for an unprepared rule/averaging combination. The constructor's
     leakage_rule selects the density convention for additional records.
+    Native-image leakage weights are prepared alongside each record. Runtime
+    finite-star queries apply those weights to the backend's interpolated map;
+    the zero-diameter path returns the stored record exactly.
     """
 
     _backend: EqxCoronagraph
     _records: tuple
+    _leakage_operators: tuple
     outer_working_angle_lod: float | None
 
     def __init__(
@@ -46,6 +50,7 @@ class YippyCoronagraph(AbstractTableCoronagraph):
         )
         self.outer_working_angle_lod = outer_working_angle_lod
         records = list(self._backend.curves_by_rule.values())
+        retained_count = len(records)
         for rule in rules:
             if any(r.rule == rule and r.leakage_rule == leakage_rule for r in records):
                 continue
@@ -63,6 +68,26 @@ class YippyCoronagraph(AbstractTableCoronagraph):
                 )
             )
         self._records = tuple(records)
+        self._leakage_operators = tuple(
+            jax.tree.map(
+                jnp.asarray,
+                leakage_weights(
+                    lambda s: self._backend.create_psf(s, 0.0),
+                    self._backend.stellar_intens(0.0),
+                    record,
+                    native_offaxis=self._backend._offaxis_backend
+                    if index < retained_count
+                    else None,
+                ),
+            )
+            for index, record in enumerate(records)
+        )
+
+    def _prepared_leakage_weights(self, rule, leakage_rule):
+        for record, weights in zip(self._records, self._leakage_operators, strict=True):
+            if record.rule == rule and record.leakage_rule == leakage_rule:
+                return weights
+        raise ValueError("No prepared stellar-map weights for this rule")
 
     @property
     def grid(self):
