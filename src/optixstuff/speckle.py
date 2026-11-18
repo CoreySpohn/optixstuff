@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 from hwoutils.constants import s2d
-from hwoutils.grids import Image, PixelGrid
+from hwoutils.grids import Image, Measure, PixelGrid
 from hwoutils.spectral import Quadrature
 from jax.typing import ArrayLike
 from jaxtyping import Array
@@ -99,7 +99,7 @@ class AbstractSpeckleField(eqx.Module):
 
     @abc.abstractmethod
     def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
-        """Return per_pixel stellar_flux_fraction excess on the field's grid.
+        """Return cell-integrated stellar_flux_fraction excess on the field's grid.
 
         The nominal coronagraph leakage must not be included again. Concrete
         implementations document their wavelength geometry and leading axes.
@@ -230,7 +230,7 @@ class LinearSpeckleField(AbstractSpeckleField):
             delta / self.response.input_energy,
             self.grid,
             wave_axes + time_axes,
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
             outside="reflect",

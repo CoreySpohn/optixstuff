@@ -255,6 +255,22 @@ def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
         ox.prepare_aperture(path, q, rule=rule, reference_wavelength_nm=490.0)
 
     if isinstance(rule, ox.Matched):
+        # A calibration/primary mismatch within the admitted tolerance still
+        # uses the primary's physical plate scale in both solid angles.
+        diameter = table.grid.frame.diameter_m * (1 + 5e-7)
+        matched_path = ox.OpticalPath.from_default_setup(
+            table, circumscribed_diameter_m=diameter, detector_shape=(4, 4)
+        )
+        (reference,) = ox.prepare_aperture(matched_path, q, rule=rule).references
+        expected = (500e-9 / diameter) ** 2
+        np.testing.assert_allclose(
+            reference.solid_angle_sr(2.0), 2 * expected, rtol=1e-14
+        )
+        np.testing.assert_allclose(
+            reference.stamps.pixel_solid_angle_sr,
+            expected * table.grid.step**2,
+            rtol=1e-14,
+        )
         with pytest.raises(ValueError, match=r"native.*images"):
             ox.prepare_aperture(
                 eqx.tree_at(lambda p: p.coronagraph, path, scalar(table.grid)),

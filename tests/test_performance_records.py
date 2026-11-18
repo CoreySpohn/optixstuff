@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.grids import Frame, Image, PixelGrid
+from hwoutils.grids import Frame, Image, Measure, PixelGrid
 
 from optixstuff import SampledProfile
 from optixstuff.apertures import Circular, HalfMaximum
@@ -212,12 +212,14 @@ def test_exact_binary_moments():
         stellar[1, 1:] = [0.125, 0.25]
 
         def measure(data, star, rule):
-            psf = Image(data, star.grid, (), "per_pixel", "stellar_flux_fraction")
+            psf = Image(
+                data, star.grid, (), Measure.integral(), "stellar_flux_fraction"
+            )
             return performance_curves(lambda s: psf, star, rule, separations_lod=[0.0])
 
         binary_grid = PixelGrid.focal(3, 0.3, grid.frame)
         binary_star = Image(
-            stellar, binary_grid, (), "per_pixel", "stellar_flux_fraction"
+            stellar, binary_grid, (), Measure.integral(), "stellar_flux_fraction"
         )
         # The full-field DFT integral preserves flux to summation roundoff.
         binary = measure(planet, binary_star, Circular(2.0))
@@ -294,7 +296,7 @@ def _gaussian_source():
             / (2 * np.pi * 0.4**2)
             * 0.25**2
         )
-        return Image(p, grid, (), "per_pixel", "stellar_flux_fraction")
+        return Image(p, grid, (), Measure.integral(), "stellar_flux_fraction")
 
     return source, x, y, grid
 
@@ -319,7 +321,7 @@ def test_geometric_rules_preserve_primitive_curves():
             1e-8 * (2 + 0.03 * (x * x + y * y) + 0.2 * x) * 0.25**2,
             grid,
             (),
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
         )
         seps = np.array([1.0, 2.0])
@@ -389,7 +391,7 @@ def test_absolute_leakage_sampling():
         source, _, _, grid = _gaussian_source()
         rule, sep = Circular(0.7), 1.0
         star = Image(
-            source(sep).data / 8, grid, (), "per_pixel", "stellar_flux_fraction"
+            source(sep).data / 8, grid, (), Measure.integral(), "stellar_flux_fraction"
         )
         for factor in (5, 10):
             record = _performance_curves(
@@ -403,7 +405,7 @@ def test_absolute_leakage_sampling():
             np.full(small_grid.shape, 3e-9),
             small_grid,
             (),
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
         )
         outside = performance_curves(source, small_star, rule, separations_lod=[2.0])
@@ -428,7 +430,7 @@ def test_leakage_mean_conventions_and_disconnected_core():
                 else np.full(grid.shape, 1e-8)
             )
             star = Image(
-                density * 0.25**2, grid, (), "per_pixel", "stellar_flux_fraction"
+                density * 0.25**2, grid, (), Measure.integral(), "stellar_flux_fraction"
             )
             local = performance_curves(
                 source, star, Circular(0.7), separations_lod=[1.0, 2.0]
@@ -457,7 +459,7 @@ def test_leakage_mean_conventions_and_disconnected_core():
         # A brighter, disconnected second core inside the local window
         # must not become part of the nominal source's aperture.
         p = source(1.0).data + source(3.0).data * 1.1
-        image = Image(p, grid, (), "per_pixel", "stellar_flux_fraction")
+        image = Image(p, grid, (), Measure.integral(), "stellar_flux_fraction")
         weights = np.asarray(HalfMaximum().weights(image, (1.0, 0.0)))
         assert weights[24, 28] > 0.99
         assert weights[24, 36] == 0.0

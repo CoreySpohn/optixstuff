@@ -7,7 +7,7 @@ import os
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.grids import Image, PixelGrid
+from hwoutils.grids import Image, Measure, PixelGrid
 from hwoutils.spectral import Band
 from hypothesis import settings
 
@@ -69,7 +69,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             1 - jnp.exp(-(x * x + y * y) / 4),
             self.grid,
             (),
-            "per_unit_area",
+            Measure.intensive(),
             "transmission",
         )
         self.uniform_sky_profile = ox.SampledProfile.from_uniform_sky(self.sky_trans)
@@ -112,7 +112,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             jnp.full(self.grid.shape, 1e-8) * (1 + stellar_diam_lod**2),
             self.grid,
             (),
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
             outside="reflect",
@@ -135,7 +135,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             data,
             self.grid,
             ("source",),
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
             outside="zero",
@@ -232,7 +232,7 @@ def linear_speckle():
 @pytest.fixture
 def displaced_gaussian_source():
     """Gaussian source displaced by (0.08, -0.06) lod from its nominal point."""
-    from hwoutils.grids import Frame, Image, PixelGrid
+    from hwoutils.grids import Frame, Image, Measure, PixelGrid
 
     def build(step):
         grid = PixelGrid.focal(int(12 / step), step, Frame(500, 6, "circumscribed"))
@@ -247,13 +247,13 @@ def displaced_gaussian_source():
                 / (2 * np.pi * 0.6**2)
                 * step**2
             )
-            return Image(data, grid, (), "per_pixel", "stellar_flux_fraction")
+            return Image(data, grid, (), Measure.integral(), "stellar_flux_fraction")
 
         star = Image(
             np.full(grid.shape, 1e-9 * step**2),
             grid,
             (),
-            "per_pixel",
+            Measure.integral(),
             "stellar_flux_fraction",
         )
         return source, star

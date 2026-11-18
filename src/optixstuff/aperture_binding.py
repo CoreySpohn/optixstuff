@@ -7,7 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.conversions import arcsec_to_rad
+from hwoutils.grids import PixelGrid
 from hwoutils.spectral import Quadrature
 
 from optixstuff.apertures import (
@@ -102,7 +102,7 @@ def _stellar_pixels(model, wave, diameter):
     target = (
         None if products.stellar_grid == products.source_grid else products.source_grid
     )
-    return model.stellar_map(wave, diameter, grid=target).data
+    return model.stellar_map(wave, diameter, grid=target).integrated().data
 
 
 def _sky_area_profile(model, wave, record):
@@ -142,13 +142,16 @@ class _ApertureNode(eqx.Module):
     sky_area: SampledProfile | None
 
 
-def _prepare_matched_stamps(nodes, record):
+def _prepare_matched_stamps(nodes, record, frame):
     # The table rule admits only nodes at the reference wavelength.
     first = nodes[0]
     model, wave = first.coronagraph, first.wavelength_nm
     grid = model.at_wavelength(wave).source_grid
     p = jnp.stack(
-        [image.data for image, _ in model.aperture_samples(wave, record.separation_lod)]
+        [
+            image.integrated().data
+            for image, _ in model.aperture_samples(wave, record.separation_lod)
+        ]
     )
     s = _stellar_pixels(model, wave, record.stellar_diameter or 0.0)
     sky = model.uniform_sky_map(wave, grid=grid)
@@ -160,7 +163,7 @@ def _prepare_matched_stamps(nodes, record):
         at_nodes(p),
         at_nodes(s),
         at_nodes(sky.data),
-        grid.pixel_area * arcsec_to_rad(first.arcsec_per_lod) ** 2,
+        replace(grid, frame=frame).to_arcsec(wave).cell_area("sr"),
     )
 
 
@@ -168,10 +171,15 @@ class _ApertureReference(eqx.Module):
     """Reference geometry and quadrature nodes in one band."""
 
     wavelength_nm: float = eqx.field(static=True)
+    lod_cell_solid_angle_sr: float = eqx.field(static=True)
     arcsec_per_lod: float | np.floating
     record: PerformanceCurves
     nodes: tuple[_ApertureNode, ...]
     stamps: MatchedStamps | None = None
+
+    def solid_angle_sr(self, area_lod2):
+        """Solid angle subtended by an aperture in reference lambda/D squared."""
+        return area_lod2 * self.lod_cell_solid_angle_sr
 
     def matched_response(
         self, separation_lod, stellar_diam_lod, A, B, D, planet_spectrum
@@ -362,10 +370,17 @@ def prepare_aperture(
             )
         _, reference = coro.band(ref).prepared(record_rule)
         frame = primary.frame(ref, reference.frame.diameter_convention)
-        stamps = _prepare_matched_stamps(nodes, reference) if is_matched else None
+        stamps = (
+            _prepare_matched_stamps(nodes, reference, frame) if is_matched else None
+        )
         references.append(
             _ApertureReference(
-                float(ref), frame.lod_to_arcsec(ref), reference, tuple(nodes), stamps
+                float(ref),
+                PixelGrid.focal(1, 1, frame).to_arcsec(ref).cell_area("sr"),
+                frame.lod_to_arcsec(ref),
+                reference,
+                tuple(nodes),
+                stamps,
             )
         )
     return PreparedAperture(quadrature, tuple(references))

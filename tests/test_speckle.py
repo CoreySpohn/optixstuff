@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from conftest import SinusoidalSpeckle, scalar_coronagraph
 from hwoutils.constants import s2d
-from hwoutils.grids import Frame, Image, PixelGrid
+from hwoutils.grids import Frame, Image, Measure, PixelGrid
 from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
@@ -205,7 +205,7 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     assert not hasattr(field, "pixel_scale_lod")
     assert image.leading_axes == ("band", "quadrature")
     assert (image.measure, image.quantity, image.reconstruction, image.outside) == (
-        "per_pixel",
+        Measure.integral(),
         "stellar_flux_fraction",
         "band_limited",
         "reflect",

@@ -15,10 +15,16 @@ import interpax
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.grids import Frame
+from hwoutils.grids import (
+    Frame,
+    Image,
+    Measure,
+    PixelGrid,
+    footprint_overlap,
+    integrate_footprints,
+)
 from hwoutils.map_coordinates import map_coordinates
 from hwoutils.radial import radial_profile
-from hwoutils.transforms import downsample_psf
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import root_scalar
 
@@ -838,12 +844,10 @@ def azimuthal_mean_profile(
 
 
 def _validate_photometry_image(image):
-    from hwoutils.grids import Image
-
     if not isinstance(image, Image) or image.data.ndim != 2:
         raise ValueError("photometry requires a two-dimensional Image")
-    if image.grid.unit != "lod" or image.measure != "per_pixel":
-        raise ValueError("photometry requires per_pixel flux fractions on a lod grid")
+    if image.grid.unit != "lod" or image.measure == Measure.intensive():
+        raise ValueError("photometry requires flux fractions on a lod grid")
     # The retained spectral kernels require positive, axis-aligned square pixels.
     _ = image.grid.step
 
@@ -879,7 +883,7 @@ def _rule_samples(rule, psf, source_position, oversample=CORE_OVERSAMPLE):
     grid = psf.grid
     pixel = grid.unit_to_pixel(*source_position)
     nominal = (pixel.y, pixel.x)
-    data = jnp.asarray(psf.data, dtype=jnp.float64)
+    data = jnp.asarray(psf.integrated().data, dtype=jnp.float64)
     if isinstance(rule, Circular):
         half_width = (
             int(np.ceil((rule.radius_lod + PEAK_SEARCH_RADIUS_LOD) / grid.step)) + 1
@@ -932,9 +936,13 @@ def _rule_weights(rule, psf, source_position, oversample):
             rule, psf, source_position, oversample
         )
         ny, nx = weights.shape[0] // factor, weights.shape[1] // factor
-        # Coverage is a fraction, so convert integrated subpixel weights to a mean.
-        native, _ = downsample_psf(weights, 1.0, (ny, nx))
-        native = native / factor**2
+        # A fully covered subpixel has unit area in subpixel coordinates.
+        # The collected area per native cell gives its fractional coverage.
+        subpixels = PixelGrid.regular(weights.shape, 1, "pixel")
+        pixels = PixelGrid.regular((ny, nx), factor, "pixel")
+        coverage = Image(weights, subpixels, (), Measure.integral(), "aperture_area")
+        collected = integrate_footprints(coverage, footprint_overlap(subpixels, pixels))
+        native = collected.density("grid").data
         return jax.lax.dynamic_update_slice(jnp.zeros(psf.grid.shape), native, (sy, sx))
 
 
@@ -1373,7 +1381,7 @@ def performance_curves(
     The callable is evaluated on the explicit separation axis. Explicit
     separations synthesize PSFs at (s, 0). The returned images must share one
     positive axis-aligned square lod grid, carrying per-pixel source fractions.
-    Stellar is a per-pixel stellar-flux Image, potentially on a distinct grid
+    Stellar is a stellar-flux Image, potentially on a distinct grid
     and frame; its samples are mapped through the frames' angular scales.
     Geometric rules integrate both images on the same subpixel region.
     Stellar samples outside the stellar footprint are zero.
@@ -1410,6 +1418,7 @@ def _performance_curves(
     if not isinstance(rule, (Circular, HalfMaximum)):
         raise TypeError("rule must be Circular or HalfMaximum")
     _validate_photometry_image(stellar)
+    stellar = stellar.integrated()
     if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
         raise ValueError("unknown leakage_rule")
     if separations_lod is None:

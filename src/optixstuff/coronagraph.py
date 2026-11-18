@@ -9,7 +9,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
-from hwoutils.grids import Frame, Image, PixelGrid, resample
+from hwoutils.grids import (
+    Frame,
+    Image,
+    Measure,
+    PixelGrid,
+    footprint_overlap,
+    integrate_footprints,
+    resample,
+)
 from hwoutils.spectral import Band, spectral_breaks
 
 from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
@@ -19,12 +27,19 @@ from optixstuff.performance import PerformanceCurves, SampledProfile
 def _on_grid(image: Image, grid: PixelGrid) -> Image:
     """Resample using the product's frame; reconcile different lod frames via sky.
 
-    There is no shortcut for an identical grid: native samples are point
-    densities under the declared reconstruction, and the target pixels are
-    box integrals of it, so the result must be continuous in the target pitch.
+    Measured cell integrals with piecewise-constant reconstruction collect by
+    footprint. Optical point samples integrate their declared reconstruction,
+    including on the native pitch. Transmission samples the reconstruction.
     """
     source = image.grid
     target = grid
+    measured_cells = (
+        image.measure == Measure.integral() and image.reconstruction == "nearest"
+    )
+    if measured_cells and source == target:
+        return image
+    if image.measure != Measure.intensive():
+        image = image.integrated()
     if source.unit != target.unit or (
         source.unit == "lod" and source.frame != target.frame
     ):
@@ -32,7 +47,12 @@ def _on_grid(image: Image, grid: PixelGrid) -> Image:
             source = source.to_arcsec(source.frame.reference_wavelength_nm)
         if target.unit == "lod":
             target = target.to_arcsec(target.frame.reference_wavelength_nm)
-    sampled = resample(replace(image, grid=source), target)
+    native = replace(image, grid=source)
+    sampled = (
+        integrate_footprints(native, footprint_overlap(source, target))
+        if measured_cells
+        else resample(native, target)
+    )
     return replace(sampled, grid=grid)
 
 
@@ -243,7 +263,7 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
         psfs = self.source_psfs(
             self.frame.reference_wavelength_nm, x.ravel(), y.ravel()
         )
-        energy = jnp.sum(psfs.image.data, axis=(-2, -1))
+        energy = jnp.sum(psfs.image.integrated().data, axis=(-2, -1))
         return jnp.where(psfs.valid, energy, jnp.nan).reshape(x.shape)
 
     def aperture_samples(self, wavelength_nm, separations_lod):
@@ -323,11 +343,11 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
         )
 
     def on_axis_psf(self, wavelength_nm, grid: PixelGrid) -> Image:
-        """Point-star per_pixel stellar_flux_fraction on grid, shape (ny,nx)."""
+        """Point-star cell-integrated stellar flux fraction on grid, shape (ny,nx)."""
         return self.stellar_map(wavelength_nm, 0.0, grid=grid)
 
     def off_axis_psf(self, wavelength_nm, separation_lod, grid: PixelGrid) -> Image:
-        """One +x source, per_pixel stellar_flux_fraction on grid, shape (ny,nx)."""
+        """Cell-integrated stellar flux fractions on grid for a source along +x."""
         result = self.source_psfs(
             wavelength_nm, jnp.atleast_1d(separation_lod), jnp.zeros(1), grid=grid
         )
@@ -345,7 +365,7 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
     def stellar_map(
         self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None = None
     ) -> Image:
-        """Finite-star per_pixel fractions; table grid=None retains native samples."""
+        """Finite-star flux fractions; table grid=None retains native samples."""
 
     @abc.abstractmethod
     def source_psfs(
@@ -355,7 +375,7 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
 
     @abc.abstractmethod
     def uniform_sky_map(self, wavelength_nm, *, grid: PixelGrid) -> Image:
-        """Dimensionless transmission, per_unit_area to preserve sampled amplitude."""
+        """Dimensionless, intensive transmission sampled on the requested grid."""
 
 
 class AbstractSceneCoronagraph(AbstractImagingCoronagraph):
@@ -428,7 +448,7 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
             )
 
         def finite(d):
-            image = self.stellar_map(wavelength, d, grid=None).data
+            image = self.stellar_map(wavelength, d, grid=None).integrated().data
             aperture, aperture_variance, ring = operators
             is_variance = name in (
                 "leakage_fraction_variance",

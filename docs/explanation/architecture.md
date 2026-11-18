@@ -210,13 +210,13 @@ The result includes a validity flag covering every illuminated position.
 
 | Product | Image measure | Image quantity |
 |---|---|---|
-| On/off-axis PSFs, stellar map, source PSFs | `per_pixel` | `stellar_flux_fraction` |
-| Uniform-sky map | `per_unit_area` | `transmission` |
-| Extended scene | `per_pixel` | Input scene quantity |
+| PSFs and stellar maps on a requested grid | `Measure.integral()` | `stellar_flux_fraction` |
+| Uniform-sky map | `Measure.intensive()` | `transmission` |
+| Extended scene | `Measure.integral()` | Input scene quantity |
 
-Transmission uses sampled-value semantics to preserve amplitude, and is
-dimensionless despite the density-like resampling measure. PSFs are fractions
-of the unocculted source flux per pixel, not normalized to post-coronagraph flux.
+Transmission is dimensionless. A native PSF table retains the sampling declared
+by its producer. A requested grid receives the fraction of unocculted source
+flux collected by each pixel.
 
 `curves(rule=Circular(0.7), *, leakage_rule="aperture_mean")` selects a prepared
 `PerformanceCurves` record. The five scalar convenience methods call its `evaluate` method.
@@ -257,7 +257,7 @@ A `FocalResponse` stores the linear family's nominal amplitude density
 `G` by `reference_wavelength_nm / wavelength_nm`.
 
 `realize(wavelength_nm=..., time_d=...)` returns an `Image` on `self.grid`,
-with `per_pixel`, `stellar_flux_fraction`, `band_limited`, and `reflect`
+with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `reflect`
 metadata. Wavelength and time arrays form an outer product; wavelength axes
 lead time axes, followed by `(y, x)`. A `(W, Q)` wavelength array has axes
 `("band", "quadrature")`. Native coordinates describe lambda/D at each node:
