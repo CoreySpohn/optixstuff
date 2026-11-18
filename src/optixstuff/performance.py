@@ -990,6 +990,29 @@ def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     return jnp.where(inside, jnp.real(by @ spectrum @ bx.T) * ratio**2, 0)
 
 
+def aperture_operator(rule, psf, position, image_grid):
+    """Linear operator from a native image on ``image_grid`` to its aperture integral.
+
+    The aperture is ``rule`` placed at ``position`` on the planet image ``psf``.
+    The result has the shape of ``image_grid`` and carries the flux-fraction
+    weights, so contracting it with per-pixel fractions gives the aperture sum.
+    """
+    with jax.enable_x64():
+        _, weights, sy, sx, factor = _rule_samples(rule, psf, position, CORE_OVERSAMPLE)
+        sample = functools.partial(
+            _stellar_samples,
+            sg=image_grid,
+            planet_grid=psf.grid,
+            sy=sy,
+            sx=sx,
+            shape=weights.shape,
+            factor=factor,
+        )
+        transpose = jax.linear_transpose(sample, jnp.zeros(image_grid.shape))
+        (mean,) = transpose(weights / factor**2)
+        return mean
+
+
 def leakage_weights(offaxis, stellar, record, *, samples=None):
     """Prepare linear native-image operators for a performance record.
 
@@ -1007,21 +1030,7 @@ def leakage_weights(offaxis, stellar, record, *, samples=None):
                 if samples is None
                 else samples[index]
             )
-            _, weights, sy, sx, factor = _rule_samples(
-                record.rule, psf, position, CORE_OVERSAMPLE
-            )
-            sample = functools.partial(
-                _stellar_samples,
-                sg=stellar.grid,
-                planet_grid=psf.grid,
-                sy=sy,
-                sx=sx,
-                shape=weights.shape,
-                factor=factor,
-            )
-            transpose = jax.linear_transpose(sample, jnp.zeros(stellar.grid.shape))
-            (mean,) = transpose(weights / factor**2)
-            aperture.append(mean)
+            aperture.append(aperture_operator(record.rule, psf, position, stellar.grid))
         aperture = jnp.stack(aperture)
         ring = None
         if record.leakage_rule == "azimuthal_ring_mean":

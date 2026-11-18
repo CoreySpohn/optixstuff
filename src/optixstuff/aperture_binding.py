@@ -21,7 +21,17 @@ from optixstuff.coronagraph import (
     AbstractImagingCoronagraph,
 )
 from optixstuff.optical_path import OpticalPath
-from optixstuff.performance import PerformanceCurves, SampledProfile
+from optixstuff.performance import (
+    PerformanceCurves,
+    SampledProfile,
+    aperture_operator,
+)
+
+#: Angular spacing, in lambda/D along the ring, of the position angles averaged
+#: by the scalar sky and stellar-leakage reductions.
+RING_SPACING_LOD = 0.7
+RING_MIN_ANGLES = 8
+RING_MAX_ANGLES = 64
 
 
 class MatchedStamps(eqx.Module):
@@ -105,21 +115,57 @@ def _stellar_pixels(model, wave, diameter):
     return model.stellar_map(wave, diameter, grid=target).integrated().data
 
 
-def _sky_area_profile(model, wave, record):
-    """Integrate the sky map with the calibrated native pixel coverage at each knot.
+def _ring_positions(separation_lod):
+    """Position angles, spaced by about RING_SPACING_LOD along the ring."""
+    count = int(
+        np.clip(
+            np.ceil(2 * np.pi * float(separation_lod) / RING_SPACING_LOD),
+            RING_MIN_ANGLES,
+            RING_MAX_ANGLES,
+        )
+    )
+    angle = 2 * np.pi * np.arange(count) / count
+    return float(separation_lod) * np.cos(angle), float(separation_lod) * np.sin(angle)
 
-    Circular and HalfMaximum describe geometric regions. The subpixel indicator
-    squared is itself, so the same covered area measures both Poisson moments.
+
+def _ring_samples(model, wave, separation_lod):
+    """Planet images and positions on the ring at one separation, one per angle."""
+    x, y = _ring_positions(separation_lod)
+    psfs = model.source_psfs(wave, jnp.asarray(x), jnp.asarray(y))
+    return [
+        (
+            replace(psfs.image, data=jnp.where(valid, data, jnp.nan), leading_axes=()),
+            (float(xi), float(yi)),
+        )
+        for data, valid, xi, yi in zip(psfs.image.data, psfs.valid, x, y, strict=True)
+    ]
+
+
+def _sky_area_profile(model, wave, record):
+    """Annular mean of the aperture-integrated sky map, at each record knot.
+
+    The aperture is placed at every position angle on the ring (spacing
+    RING_SPACING_LOD) with its native pixel coverage, and the transmitted areas
+    are averaged. Circular and HalfMaximum describe geometric regions; the
+    subpixel indicator squared is itself, so the same covered area measures
+    both Poisson moments.
     """
     grid = model.at_wavelength(wave).source_grid
     sky = model.uniform_sky_map(wave, grid=grid).data
-    samples = model.aperture_samples(wave, record.separation_lod)
     dtype = jnp.result_type(sky, 1.0)
     with jax.enable_x64():
         areas = jnp.stack(
             [
-                jnp.sum(record.rule.weights(psf, position) * sky) * grid.pixel_area
-                for psf, position in samples
+                jnp.mean(
+                    jnp.stack(
+                        [
+                            jnp.sum(record.rule.weights(psf, position) * sky)
+                            for psf, position in _ring_samples(model, wave, sep)
+                        ]
+                    )
+                )
+                * grid.pixel_area
+                for sep in np.asarray(record.separation_lod)
             ]
         ).astype(dtype)
     return SampledProfile(
@@ -131,6 +177,26 @@ def _sky_area_profile(model, wave, record):
     )
 
 
+def _ring_leakage_operator(model, wave, record):
+    """Native stellar-map operator for the annular mean of the aperture sum.
+
+    Shape (knot, stellar_y, stellar_x). Each row averages the aperture operators
+    over the position angles of its ring, so contracting it with a stellar map
+    gives the mean over position angle of the map integrated over the aperture.
+    """
+    stellar_grid = model.at_wavelength(wave).stellar_grid
+    rows = []
+    with jax.enable_x64():
+        for sep in np.asarray(record.separation_lod):
+            ring = [
+                aperture_operator(record.rule, psf, position, stellar_grid)
+                for psf, position in _ring_samples(model, wave, sep)
+            ]
+            rows.append(jnp.mean(jnp.stack(ring), axis=0))
+        operator = jnp.stack(rows)
+    return jnp.asarray(np.asarray(operator), dtype=jnp.result_type(float))
+
+
 class _ApertureNode(eqx.Module):
     """Prepared photometry and angular scales at one quadrature wavelength."""
 
@@ -140,6 +206,7 @@ class _ApertureNode(eqx.Module):
     arcsec_per_lod: float | np.floating
     stellar_arcsec_per_lod: float | np.floating
     sky_area: SampledProfile | None
+    ring_leakage: jax.Array | None
 
 
 def _prepare_matched_stamps(nodes, record, frame):
@@ -256,6 +323,12 @@ class PreparedAperture(eqx.Module):
         fractions. The next three use the variance weights. For geometric
         apertures, both moments integrate the same indicator function.
 
+        For an imaging model the stellar and sky entries are annular means:
+        the aperture is placed at every position angle of the ring at the
+        separation and the integrals are averaged, so the value does not
+        depend on the angle of one source. Position-specific values come
+        from the model's own leakage and image queries.
+
         For Matched, pass the band reference and quadrature-weighted scene
         rates. The result is a MatchedMoments at the requested separation.
         Stellar diameter is in the native stellar frame at the reference.
@@ -274,6 +347,21 @@ class PreparedAperture(eqx.Module):
         if node.sky_area is None:
             sky = coro.uniform_sky_response(separation_lod, wave, time_d=time_d)
             sky_variance = sky
+            leak = coro.leakage_fraction(
+                separation_lod,
+                wave,
+                time_d=time_d,
+                rule=rule,
+                stellar_diam_lod=stellar_diam_lod,
+            )
+            leak_variance = coro.leakage_fraction(
+                separation_lod,
+                wave,
+                time_d=time_d,
+                rule=rule,
+                stellar_diam_lod=stellar_diam_lod,
+                variance=True,
+            )
         else:
             area = node.sky_area.evaluate(separation_lod)
             mean_area = node.record.evaluate("core_area_lod2", separation_lod)
@@ -288,15 +376,14 @@ class PreparedAperture(eqx.Module):
                 area / jnp.where(variance_area > 0, variance_area, 1),
                 0,
             )
-        leakage_args = dict(
-            time_d=time_d,
-            rule=rule,
-            stellar_diam_lod=stellar_diam_lod,
-        )
-        leak = coro.leakage_fraction(separation_lod, wave, **leakage_args)
-        leak_variance = coro.leakage_fraction(
-            separation_lod, wave, variance=True, **leakage_args
-        )
+            image = coro.stellar_map(wave, stellar_diam_lod, grid=None)
+            samples = jnp.einsum(
+                "syx,yx->s", node.ring_leakage, image.integrated().data
+            )
+            leak = node.record.evaluate_samples(
+                "leakage_fraction", separation_lod, samples
+            )
+            leak_variance = leak
         return jnp.stack((tau, leak, sky, tau_variance, leak_variance, sky_variance))
 
 
@@ -358,6 +445,11 @@ def prepare_aperture(
                 if imaging and not is_matched
                 else None
             )
+            ring_leakage = (
+                _ring_leakage_operator(prepared_model, w, record)
+                if imaging and not is_matched
+                else None
+            )
             nodes.append(
                 _ApertureNode(
                     prepared_model,
@@ -366,6 +458,7 @@ def prepare_aperture(
                     node_frame.lod_to_arcsec(w),
                     stellar_frame.lod_to_arcsec(w),
                     sky_area,
+                    ring_leakage,
                 )
             )
         _, reference = coro.band(ref).prepared(record_rule)

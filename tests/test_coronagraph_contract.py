@@ -10,8 +10,9 @@ from conftest import (
     concrete_subclasses,
     synthetic_coronagraph,
 )
-from hwoutils.grids import PixelGrid, resample
+from hwoutils.grids import Image, Measure, PixelGrid, resample
 from hwoutils.spectral import Band, Quadrature
+from scipy.special import j0, j1
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
@@ -337,3 +338,63 @@ def test_jit_and_gradient(table):
     value, slope = jax.jit(jax.value_and_grad(tau))(0.5)
     np.testing.assert_allclose(slope, -value / 3.25, rtol=2e-5)
     np.testing.assert_allclose(value, tau(0.0) * 3.0 / 3.25, rtol=2e-5)
+
+
+class _CosineFieldTable(GaussianTableCoronagraph):
+    """Stellar fractions and sky transmission varying as 1 + 0.5 cos(2 pi x / 12)."""
+
+    def __init__(self):
+        super().__init__(24, rules=(Circular(0.7),))
+        x, _ = self.grid.coordinates()
+        self.sky_trans = Image(
+            1 + 0.5 * jnp.cos(2 * jnp.pi * x / 12),
+            self.grid,
+            (),
+            Measure.intensive(),
+            "transmission",
+        )
+
+    def _native_stellar_map(self, stellar_diam_lod):
+        x, _ = self.grid.coordinates()
+        return Image(
+            1e-8 * (1 + 0.5 * jnp.cos(2 * jnp.pi * x / 12)),
+            self.grid,
+            (),
+            Measure.integral(),
+            "stellar_flux_fraction",
+            reconstruction="band_limited",
+            outside="reflect",
+        )
+
+
+def test_scalar_sky_and_leakage_are_annular_means():
+    """Ring mean of a cosine field integrated over a circle, in closed form.
+
+    The 24 by 24 grid of 0.5 lambda/D pixels spans one period (12 lambda/D) of
+    the field, so the band-limited reconstruction is exact. Integrating
+    cos(kx) over a circle of radius r at (s cos t, s sin t) gives
+    cos(k s cos t) 2 pi r J1(kr) / k, and its mean over t has J0(ks) in place of
+    the cosine. The sky fraction is the ring-mean area over pi r^2 (rtol 2e-3,
+    pixel midpoint error of the transmission map); the leakage is the same
+    bracket times 1e-8 per pixel area of 0.25 (rtol 1e-4). The value at +x
+    differs by about 10 percent, so this checks the reduction, not the grid.
+    """
+    table = _CosineFieldTable()
+    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    q = Quadrature.build((Band(499.5, 500.5),), path, order=1)
+    aperture = ox.prepare_aperture(path, q, rule=Circular(0.7))
+    node = aperture.references[0].nodes[0]
+    separation, radius, depth = 2.0, 0.7, 0.5
+    k = 2 * np.pi / 12
+    shape = 2 * j1(k * radius) / (k * radius)
+    ring = 1 + depth * j0(k * separation) * shape
+    along_x = 1 + depth * np.cos(k * separation) * shape
+    assert abs(ring / along_x - 1) > 0.09
+    _, leak, sky, _, leak_variance, sky_variance = aperture.response(
+        node, separation, 0.0, 0.0
+    )
+    np.testing.assert_allclose(sky, ring, rtol=2e-3)
+    np.testing.assert_allclose(sky_variance, ring, rtol=2e-3)
+    expected = 1e-8 / 0.25 * np.pi * radius**2 * ring
+    np.testing.assert_allclose(leak, expected, rtol=1e-4)
+    np.testing.assert_allclose(leak_variance, expected, rtol=1e-4)
