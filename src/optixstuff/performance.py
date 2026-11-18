@@ -15,7 +15,11 @@ import interpax
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.grids import (
+from hwoutils.map_coordinates import map_coordinates
+from scipy.interpolate import PchipInterpolator
+from scipy.optimize import root_scalar
+
+from optixstuff.grids import (
     Frame,
     Image,
     Measure,
@@ -23,10 +27,7 @@ from hwoutils.grids import (
     footprint_overlap,
     integrate_footprints,
 )
-from hwoutils.map_coordinates import map_coordinates
-from hwoutils.radial import radial_profile
-from scipy.interpolate import PchipInterpolator
-from scipy.optimize import root_scalar
+from optixstuff.radial import radial_profile
 
 from .apertures import Circular, HalfMaximum, RecordRule
 

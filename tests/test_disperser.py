@@ -2,10 +2,10 @@
 
 import jax.numpy as jnp
 import pytest
-from hwoutils.spectral import Transmission
 
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
+from optixstuff.spectral import Transmission
 
 
 def _lenslet(**overrides):

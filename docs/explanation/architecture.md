@@ -78,7 +78,7 @@ into a single `Instrument`:
 ## What throughput elements stand in for
 
 `ConstantThroughput` and `TransmissiveElement` represent optical losses.
-Tabulated responses use `hwoutils.spectral.Transmission`,
+Tabulated responses use `optixstuff.spectral.Transmission`,
 which interpolates linearly and is zero outside its table. `Transmission.from_band`
 represents a unit bandpass; constant optical losses use a scalar
 `ConstantThroughput`. Mapping to real hardware:
@@ -86,7 +86,7 @@ represents a unit bandpass; constant optical losses use a scalar
 | Concrete element | Represents |
 |---|---|
 | `ConstantThroughput` | Flat-reflectivity mirror coating, broadband neutral-density filter, fold mirror with achromatic reflectivity |
-| `TransmissiveElement` | An element holding a hwoutils Transmission -- mirror reflectivity curves, bandpass filters, dichroics, other filters |
+| `TransmissiveElement` | An element holding a `Transmission` -- mirror reflectivity curves, bandpass filters, dichroics, other filters |
 
 A real instrument has many individual physical components -- primary
 mirror, secondary, deformable mirror, fold mirrors, polarisers,
@@ -100,7 +100,7 @@ effective throughput is the product of every element's
 This example requires measured throughput curves and a configured coronagraph and detector.
 
 ```python notest
-from hwoutils.spectral import Transmission
+from optixstuff.spectral import Transmission
 
 path = Instrument(
     primary=SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
@@ -172,7 +172,7 @@ science-level outputs.
 
 ## Photon rates, electrons, and detector noise
 
-Scene readers supply `PhotonRates` at `hwoutils.spectral.Quadrature` nodes.
+Scene readers supply `PhotonRates` at `optixstuff.spectral.Quadrature` nodes.
 `detector.electrons(rates)` applies survival and QE at each
 node, then integrates into `ElectronRates`. This is the only detector
 yield conversion. Optical throughput remains upstream of that boundary.
@@ -235,7 +235,7 @@ Additional rules and leakage conventions must be prepared during construction.
 Finite stellar diameter remains an image capability; scalar records retain the
 diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
 selects a multiband record; `curves()` alone uses the reference band.
-`bandpass` is a `hwoutils.spectral.Band` or `None` for unknown coverage;
+`bandpass` is a `optixstuff.spectral.Band` or `None` for unknown coverage;
 each child of a multiband model must declare its interval. The first child
 covering the requested wavelength supplies the record, including at a shared
 edge. A wavelength outside all calibrated intervals raises `ValueError`.

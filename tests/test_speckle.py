@@ -9,10 +9,10 @@ import numpy as np
 import pytest
 from conftest import SinusoidalSpeckle, scalar_coronagraph
 from hwoutils.constants import s2d
-from hwoutils.grids import Frame, Image, Measure, PixelGrid
-from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
+from optixstuff.grids import Frame, Image, Measure, PixelGrid
+from optixstuff.spectral import Band, Quadrature
 
 
 def test_focal_response_integrates_density_over_the_grid():

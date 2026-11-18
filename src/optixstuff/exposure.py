@@ -2,7 +2,8 @@
 
 import equinox as eqx
 import jax.numpy as jnp
-from hwoutils.spectral import Quadrature
+
+from optixstuff.spectral import Quadrature
 
 
 def _band_shape(first, second):

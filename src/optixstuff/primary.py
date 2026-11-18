@@ -6,7 +6,8 @@ from math import sqrt
 import equinox as eqx
 import jax.numpy as jnp
 from equinox import AbstractVar
-from hwoutils.grids import Frame
+
+from optixstuff.grids import Frame
 
 
 class AbstractPrimary(eqx.Module):

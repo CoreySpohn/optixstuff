@@ -9,7 +9,6 @@ from math import pi
 import equinox as eqx
 import jax
 import numpy as np
-from hwoutils.spectral import spectral_breaks
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
@@ -21,6 +20,7 @@ from optixstuff.optical_elements import (
 )
 from optixstuff.primary import AbstractPrimary, SimplePrimary
 from optixstuff.speckle import AbstractSpeckleField
+from optixstuff.spectral import spectral_breaks
 
 
 class Instrument(eqx.Module):

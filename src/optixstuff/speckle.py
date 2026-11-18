@@ -16,10 +16,11 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 from hwoutils.constants import s2d
-from hwoutils.grids import Image, Measure, PixelGrid
-from hwoutils.spectral import Quadrature
 from jax.typing import ArrayLike
 from jaxtyping import Array
+
+from optixstuff.grids import Image, Measure, PixelGrid
+from optixstuff.spectral import Quadrature
 
 
 class FocalResponse(eqx.Module):

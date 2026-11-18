@@ -10,12 +10,12 @@ from conftest import (
     concrete_subclasses,
     synthetic_coronagraph,
 )
-from hwoutils.grids import Image, Measure, PixelGrid, resample
-from hwoutils.spectral import Band, Quadrature
 from scipy.special import j0, j1
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
+from optixstuff.grids import Image, Measure, PixelGrid, resample
+from optixstuff.spectral import Band, Quadrature
 
 
 @pytest.fixture(scope="module")

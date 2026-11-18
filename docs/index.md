@@ -59,7 +59,7 @@ from optixstuff import (
     ConstantThroughput,
     TransmissiveElement,
 )
-from hwoutils.grids import PixelGrid
+from optixstuff.grids import PixelGrid
 from optixstuff import ScalarCoronagraph
 
 primary = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
@@ -121,6 +121,7 @@ overview of photon rates, electron statistics, and detector draws.
 
 explanation/architecture
 explanation/detector_models
+explanation/grids_and_spectra
 ```
 
 <!-- TODO(post-1.0): write tutorials/01_building_an_optical_path and re-add a "Get started" toctree. -->

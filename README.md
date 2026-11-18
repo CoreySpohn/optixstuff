@@ -64,7 +64,7 @@ Primaries expose `diameter("circumscribed")`, `diameter("inscribed")`, and
 `SimplePrimary` takes both diameters and collecting area as keyword arguments;
 `SegmentedPrimary` derives them from segment size, gap, and ring count.
 
-Coronagraph images use `hwoutils.grids.Image` and an explicit target `PixelGrid`.
+Coronagraph images use `optixstuff.grids.Image` and an explicit target `PixelGrid`.
 Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
 between pixels. For example, `band.off_axis_psf(500.0, 3.0, target)` returns
 per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
@@ -117,7 +117,7 @@ applied once, before integration. The observer owns the frame plan.
 ```python
 import jax
 import jax.numpy as jnp
-from hwoutils.spectral import Band, Quadrature
+from optixstuff.spectral import Band, Quadrature
 from optixstuff import Detector, PhotonRates, frames_for_time
 
 detector = Detector(pixel_scale_arcsec=0.01, shape=(1, 1), qe=0.9)

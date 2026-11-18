@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.grids import Frame, Image, Measure, PixelGrid
 
 from optixstuff import SampledProfile
 from optixstuff.apertures import Circular, HalfMaximum
+from optixstuff.grids import Frame, Image, Measure, PixelGrid
 from optixstuff.performance import PerformanceCurves, performance_curves
 
 

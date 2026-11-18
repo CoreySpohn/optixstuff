@@ -5,9 +5,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Transmission, spectral_breaks
 
 import optixstuff as ox
+from optixstuff.spectral import Transmission, spectral_breaks
 
 
 class TestSimplePrimary:
@@ -146,7 +146,7 @@ def test_exposure_is_a_record_of_one_observation():
     The record is a pytree whose roll is an array leaf that vmap can map, and
     the plan may be absent.
     """
-    from hwoutils.spectral import Band, Quadrature
+    from optixstuff.spectral import Band, Quadrature
 
     quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
     exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)

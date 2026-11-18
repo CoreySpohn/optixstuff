@@ -4,9 +4,9 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Band, Quadrature, Transmission
 
 import optixstuff as ox
+from optixstuff.spectral import Band, Quadrature, Transmission
 
 
 @pytest.mark.parametrize("spatial", [(), (2, 3)])

@@ -26,7 +26,7 @@ the same shape as the input, including for constant QE.
 ```python
 import jax
 import jax.numpy as jnp
-from hwoutils.spectral import Band, Quadrature
+from optixstuff.spectral import Band, Quadrature
 from optixstuff import Detector, PhotonRates, frames_for_time
 
 detector = Detector(

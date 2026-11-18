@@ -7,14 +7,14 @@ import os
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.grids import Image, Measure, PixelGrid
-from hwoutils.spectral import Band
 from hypothesis import settings
 
 import optixstuff as ox
 from optixstuff import ScalarCoronagraph, SimplePrimary
 from optixstuff.apertures import DEFAULT_APERTURE_RULE
+from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.performance import PerformanceCurves
+from optixstuff.spectral import Band
 
 # Released hwoutils versions may not include the optional budget plugin yet.
 pytest_plugins = []
@@ -232,7 +232,7 @@ def linear_speckle():
 @pytest.fixture
 def displaced_gaussian_source():
     """Gaussian source displaced by (0.08, -0.06) lod from its nominal point."""
-    from hwoutils.grids import Frame, Image, Measure, PixelGrid
+    from optixstuff.grids import Frame, Image, Measure, PixelGrid
 
     def build(step):
         grid = PixelGrid.focal(int(12 / step), step, Frame(500, 6, "circumscribed"))

@@ -5,9 +5,10 @@ from typing import final
 
 import equinox as eqx
 import numpy as np
-from hwoutils.spectral import Transmission
 from jax.typing import ArrayLike
 from jaxtyping import Array
+
+from optixstuff.spectral import Transmission
 
 
 class AbstractOpticalElement(eqx.Module):

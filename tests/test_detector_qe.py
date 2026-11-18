@@ -5,9 +5,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
+from optixstuff.spectral import Band, Quadrature
 
 
 @pytest.mark.parametrize("spatial", [(), (2, 3)])

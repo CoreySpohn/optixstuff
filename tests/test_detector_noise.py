@@ -5,9 +5,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Band
 
 import optixstuff as ox
+from optixstuff.spectral import Band
 
 BANDS = (Band(450, 500), Band(500, 550))
 

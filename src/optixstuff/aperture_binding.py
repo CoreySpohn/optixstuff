@@ -7,8 +7,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.grids import PixelGrid
-from hwoutils.spectral import Quadrature
 
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
@@ -20,12 +18,14 @@ from optixstuff.coronagraph import (
     AbstractCoronagraph,
     AbstractImagingCoronagraph,
 )
+from optixstuff.grids import PixelGrid
 from optixstuff.instrument import Instrument
 from optixstuff.performance import (
     PerformanceCurves,
     SampledProfile,
     aperture_operator,
 )
+from optixstuff.spectral import Quadrature
 
 #: Angular spacing, in lambda/D along the ring, of the position angles averaged
 #: by the scalar sky and stellar-leakage reductions.

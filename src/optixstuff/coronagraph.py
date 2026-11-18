@@ -9,7 +9,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
-from hwoutils.grids import (
+
+from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
+from optixstuff.grids import (
     Frame,
     Image,
     Measure,
@@ -18,10 +20,8 @@ from hwoutils.grids import (
     integrate_footprints,
     resample,
 )
-from hwoutils.spectral import Band, spectral_breaks
-
-from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
 from optixstuff.performance import PerformanceCurves, SampledProfile
+from optixstuff.spectral import Band, spectral_breaks
 
 
 def _on_grid(image: Image, grid: PixelGrid) -> Image:
@@ -389,7 +389,7 @@ class AbstractSceneCoronagraph(AbstractImagingCoronagraph):
 
 
 class AbstractTableCoronagraph(AbstractImagingCoronagraph):
-    """Native Image tables resampled once through hwoutils.grids.resample.
+    """Native Image tables resampled once through optixstuff.grids.resample.
 
     For stellar_map and source_psfs, grid=None returns the native samples and
     their product grid without integration. An explicit grid requests pixel

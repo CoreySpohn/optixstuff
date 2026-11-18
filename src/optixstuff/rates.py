@@ -4,8 +4,9 @@ from dataclasses import fields
 
 import equinox as eqx
 import jax.numpy as jnp
-from hwoutils.spectral import Band, Quadrature
 from jaxtyping import Array
+
+from optixstuff.spectral import Band, Quadrature
 
 
 class _Rates(eqx.Module):
