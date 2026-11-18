@@ -35,7 +35,7 @@ from optixstuff.optical_elements import (
     TransmissiveElement,
 )
 from optixstuff.optical_path import OpticalPath
-from optixstuff.performance import PerformanceCurves
+from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
 from optixstuff.speckle import AbstractSpeckleField, LinearSpeckleField
@@ -69,6 +69,7 @@ __all__ = [
     "PerformanceCurves",
     "PhotonRates",
     "PreparedAperture",
+    "SampledProfile",
     "ScalarCoronagraph",
     "SegmentedPrimary",
     "SimplePrimary",

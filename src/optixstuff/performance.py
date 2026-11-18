@@ -1040,6 +1040,143 @@ def leakage_weights(offaxis, stellar, record, *, samples=None):
     )
 
 
+def _separation_axis(separation_lod):
+    if isinstance(separation_lod, (jax.Array, jax.core.Tracer)):
+        x = jnp.asarray(separation_lod, dtype=jnp.result_type(separation_lod, 1.0))
+    else:
+        x = np.array(separation_lod, dtype=float, copy=True)
+        x.flags.writeable = False
+    if x.ndim != 1 or x.size == 0:
+        raise ValueError("separation_lod must be a nonempty vector")
+    if not isinstance(x, jax.core.Tracer):
+        axis = np.asarray(x)
+        if not np.all(np.isfinite(axis)) or axis[0] < 0 or np.any(np.diff(axis) <= 0):
+            raise ValueError(
+                "separation_lod must contain increasing nonnegative finite values"
+            )
+    return x
+
+
+def _profile_fit(x, values, interpolation):
+    """Prepare a PCHIP and the end-segment slopes in the selected space."""
+    if len(x) == 1:
+        return None
+    traced = isinstance(values, (jax.Array, jax.core.Tracer)) or isinstance(
+        x, (jax.Array, jax.core.Tracer)
+    )
+    if traced:
+        y = jnp.asarray(values)
+        if interpolation == "log":
+            # The host's 1e-300 floor underflows in float32.
+            y = jnp.where(
+                y > 0, jnp.maximum(jnp.log10(jnp.where(y > 0, y, 1)), -300), -300
+            )
+        coefficients = interpax.PchipInterpolator(jnp.asarray(x), y, check=False).c
+        stack = jnp.stack
+    else:
+        y = np.log10(np.maximum(values, 1e-300)) if interpolation == "log" else values
+        coefficients = PchipInterpolator(x, y).c
+        stack = np.stack
+    # Preserve native knot spacings before casting traced ordinates to their dtype.
+    tails = stack(
+        (
+            y[0],
+            y[-1],
+            (y[1] - y[0]) / (x[1] - x[0]),
+            (y[-1] - y[-2]) / (x[-1] - x[-2]),
+        )
+    )
+    return coefficients, tails
+
+
+def _evaluate_profile(x, values, fit, interpolation, separation_lod, *, exact_knots):
+    xp = (
+        jnp
+        if isinstance(separation_lod, (jax.Array, jax.core.Tracer))
+        or isinstance(values, jax.core.Tracer)
+        or isinstance(x, jax.core.Tracer)
+        or (fit is not None and isinstance(fit[0], jax.core.Tracer))
+        else np
+    )
+    q, x, values = xp.asarray(separation_lod), xp.asarray(x), xp.asarray(values)
+    if fit is None:
+        return xp.full_like(q, values[0], dtype=values.dtype)
+    c, t = map(xp.asarray, fit)
+    k = xp.clip(xp.searchsorted(x, q, side="right") - 1, 0, len(x) - 1)
+    i = xp.minimum(k, len(x) - 2)
+
+    def polynomial(dx):
+        return ((c[0, i] * dx + c[1, i]) * dx + c[2, i]) * dx + c[3, i]
+
+    value = xp.where(
+        q < x[0],
+        t[0] + (q - x[0]) * t[2],
+        xp.where(q > x[-1], t[1] + (q - x[-1]) * t[3], polynomial(q - x[i])),
+    )
+    if interpolation == "log":
+        value = xp.power(10.0, value)
+        if not exact_knots and xp is jnp:
+            correction = xp.where(q == x[k], values[k] - value, 0)
+            return value + jax.lax.stop_gradient(correction)
+    elif not exact_knots:
+        # Aperture records historically return the polynomial at a linear endpoint.
+        return value
+    if xp is np:
+        return np.where(q == x[k], values[k], value)
+    # The residual cancels the fit's sample tangent at a knot and retains
+    # its radial derivative. The measured sample supplies its own tangent.
+    anchor = polynomial(x[k] - x[i])
+    if interpolation == "log":
+        anchor = xp.power(10.0, anchor)
+    at_knot = values[k] + (value - anchor)
+    return jnp.where(q == x[k], at_knot, value)
+
+
+class SampledProfile(eqx.Module):
+    """One radial quantity with shape-preserving interpolation in linear or log space.
+
+    Separations are in the supplied lambda/D frame. The two end segments
+    extrapolate linearly in the interpolation space. A single sample is constant.
+    Sample values can depend on a traced parameter such as stellar diameter.
+    """
+
+    separation_lod: np.ndarray | jax.Array
+    values: np.ndarray | jax.Array
+    quantity: str = eqx.field(static=True)
+    frame: Frame = eqx.field(static=True)
+    interpolation: str = eqx.field(static=True)
+    _fit: tuple | None
+
+    def __init__(
+        self, separation_lod, values, *, quantity, frame, interpolation, _fit=None
+    ):
+        """Fit the supplied samples in their declared quantity and frame."""
+        if interpolation not in ("linear", "log"):
+            raise ValueError("interpolation must be 'linear' or 'log'")
+        self.quantity, self.frame, self.interpolation = quantity, frame, interpolation
+        self.separation_lod = _separation_axis(separation_lod)
+        if isinstance(values, (jax.Array, jax.core.Tracer)):
+            self.values = jnp.asarray(values, dtype=jnp.result_type(values, 1.0))
+        else:
+            self.values = np.array(values, dtype=float, copy=True)
+            self.values.flags.writeable = False
+        if self.values.shape != self.separation_lod.shape:
+            raise ValueError(f"{quantity} must have shape {self.separation_lod.shape}")
+        # dataclasses.replace passes the previous fit; refit the current samples.
+        self._fit = _profile_fit(self.separation_lod, self.values, interpolation)
+
+    def evaluate(self, separation_lod):
+        """Evaluate on an arbitrary scalar or array of separations in this frame."""
+        return _evaluate_profile(
+            self.separation_lod,
+            self.values,
+            self._fit,
+            self.interpolation,
+            separation_lod,
+            exact_knots=True,
+        )
+
+
 class PerformanceCurves(eqx.Module):
     """Frozen photometry on one separation axis; all fractions are absolute.
 
@@ -1092,9 +1229,7 @@ class PerformanceCurves(eqx.Module):
     data_extent_lod: float = eqx.field(static=True)
     leakage_rule: str = eqx.field(static=True)
     stellar_diameter: float | None = eqx.field(static=True)
-    _coefficients: dict
-    _tails: dict
-    _extra: dict
+    _fits: dict
 
     interpolation: ClassVar = MappingProxyType(
         {
@@ -1107,8 +1242,6 @@ class PerformanceCurves(eqx.Module):
             "leakage_density_lod2": "log",
             "leakage_density_variance_lod2": "log",
             "raw_contrast": "log",
-            "occulter_transmission": "linear",
-            "core_mean_intensity": "linear",
         }
     )
 
@@ -1131,28 +1264,14 @@ class PerformanceCurves(eqx.Module):
         core_area_variance_lod2,
         leakage_fraction_variance,
         leakage_density_variance_lod2,
-        extra=None,
-        _coefficients=None,
-        _tails=None,
-        _extra=None,
+        _fits=None,
     ):
         """Validate measured arrays and prepare one set of PCHIP coefficients."""
         if not isinstance(rule, (Circular, HalfMaximum)):
             raise TypeError("rule must be Circular or HalfMaximum")
         if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
             raise ValueError("unknown leakage_rule")
-        x = np.array(separation_lod, dtype=float, copy=True)
-        if (
-            x.ndim != 1
-            or len(x) < 1
-            or not np.all(np.isfinite(x))
-            or np.any(np.diff(x) <= 0)
-            or x[0] < 0
-        ):
-            raise ValueError(
-                "separation_lod must contain increasing nonnegative finite values"
-            )
-        x.flags.writeable = False
+        x = _separation_axis(np.asarray(separation_lod))
         self.separation_lod = x
         self.frame, self.rule = frame, rule
         self.iwa_lod, self.data_extent_lod = float(iwa_lod), float(data_extent_lod)
@@ -1168,112 +1287,41 @@ class PerformanceCurves(eqx.Module):
             leakage_density_variance_lod2=leakage_density_variance_lod2,
             raw_contrast=raw_contrast,
         )
-        self._extra = {}
-        self._coefficients, self._tails = {}, {}
-        for name, value in (
-            values | (extra if extra is not None else (_extra or {}))
-        ).items():
+        # Replacements can change any measured array, invalidating its former fit.
+        self._fits = {}
+        for name, value in values.items():
             a = np.array(value, dtype=float, copy=True)
             if a.shape != x.shape or not np.all(np.isfinite(a)):
                 raise ValueError(f"{name} must be finite and have shape {x.shape}")
             a.flags.writeable = False
-            if name in values:
-                setattr(self, name, a)
-            else:
-                self._extra[name] = a
-            y = (
-                np.log10(np.maximum(a, 1e-300))
-                if self.interpolation[name] == "log"
-                else a
-            )
-            if len(x) == 1:
-                self._coefficients[name] = np.array([[0.0], [0.0], [0.0], [y[0]]])
-                self._tails[name] = np.array([y[0], y[0], 0.0, 0.0])
-                continue
-            self._coefficients[name] = PchipInterpolator(x, y).c
-            self._tails[name] = np.array(
-                [
-                    y[0],
-                    y[-1],
-                    (y[1] - y[0]) / (x[1] - x[0]),
-                    (y[-1] - y[-2]) / (x[-1] - x[-2]),
-                ]
-            )
+            setattr(self, name, a)
+            self._fits[name] = _profile_fit(x, a, self.interpolation[name])
 
     def evaluate_samples(self, name, separation_lod, values):
-        """Evaluate new knot values with this record's interpolation and tails.
-
-        Values may depend on traced inputs. Aperture geometry stays prepared;
-        only the scalar PCHIP coefficients are rebuilt.
-        """
-        x = jnp.asarray(self.separation_lod)
-        values = jnp.asarray(values)
-        if len(x) == 1:
-            return jnp.full_like(
-                jnp.asarray(separation_lod), values[0], dtype=values.dtype
-            )
-        y = (
-            jnp.where(
-                values > 0,
-                jnp.maximum(jnp.log10(jnp.where(values > 0, values, 1)), -300),
-                -300,
-            )
-            if self.interpolation[name] == "log"
-            else values
+        """Evaluate new knot values, which can depend on traced stellar diameter."""
+        axis, samples = jnp.asarray(self.separation_lod), jnp.asarray(values)
+        space = self.interpolation[name]
+        return _evaluate_profile(
+            axis,
+            samples,
+            _profile_fit(axis, samples, space),
+            space,
+            jnp.asarray(separation_lod),
+            exact_knots=False,
         )
-        coefficients = interpax.PchipInterpolator(x, y, check=False).c
-        tails = jnp.stack(
-            (
-                y[0],
-                y[-1],
-                (y[1] - y[0]) / (x[1] - x[0]),
-                (y[-1] - y[-2]) / (x[-1] - x[-2]),
-            )
-        )
-        record = eqx.tree_at(
-            lambda r: (getattr(r, name), r._coefficients[name], r._tails[name]),
-            self,
-            (values, coefficients, tails),
-        )
-        return record.evaluate(name, jnp.asarray(separation_lod))
 
     def evaluate(self, name, separation_lod):
         """Evaluate one named quantity using its declared interpolation space."""
-        if name not in self._coefficients:
+        if name not in self.interpolation:
             raise ValueError(f"quantity {name!r} is not present in this record")
-        xp = (
-            jnp
-            if isinstance(separation_lod, (jax.Array, jax.core.Tracer))
-            or isinstance(self._coefficients[name], jax.core.Tracer)
-            else np
+        return _evaluate_profile(
+            self.separation_lod,
+            getattr(self, name),
+            self._fits[name],
+            self.interpolation[name],
+            separation_lod,
+            exact_knots=False,
         )
-        q = xp.asarray(separation_lod)
-        x = xp.asarray(self.separation_lod)
-        if len(x) == 1:
-            value = self._extra[name] if name in self._extra else getattr(self, name)
-            return xp.full_like(q, xp.asarray(value)[0], dtype=x.dtype)
-        c = xp.asarray(self._coefficients[name])
-        t = xp.asarray(self._tails[name])
-        i = xp.clip(xp.searchsorted(x, q, side="right") - 1, 0, len(x) - 2)
-        dx = q - x[i]
-        value = ((c[0, i] * dx + c[1, i]) * dx + c[2, i]) * dx + c[3, i]
-        value = xp.where(
-            q < x[0],
-            t[0] + (q - x[0]) * t[2],
-            xp.where(q > x[-1], t[1] + (q - x[-1]) * t[3], value),
-        )
-        if self.interpolation[name] == "log":
-            value = xp.power(10.0, value)
-            values = xp.asarray(getattr(self, name))
-            k = xp.clip(xp.searchsorted(x, q), 0, len(x) - 1)
-            exact = xp.where(q == x[k], values[k], value)
-            # Restore measured knot values without erasing the PCHIP derivative.
-            if xp is jnp:
-                correction = xp.where(q == x[k], values[k] - value, 0)
-                value = value + jax.lax.stop_gradient(correction)
-            else:
-                value = exact
-        return value
 
 
 def _iwa(separation, throughput):

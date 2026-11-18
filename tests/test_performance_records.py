@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from hwoutils.grids import Frame, Image, PixelGrid
 
+from optixstuff import SampledProfile
 from optixstuff.apertures import Circular, HalfMaximum
 from optixstuff.performance import PerformanceCurves, performance_curves
 
@@ -154,6 +155,47 @@ def test_record_interpolation_spaces():
                 derivative, slope * 1e-8 * np.exp(slope * point), rtol=2e-14
             )
         assert np.isposinf(record.evaluate("raw_contrast", jnp.asarray(10000.0)))
+
+        # A traced amplitude changes both knots and tails. These two-node
+        # profiles have analytic derivatives even at their endpoints.
+        axis = np.array([0.0, 2.0])
+        q = jnp.array([-1.0, 0.0, 1.0, 2.0, 3.0])
+        for space, knots in (("log", [0.03, 0.12]), ("linear", [0.0, 0.12])):
+
+            def evaluate(amplitude, radius, space=space, knots=knots):
+                return SampledProfile(
+                    axis,
+                    amplitude * jnp.asarray(knots),
+                    quantity="flux_fraction",
+                    frame=record.frame,
+                    interpolation=space,
+                ).evaluate(radius)
+
+            predicted = knots[0] * 2.0**q if space == "log" else 0.06 * q
+            slope = predicted * np.log(2) if space == "log" else np.full(5, 0.06)
+            values = jax.jit(evaluate)(1.0, q)
+            np.testing.assert_array_equal(np.asarray(values)[[1, 3]], knots)
+            np.testing.assert_allclose(values, predicted, rtol=2e-14)
+            d_amp, d_radius = jax.vmap(jax.grad(evaluate, (0, 1)), (None, 0))(1.0, q)
+            np.testing.assert_allclose(d_amp, predicted, rtol=2e-14)
+            np.testing.assert_allclose(d_radius, slope, rtol=2e-14)
+
+        # Even a zero ordinate is returned verbatim at its knot. Its sample
+        # derivative is one, while the radial derivative uses the log fit.
+        def log_profile(samples, radius):
+            return SampledProfile(
+                axis,
+                samples,
+                quantity="flux_fraction",
+                frame=record.frame,
+                interpolation="log",
+            ).evaluate(radius)
+
+        samples = jnp.array([0.0, 1.0])
+        for jacobian in (jax.jacfwd, jax.jacrev):
+            d_samples, d_radius = jacobian(log_profile, (0, 1))(samples, 0.0)
+            np.testing.assert_array_equal(d_samples, [1.0, 0.0])
+            np.testing.assert_allclose(d_radius, 1e-300 * 150 * np.log(10), atol=0)
 
 
 def test_exact_binary_moments():

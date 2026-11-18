@@ -278,17 +278,21 @@ class AbstractCoronagraph(eqx.Module):
         )
 
     def occulter_transmission(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
-        """Read dimensionless sky transmission when the record carries that profile.
-
-        Backends with a separate sky product may override this concrete helper.
-        """
+        """Read dimensionless transmission from this band's radial sky profile."""
         if hasattr(separation_lod, "unit"):
             raise TypeError("separation_lod must be dimensionless numeric values")
-        return (
-            self._performance_band(wavelength_nm)
-            .curves()
-            .evaluate("occulter_transmission", separation_lod)
-        )
+        band = self._performance_band(wavelength_nm)
+        profile = getattr(band, "occulter_transmission_profile", None)
+        if profile is None:
+            raise ValueError("coronagraph has no occulter transmission profile")
+        frame = band.grid.frame
+        if frame != profile.frame:
+            # A single angular separation spans different native lambda/D counts.
+            ratio = frame.lod_to_arcsec(
+                frame.reference_wavelength_nm
+            ) / profile.frame.lod_to_arcsec(profile.frame.reference_wavelength_nm)
+            separation_lod = jnp.asarray(separation_lod) * ratio
+        return profile.evaluate(separation_lod)
 
     def on_axis_psf(self, wavelength_nm, grid: PixelGrid) -> Image:
         """Point-star per_pixel stellar_flux_fraction on grid, shape (ny,nx)."""
