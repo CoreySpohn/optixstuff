@@ -96,7 +96,7 @@ class TransmissiveElement(AbstractUniformElement):
 
     The response table, interpolation and support belong to Transmission.
     This element supplies the optical-path apply/get_throughput interface;
-    an OpticalPath multiplies the responses of its individual elements.
+    an Instrument multiplies the responses of its individual elements.
     Use ConstantThroughput for a wavelength-independent scalar efficiency.
     """
 

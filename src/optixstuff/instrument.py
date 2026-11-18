@@ -1,4 +1,4 @@
-"""OpticalPath container -- the universal hardware configuration."""
+"""Instrument container -- the universal hardware configuration."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from optixstuff.primary import AbstractPrimary, SimplePrimary
 from optixstuff.speckle import AbstractSpeckleField
 
 
-class OpticalPath(eqx.Module):
+class Instrument(eqx.Module):
     """Universal hardware container for a coronagraphic telescope.
 
     Bundles a primary mirror, ordered chain of attenuating elements,
@@ -98,11 +98,11 @@ class OpticalPath(eqx.Module):
         n_channels: float = 1.0,
         npix_multiplier: float = 1.0,
         speckle: AbstractSpeckleField | None = None,
-    ) -> OpticalPath:
-        """Build an OpticalPath with reasonable HWO-like defaults.
+    ) -> Instrument:
+        """Build an Instrument with reasonable HWO-like defaults.
 
         Convenience for notebook / dev-script work: spin up a working
-        ``OpticalPath`` by specifying only the coronagraph. All other
+        ``Instrument`` by specifying only the coronagraph. All other
         parameters get sensible defaults that can be overridden.
 
         Args:
@@ -129,7 +129,7 @@ class OpticalPath(eqx.Module):
                 ``None`` -- a perfect-wavefront path.
 
         Returns:
-            A ready-to-use :class:`OpticalPath`.
+            A ready-to-use :class:`Instrument`.
         """
         coro = coronagraph
 
@@ -192,7 +192,7 @@ class OpticalPath(eqx.Module):
         """Tree-shaped summary of every component."""
         lines = [
             (
-                f"OpticalPath(n_channels={self.n_channels:.3g}, "
+                f"Instrument(n_channels={self.n_channels:.3g}, "
                 f"npix_multiplier={self.npix_multiplier:.3g})"
             ),
             indent("primary: " + repr(self.primary)),

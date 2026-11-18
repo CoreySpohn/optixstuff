@@ -8,7 +8,7 @@ provides and the three-axis design (wavelength / position / time).
 
 `optixstuff` provides **composable hardware objects** -- primary,
 throughput elements, coronagraph backend, detector -- and a container
-(`OpticalPath`) that bundles them. The hardware objects hold attributes
+(`Instrument`) that bundles them. The hardware objects hold attributes
 like quantum efficiency curves, throughput, dark-current
 rates, and pixel scales; downstream tools query those attributes to
 do their own work.
@@ -44,7 +44,7 @@ flowchart TB
     AD[AbstractDetector]
     ID[IdealDetector]
     D[Detector]
-    OP["<b>OpticalPath</b><br/>(container)"]
+    OP["<b>Instrument</b><br/>(container)"]
 
     AOE --> AUE
     AUE --> CT
@@ -65,7 +65,7 @@ flowchart TB
 ```
 
 Five families of abstract base + concrete implementations, composed
-into a single `OpticalPath`:
+into a single `Instrument`:
 
 | Family | Abstract base | Concrete examples |
 |---|---|---|
@@ -73,7 +73,7 @@ into a single `OpticalPath`:
 | Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `TransmissiveElement` |
 | Coronagraph backend | `AbstractCoronagraph` | `ScalarCoronagraph`, `MultiBandCoronagraph` |
 | Detector | `AbstractDetector` | `IdealDetector`, `Detector` |
-| Composition container | (none) | `OpticalPath` |
+| Composition container | (none) | `Instrument` |
 
 ## What throughput elements stand in for
 
@@ -93,7 +93,7 @@ mirror, secondary, deformable mirror, fold mirrors, polarisers,
 bandpass filters, dichroics, lenses -- each with its own throughput
 curve. In optixstuff they all enter the radiometric model the same
 way: "a wavelength-dependent fraction that scales the incoming flux."
-The `OpticalPath` holds a `tuple[AbstractOpticalElement, ...]` whose
+The `Instrument` holds a `tuple[AbstractOpticalElement, ...]` whose
 effective throughput is the product of every element's
 `get_throughput(wavelength_nm)`:
 
@@ -102,7 +102,7 @@ This example requires measured throughput curves and a configured coronagraph an
 ```python notest
 from hwoutils.spectral import Transmission
 
-path = OpticalPath(
+path = Instrument(
     primary=SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
     attenuating_elements=(
         ConstantThroughput(throughput=0.95),  # primary coating
@@ -135,9 +135,9 @@ subclasses share the same `electrons`, `mean_and_variance`, and `draw`
 contract. `IdealDetector` supplies QE one; `Detector` supplies constant
 or measured spectral QE. Frame duration belongs to `FramePlan`.
 
-## OpticalPath as a composable container
+## Instrument as a composable container
 
-`OpticalPath` is an `eqx.Module` (PyTree-registered) that holds the
+`Instrument` is an `eqx.Module` (PyTree-registered) that holds the
 hardware configuration:
 
 ```python
@@ -150,7 +150,7 @@ from optixstuff import (
 )
 
 
-class OpticalPath(eqx.Module):
+class Instrument(eqx.Module):
     primary: AbstractPrimary
     attenuating_elements: tuple[AbstractOpticalElement, ...]
     coronagraph: AbstractCoronagraph

@@ -51,7 +51,7 @@ class TestConstantThroughputElement:
         assert jnp.allclose(result, 0.8 * jnp.ones((10, 10)))
 
 
-class TestOpticalPath:
+class TestInstrument:
     def test_transmission_elements_compose(self, simple_primary, simple_detector):
         """Fails if held responses lose knots, attenuation or parameter gradients.
 
@@ -60,7 +60,7 @@ class TestOpticalPath:
         """
         with jax.enable_x64():
             element = ox.TransmissiveElement(Transmission([500, 600], [0.2, 0.8]))
-            path = ox.OpticalPath(
+            path = ox.Instrument(
                 primary=simple_primary,
                 attenuating_elements=(element, ox.ConstantThroughput(0.4)),
                 coronagraph=None,
@@ -92,7 +92,7 @@ class TestOpticalPath:
 
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,
@@ -103,7 +103,7 @@ class TestOpticalPath:
     def test_system_throughput_two_elements(self, simple_primary, simple_detector):
         el1 = ox.ConstantThroughput(throughput=0.8)
         el2 = ox.ConstantThroughput(throughput=0.9)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el1, el2),
             coronagraph=None,
@@ -115,7 +115,7 @@ class TestOpticalPath:
         self, simple_primary, simple_detector
     ):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,
@@ -128,7 +128,7 @@ class TestOpticalPath:
         self, simple_primary, simple_detector
     ):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,

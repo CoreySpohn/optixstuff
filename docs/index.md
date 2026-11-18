@@ -12,7 +12,7 @@ that downstream tools consume.
 
 Both {mod}`coronagraphoto` (2D image simulation) and
 [jaxEDITH](https://github.com/CoreySpohn/jaxedith) (exposure-time and
-yield calculations) import the same {class}`~optixstuff.OpticalPath`
+yield calculations) import the same {class}`~optixstuff.Instrument`
 class and the same detector / throughput / primary types from
 optixstuff. Change a value here and both downstream tools pick it up
 on the next import.
@@ -29,7 +29,7 @@ on the next import.
   {mod}`skyscapes`.
 - **Not a simulator.** Downstream tools ({mod}`coronagraphoto`,
   [jaxEDITH](https://github.com/CoreySpohn/jaxedith)) consume an
-  {class}`~optixstuff.OpticalPath` to produce images / count rates.
+  {class}`~optixstuff.Instrument` to produce images / count rates.
 
 ## Ecosystem position
 
@@ -37,7 +37,7 @@ on the next import.
 flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / OpticalPath<br/>Throughput chains / QE / Noise rates"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
 
@@ -53,7 +53,7 @@ This example declares constant performance for one calibrated aperture.
 
 ```python notest
 from optixstuff import (
-    OpticalPath,
+    Instrument,
     SimplePrimary,
     IdealDetector,
     ConstantThroughput,
@@ -72,7 +72,7 @@ coronagraph = ScalarCoronagraph(
 )
 throughput = ConstantThroughput(throughput=0.85)
 
-path = OpticalPath(
+path = Instrument(
     primary=primary,
     attenuating_elements=(throughput,),
     coronagraph=coronagraph,
@@ -100,7 +100,7 @@ provides:
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
 - **Concrete implementations** -- `SimplePrimary`, `ConstantThroughput`,
   `TransmissiveElement`, `IdealDetector`, `Detector`, `ScalarCoronagraph`
-- **Container** -- `OpticalPath`, a composable hardware configuration
+- **Container** -- `Instrument`, a composable hardware configuration
   passed to all downstream simulators
 
 Optical elements and coronagraphs accept fidelity axes -- **wavelength**,

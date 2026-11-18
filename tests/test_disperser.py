@@ -65,9 +65,9 @@ def test_abstract_cannot_instantiate():
 def test_optical_path_accepts_disperser():
     import dataclasses
 
-    from optixstuff import OpticalPath
+    from optixstuff import Instrument
 
-    fields = {f.name for f in dataclasses.fields(OpticalPath)}
+    fields = {f.name for f in dataclasses.fields(Instrument)}
     assert "disperser" in fields
 
 
