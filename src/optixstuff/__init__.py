@@ -41,6 +41,7 @@ from optixstuff.optical_elements import (
 )
 from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
+from optixstuff.psflet_pack import PsfletPack, load_psflet_pack, save_psflet_pack
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 
@@ -77,6 +78,7 @@ __all__ = [
     "PhotonRates",
     "PreparedAperture",
     "ProductGrids",
+    "PsfletPack",
     "SampledProfile",
     "ScalarCoronagraph",
     "SceneRender",
@@ -86,6 +88,8 @@ __all__ = [
     "TransmissiveElement",
     "__version__",
     "frames_for_time",
+    "load_psflet_pack",
     "matched_moments",
     "prepare_aperture",
+    "save_psflet_pack",
 ]
