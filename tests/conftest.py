@@ -51,7 +51,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
     grid: PixelGrid
     bandpass: Band
     sky_trans: Image
-    psf_datacube: object
+    uniform_sky_profile: ox.SampledProfile
     _records: tuple
     outer_working_angle_lod: float | None = None
 
@@ -72,10 +72,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             "per_unit_area",
             "transmission",
         )
-        start = n // 2
-        self.psf_datacube = self._native_source_psfs(
-            x[start:, start:].ravel(), y[start:, start:].ravel()
-        ).data.reshape((n - start, n - start, n, n))
+        self.uniform_sky_profile = ox.SampledProfile.from_uniform_sky(self.sky_trans)
         axis = jnp.arange(4.0)
         amplitude = 0.6 * (1 - 0.9 * jnp.exp(-(axis**2) / 4))
         records = []
@@ -134,7 +131,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
                 / (2 * 0.7**2)
             )
         )
-        return Image(
+        image = Image(
             data,
             self.grid,
             ("source",),
@@ -143,6 +140,8 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             reconstruction="band_limited",
             outside="zero",
         )
+
+        return ox.SourcePSFs(image, jnp.isfinite(dx) & jnp.isfinite(dy))
 
 
 def synthetic_coronagraph(n=24, *, rules=()):

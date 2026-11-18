@@ -1,7 +1,5 @@
 """Grid, fold, aperture-record and JAX contracts on synthetic optics."""
 
-from dataclasses import replace
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,12 +10,11 @@ from conftest import (
     concrete_subclasses,
     synthetic_coronagraph,
 )
-from hwoutils.grids import Image, PixelGrid, resample
+from hwoutils.grids import PixelGrid, resample
 from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
-from optixstuff.coronagraph import _convolve_quadrants
 
 
 @pytest.fixture(scope="module")
@@ -47,102 +44,36 @@ def coro(request, table):
     pytest.fail(f"Add a synthetic fixture for {cls.__name__}")
 
 
-def test_image_contract(coro):
-    """Exact metadata and 8 float32 eps for native-grid identity operations."""
-    g = coro.grid
-    scene = Image(
-        jnp.zeros(g.shape).at[13, 14].set(1.0), g, (), "per_pixel", "photons/s"
-    )
-    targets = [
+def test_image_contract(table):
+    """Native metadata and explicit resampling agree with the shared grid operator."""
+    g = table.at_wavelength(500.0).source_grid
+    for target in (
         g,
         PixelGrid.regular((30, 32), 0.4, "lod", frame=g.frame, center=(15.2, 14.1)),
-    ]
-    for target in targets:
-        results = [
-            coro.on_axis_psf(500.0, target),
-            coro.off_axis_psf(500.0, 1.0, target),
-            coro.stellar_map(500.0, 0.1, grid=target),
-            coro.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.5]), grid=target),
-            coro.background_transmission(500.0, grid=target),
-            coro.extended_scene(scene, 500.0, grid=target),
-        ]
-        for image in results:
-            assert isinstance(image, Image)
-            assert image.grid == target
-        assert results[4].measure == "per_unit_area"
-        assert results[4].quantity == "transmission"
-        assert results[5].quantity == "photons/s"
-        assert all(im.measure == "per_pixel" for im in results[:4])
-    if isinstance(coro, GaussianTableCoronagraph):
-        for native, expected_native in [
+    ):
+        source = table.source_psfs(
+            500.0, jnp.array([1.0]), jnp.array([0.5]), grid=target
+        )
+        native = table.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.5]))
+        np.testing.assert_array_equal(source.valid, [True])
+        for actual, expected in (
+            (source.image, resample(native.image, target)),
             (
-                coro.stellar_map(500.0, 0.1, grid=None),
-                coro._native_stellar_map(0.1),
+                table.on_axis_psf(500.0, target),
+                resample(table.stellar_map(500.0, 0.0), target),
             ),
             (
-                coro.source_psfs(500.0, jnp.array([1.0]), jnp.array([0.0]), grid=None),
-                coro._native_source_psfs(jnp.array([1.0]), jnp.array([0.0])),
+                table.uniform_sky_map(500.0, grid=target),
+                resample(table.sky_trans, target),
             ),
-        ]:
-            assert native.grid == expected_native.grid
-            assert native.leading_axes == expected_native.leading_axes
-            assert native.reconstruction == expected_native.reconstruction
-            np.testing.assert_array_equal(native.data, expected_native.data)
-        # On the native grid, targets are box integrals of the declared
-        # reconstruction, exactly as at any other pitch (no verbatim shortcut).
-        np.testing.assert_array_equal(
-            coro.on_axis_psf(500.0, g).data,
-            resample(coro.stellar_map(500.0, 0.0, grid=None), g).data,
-        )
-        np.testing.assert_array_equal(
-            coro.off_axis_psf(500.0, 1.0, g).data,
-            resample(coro._native_source_psfs(1.0, 0.0), g).data[0],
-        )
-        np.testing.assert_array_equal(
-            coro.background_transmission(500.0, grid=g).data,
-            resample(coro.sky_trans, g).data,
-        )
-
-
-@pytest.mark.parametrize("n", [24, 25])
-def test_fold_and_direction(n):
-    """32 float32 eps for fold sums; centroid 0.02 px rejects the old 0.5 px shift."""
-    c = synthetic_coronagraph(n)
-    g = c.grid
-    x, y = g.coordinates()
-    full = c.source_psfs(500.0, x.ravel(), y.ravel(), grid=None).data.reshape(
-        n, n, n, n
-    )
-    flux = jnp.asarray(np.random.default_rng(0).uniform(size=(n, n)))
-    folded = _convolve_quadrants(flux, c.psf_datacube, g)
-    direct = jnp.einsum("ij,ijyx->yx", flux, full)
+        ):
+            assert actual.grid == target
+            assert actual.measure == expected.measure
+            assert actual.quantity == expected.quantity
+            np.testing.assert_array_equal(actual.data, expected.data)
     np.testing.assert_allclose(
-        folded,
-        direct,
-        rtol=32 * np.finfo(np.float32).eps,
-        atol=32 * np.finfo(np.float32).eps * float(direct.max()),
+        table.point_energy_fraction(1.0, 0.5), native.image.data.sum(), rtol=1e-6
     )
-
-    def centroid(data):
-        yy, xx = np.indices(data.shape)
-        return np.array([(data * xx).sum(), (data * yy).sum()]) / data.sum()
-
-    for row, col in [(n // 2 + 1, n // 2 + 2), (n // 2 - 2, n // 2 - 1)]:
-        px, py = g.pixel_to_unit(col, row)
-        planet = c.source_psfs(500.0, jnp.array([px]), jnp.array([py]), grid=g).data[0]
-        scene = Image(
-            jnp.zeros(g.shape).at[row, col].set(1.0), g, (), "per_pixel", "flux"
-        )
-        extended = c.extended_scene(scene, 500.0, grid=g).data
-        np.testing.assert_allclose(
-            centroid(planet), centroid(extended), atol=0.02, rtol=0
-        )
-        np.testing.assert_allclose(centroid(planet), [col, row], atol=0.02, rtol=0)
-    center = np.array([g.center_x, g.center_y])
-    for px, py, axis in [(1.0, 0.0, 0), (0.0, 1.0, 1)]:
-        im = c.source_psfs(500.0, jnp.array([px]), jnp.array([py]), grid=g).data[0]
-        assert centroid(im)[axis] > center[axis] + 1.9
-        assert abs(centroid(im)[1 - axis] - center[1 - axis]) < 0.02
 
 
 @pytest.mark.parametrize("ratio", [0.5, 1.7])
@@ -169,7 +100,7 @@ def test_curve_contract(coro):
         "leakage_fraction",
         "leakage_density_lod2",
         "raw_contrast",
-        "occulter_transmission",
+        "uniform_sky_response",
     ):
         with pytest.raises(TypeError, match="dimensionless"):
             getattr(coro, name)(UnitBearingSeparation())
@@ -201,25 +132,6 @@ def test_curve_contract(coro):
         expected, coro.raw_contrast(s), rtol=16 * np.finfo(np.float32).eps
     )
     # Post-processing uses max(abs(raw contrast), engineering floor) / ppf.
-    # Maps are inherited once and project the same contract records on the grid.
-    radius = jnp.hypot(*coro.grid.coordinates())
-    np.testing.assert_array_equal(coro.separation_map(), radius)
-    for method, field, variance_field in [
-        (coro.throughput_map, "throughput", "throughput_variance"),
-        (coro.core_area_map, "core_area_lod2", "core_area_variance_lod2"),
-        (
-            coro.leakage_density_map,
-            "leakage_density_lod2",
-            "leakage_density_variance_lod2",
-        ),
-    ]:
-        for variance, name in ((False, field), (True, variance_field)):
-            expected_map = record.evaluate(name, radius)
-            np.testing.assert_array_equal(method(variance=variance), expected_map)
-            np.testing.assert_array_equal(
-                method([rule, rule], variance=variance),
-                jnp.stack([expected_map, expected_map], axis=-1),
-            )
     floor, ppf = 1e-7, 25.0
     expected_noise = np.maximum(np.abs(np.asarray(record.raw_contrast)), floor) / ppf
     np.testing.assert_allclose(
@@ -240,6 +152,30 @@ def test_curve_contract(coro):
         "pixel_scale_lod",
     ):
         assert not hasattr(coro, name)
+
+
+def test_native_performance_maps(table):
+    rule = Circular(0.7)
+    record = table.curves(rule)
+    # Maps are inherited once and project the same contract records on the grid.
+    radius = jnp.hypot(*table.grid.coordinates())
+    np.testing.assert_array_equal(table.separation_map(), radius)
+    for method, field, variance_field in [
+        (table.throughput_map, "throughput", "throughput_variance"),
+        (table.core_area_map, "core_area_lod2", "core_area_variance_lod2"),
+        (
+            table.leakage_density_map,
+            "leakage_density_lod2",
+            "leakage_density_variance_lod2",
+        ),
+    ]:
+        for variance, name in ((False, field), (True, variance_field)):
+            expected_map = record.evaluate(name, radius)
+            np.testing.assert_array_equal(method(variance=variance), expected_map)
+            np.testing.assert_array_equal(
+                method([rule, rule], variance=variance),
+                jnp.stack([expected_map, expected_map], axis=-1),
+            )
 
 
 def test_rule_records_and_constants(table):
@@ -275,19 +211,19 @@ def test_rule_records_and_constants(table):
     np.testing.assert_array_equal(mb.throughput(2.0, 800.0), c.throughput(2.0))
 
 
-def test_stellar_frame(coro):
-    """Frame metadata agrees with the native stellar product in each band."""
-    if isinstance(coro, ox.MultiBandCoronagraph):
-        other_grid = replace(
-            coro.bands[1].grid,
-            frame=replace(coro.bands[1].grid.frame, reference_wavelength_nm=800.0),
-        )
-        coro = ox.MultiBandCoronagraph(
-            (500.0, 800.0), (coro.bands[0], scalar(other_grid))
-        )
-        assert coro.stellar_frame(800.0) == other_grid.frame
-        assert coro.stellar_frame(500.0) != other_grid.frame
-    assert coro.stellar_frame(500.0) == coro.stellar_map(500.0, 0.0).grid.frame
+def test_capability_selection(table):
+    performance = scalar(table.grid)
+    model = ox.MultiBandCoronagraph((500.0, 800.0), (table, performance))
+    assert model.band(800.0).frame == performance.frame
+    assert (
+        model.band(500.0).stellar_frame(500.0)
+        == table.at_wavelength(500.0).stellar_grid.frame
+    )
+    assert isinstance(table, ox.AbstractImagingCoronagraph)
+    for item in (performance, model):
+        assert not isinstance(item, ox.AbstractImagingCoronagraph)
+        assert not hasattr(item, "source_psfs")
+    assert not hasattr(model, "grid")
 
 
 def test_prepare_fixed_angle_preserves_centre_and_reference():
@@ -349,7 +285,7 @@ def test_jit_and_gradient(table):
     def image(x):
         return table.source_psfs(
             500.0, jnp.array([x]), jnp.array([0.5]), grid=table.grid
-        ).data
+        ).image.data
 
     np.testing.assert_allclose(
         eqx.filter_jit(image)(jnp.array(1.2)),

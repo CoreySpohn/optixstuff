@@ -9,23 +9,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.conversions import arcsec_to_rad
-from hwoutils.map_coordinates import map_coordinates
 from hwoutils.spectral import Band, Quadrature
 
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
     ApertureRule,
     Circular,
-    HalfMaximum,
     Matched,
 )
 from optixstuff.coronagraph import (
     AbstractCoronagraph,
-    AbstractScalarCoronagraph,
-    AbstractTableCoronagraph,
+    AbstractImagingCoronagraph,
 )
 from optixstuff.optical_path import OpticalPath
-from optixstuff.performance import PerformanceCurves
+from optixstuff.performance import PerformanceCurves, SampledProfile
 
 
 class MatchedStamps(eqx.Module):
@@ -102,10 +99,37 @@ def matched_moments(stamps, A, B, D, *, planet_spectrum=None):
 
 def _stellar_pixels(model, wave, diameter):
     """Read native fractions directly, resampling only across distinct grids."""
-    image = model.stellar_map(wave, diameter)
-    if image.grid == model.grid:
-        return image.data
-    return model.stellar_map(wave, diameter, grid=model.grid).data
+    products = model.at_wavelength(wave)
+    target = (
+        None if products.stellar_grid == products.source_grid else products.source_grid
+    )
+    return model.stellar_map(wave, diameter, grid=target).data
+
+
+def _sky_area_profile(model, wave, record):
+    """Integrate the sky map with the calibrated native pixel coverage at each knot.
+
+    Circular and HalfMaximum describe geometric regions. The subpixel indicator
+    squared is itself, so the same covered area measures both Poisson moments.
+    """
+    grid = model.at_wavelength(wave).source_grid
+    sky = model.uniform_sky_map(wave, grid=grid).data
+    samples = model.aperture_samples(wave, record.separation_lod)
+    dtype = jnp.result_type(sky, 1.0)
+    with jax.enable_x64():
+        areas = jnp.stack(
+            [
+                jnp.sum(record.rule.weights(psf, position) * sky) * grid.pixel_area
+                for psf, position in samples
+            ]
+        ).astype(dtype)
+    return SampledProfile(
+        record.separation_lod,
+        areas,
+        quantity="transmitted_area_lod2",
+        frame=record.frame,
+        interpolation="linear",
+    )
 
 
 class _ApertureNode(eqx.Module):
@@ -116,17 +140,19 @@ class _ApertureNode(eqx.Module):
     wavelength_nm: jax.Array
     arcsec_per_lod: float | np.floating
     stellar_arcsec_per_lod: float | np.floating
+    sky_area: SampledProfile | None
 
 
 def _prepare_matched_stamps(nodes, record):
     # The table rule admits only nodes at the reference wavelength.
     first = nodes[0]
     model, wave = first.coronagraph, first.wavelength_nm
-    p = model.aperture_psfs(wave, record.separation_lod).data
+    grid = model.at_wavelength(wave).source_grid
+    p = jnp.stack(
+        [image.data for image, _ in model.aperture_samples(wave, record.separation_lod)]
+    )
     s = _stellar_pixels(model, wave, record.stellar_diameter or 0.0)
-    sky = model.sky_trans
-    if sky.grid != model.grid:
-        sky = model.background_transmission(wave, grid=model.grid)
+    sky = model.uniform_sky_map(wave, grid=grid)
 
     def at_nodes(data):
         return jnp.broadcast_to(data, (len(nodes), *data.shape))
@@ -135,7 +161,7 @@ def _prepare_matched_stamps(nodes, record):
         at_nodes(p),
         at_nodes(s),
         at_nodes(sky.data),
-        model.grid.pixel_area * arcsec_to_rad(first.arcsec_per_lod) ** 2,
+        grid.pixel_area * arcsec_to_rad(first.arcsec_per_lod) ** 2,
     )
 
 
@@ -219,9 +245,9 @@ class PreparedAperture(eqx.Module):
     ):
         """Stack throughput, leakage, sky transmission and both variance fractions.
 
-        Entries 3 and 4 integrate planet and stellar flux with squared aperture
-        weights. For a geometric region these equal the mean fractions.
-        Scalar calibrations supply the same fractions for both moments.
+        The first three entries are planet, stellar and aperture-averaged sky
+        fractions. The next three use the variance weights. For geometric
+        apertures, both moments integrate the same indicator function.
 
         For Matched, pass the band reference and quadrature-weighted scene
         rates. The result is a MatchedMoments at the requested separation.
@@ -234,24 +260,27 @@ class PreparedAperture(eqx.Module):
         coro = node.coronagraph
         wave = node.wavelength_nm
         rule = node.record.rule
-        if isinstance(coro, AbstractScalarCoronagraph):
-            tau = coro.throughput(separation_lod, wave, time_d=time_d, rule=rule)
-            tau_variance = coro.throughput(
-                separation_lod, wave, time_d=time_d, rule=rule, variance=True
-            )
-            sky = coro.occulter_transmission(separation_lod, wave, time_d=time_d)
+        tau = coro.throughput(separation_lod, wave, time_d=time_d, rule=rule)
+        tau_variance = coro.throughput(
+            separation_lod, wave, time_d=time_d, rule=rule, variance=True
+        )
+        if node.sky_area is None:
+            sky = coro.uniform_sky_response(separation_lod, wave, time_d=time_d)
+            sky_variance = sky
         else:
-            tau = node.record.evaluate("throughput", separation_lod)
-            tau_variance = node.record.evaluate("throughput_variance", separation_lod)
-            px, py = coro.grid.unit_to_pixel(separation_lod, 0.0)
-            coordinates = jnp.array([[py], [px]])
-            sky = map_coordinates(
-                coro.background_transmission(wave, grid=coro.grid).data,
-                coordinates,
-                order=1,
-                mode="constant",
-                cval=jnp.nan,
-            )[0]
+            area = node.sky_area.evaluate(separation_lod)
+            mean_area = node.record.evaluate("core_area_lod2", separation_lod)
+            variance_area = node.record.evaluate(
+                "core_area_variance_lod2", separation_lod
+            )
+            sky = jnp.where(
+                mean_area > 0, area / jnp.where(mean_area > 0, mean_area, 1), 0
+            )
+            sky_variance = jnp.where(
+                variance_area > 0,
+                area / jnp.where(variance_area > 0, variance_area, 1),
+                0,
+            )
         leakage_args = dict(
             time_d=time_d,
             rule=rule,
@@ -261,7 +290,7 @@ class PreparedAperture(eqx.Module):
         leak_variance = coro.leakage_fraction(
             separation_lod, wave, variance=True, **leakage_args
         )
-        return jnp.stack((tau, leak, sky, tau_variance, leak_variance))
+        return jnp.stack((tau, leak, sky, tau_variance, leak_variance, sky_variance))
 
 
 def prepare_aperture(
@@ -296,34 +325,34 @@ def prepare_aperture(
             if reference_wavelength_nm is None
             else reference_wavelength_nm
         )
-        models = tuple(coro._performance_band(wave) for wave in row)
-        if isinstance(rule, (HalfMaximum, Matched)) and any(
-            w != ref and not isinstance(model, AbstractScalarCoronagraph)
-            for w, model in zip(row, models, strict=True)
-        ):
-            raise NotImplementedError(
-                f"{type(rule).__name__} needs support for dilating a frozen "
-                "reference aperture/template at each separation"
-            )
         is_matched = isinstance(rule, Matched)
-        if is_matched and not all(
-            isinstance(m, AbstractTableCoronagraph) for m in models
-        ):
-            raise ValueError("Matched requires native planet, stellar and sky images")
         record_rule = DEFAULT_APERTURE_RULE if is_matched else rule
-        _, reference = coro._performance_band(ref).prepared(record_rule)
-        frame = primary.frame(ref, reference.frame.diameter_convention)
         nodes = []
-        for w, wave, model in zip(row, node_waves, models, strict=True):
-            if isinstance(model, AbstractScalarCoronagraph) or w == ref:
-                scaled = record_rule
-            elif isinstance(rule, Circular):
+        for w, wave in zip(row, node_waves, strict=True):
+            model = coro.band(w)
+            imaging = isinstance(model, AbstractImagingCoronagraph)
+            if is_matched and not imaging:
+                raise ValueError(
+                    "Matched requires native planet, stellar and sky images"
+                )
+            scaled = record_rule
+            if imaging and w != ref:
+                if not isinstance(rule, Circular):
+                    raise NotImplementedError(
+                        f"{type(rule).__name__} needs support for dilating a frozen "
+                        "reference aperture/template at each separation"
+                    )
                 scaled = replace(rule, radius_lod=rule.radius_lod * ref / float(w))
-            else:
-                raise TypeError("rule must be Circular, HalfMaximum or Matched")
             prepared_model, record = model.prepared(scaled)
             node_frame = primary.frame(w, record.frame.diameter_convention)
-            stellar_frame = prepared_model.stellar_frame(w)
+            stellar_frame = (
+                prepared_model.stellar_frame(w) if imaging else prepared_model.frame
+            )
+            sky_area = (
+                _sky_area_profile(prepared_model, w, record)
+                if imaging and not is_matched
+                else None
+            )
             nodes.append(
                 _ApertureNode(
                     prepared_model,
@@ -331,8 +360,11 @@ def prepare_aperture(
                     wave,
                     node_frame.lod_to_arcsec(w),
                     stellar_frame.lod_to_arcsec(w),
+                    sky_area,
                 )
             )
+        _, reference = coro.band(ref).prepared(record_rule)
+        frame = primary.frame(ref, reference.frame.diameter_convention)
         stamps = _prepare_matched_stamps(nodes, reference) if is_matched else None
         references.append(
             _ApertureReference(

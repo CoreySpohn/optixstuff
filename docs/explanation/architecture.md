@@ -38,7 +38,8 @@ flowchart TB
     AP[AbstractPrimary]
     SP[SimplePrimary]
     AC[AbstractCoronagraph]
-    ASC[AbstractScalarCoronagraph]
+    IMG[AbstractImagingCoronagraph]
+    SCENE[AbstractSceneCoronagraph]
     SC[ScalarCoronagraph]
     AD[AbstractDetector]
     ID[IdealDetector]
@@ -49,8 +50,9 @@ flowchart TB
     AUE --> CT
     AUE --> ST
     AP --> SP
-    AC --> ASC
-    ASC --> SC
+    AC --> SC
+    AC --> IMG
+    IMG --> SCENE
     AD --> ID
     AD --> D
 
@@ -192,21 +194,22 @@ For segmented apertures the inscribed circle follows the scalloped outer outline
 bridging perimeter gaps; the internal segment gaps reduce collecting area only
 through the declared segment sizes, and do not define the aperture diameter.
 
-The six image methods take a target `PixelGrid`: `on_axis_psf(wavelength_nm, grid)`,
-`off_axis_psf(wavelength_nm, separation_lod, grid)`,
-`stellar_map(wavelength_nm, stellar_diam_lod, *, grid)`,
-`source_psfs(wavelength_nm, x_lod, y_lod, *, grid)`,
-`background_transmission(wavelength_nm, *, grid)`, and
-`extended_scene(scene_map: Image, wavelength_nm, *, grid, rotation_deg=0.0)`.
-The grid defines units, frame, pixel-centre coordinates, and array shape.
-Source offsets are in the native off-axis frame; stellar diameters are in the
-native stellar frame. Resampling reconciles different frames through arcseconds
-at each frame's reference wavelength. Rotation angles are concrete host values.
+Select a band with `band(wavelength_nm)`. An imaging band's
+`at_wavelength(wavelength_nm)` returns its `source_grid`, `stellar_grid` and
+`sky_grid`. Source offsets and stellar diameters use their respective native
+frames. The target grid defines the output units, frame and pixel centres.
+
+`source_psfs` returns an image and a validity flag for each source.
+`stellar_map` returns the finite-star image. `point_energy_fraction(x_lod, y_lod)`
+sums admitted native point-source flux, while `uniform_sky_map` describes
+extended illumination. Its annular mean is `uniform_sky_response`.
+A scene-capable band provides `render_scene(scene, wavelength_nm, grid=target)`.
+The result includes a validity flag covering every illuminated position.
 
 | Product | Image measure | Image quantity |
 |---|---|---|
 | On/off-axis PSFs, stellar map, source PSFs | `per_pixel` | `stellar_flux_fraction` |
-| Background transmission | `per_unit_area` | `transmission` |
+| Uniform-sky map | `per_unit_area` | `transmission` |
 | Extended scene | `per_pixel` | Input scene quantity |
 
 Transmission uses sampled-value semantics to preserve amplitude, and is
@@ -220,7 +223,7 @@ belongs in consumers. Post-processing may divide that density, or raw contrast,
 by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the residual.
 No noise floor is a coronagraph property.
 `separation_map`, `throughput_map`, and `core_area_map` are shared contract
-projections on each implementation's native grid.
+projections on each imaging band's native source grid.
 For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
 return native samples and product metadata. An explicit grid requests pixel
 integration, including at native pitch.

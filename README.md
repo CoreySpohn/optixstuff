@@ -66,9 +66,12 @@ Primaries expose `diameter("circumscribed")`, `diameter("inscribed")`, and
 
 Coronagraph images use `hwoutils.grids.Image` and an explicit target `PixelGrid`.
 Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
-between pixels. For example, `coro.off_axis_psf(500.0, 3.0, coro.grid)` returns
+between pixels. For example, `band.off_axis_psf(500.0, 3.0, target)` returns
 per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
-`extended_scene(scene_image, 500.0, grid=target)` retains the scene quantity.
+Select the imaging model with `band = coro.band(500.0)`. Its
+`at_wavelength(500.0)` gives the source, stellar and uniform-sky grids.
+Scene models return an image and a validity flag from
+`render_scene(scene_image, 500.0, grid=target)`.
 
 `coro.curves(Circular(0.7))` is the single performance record for that aperture.
 Import `Circular` from `optixstuff`; prepare every required rule before JIT
@@ -76,7 +79,7 @@ when constructing an image provider.
 Records contain throughput, core area, stellar leakage fraction, leakage density,
 raw contrast, `iwa_lod`, and `data_extent_lod`. A known design limit is separately
 named `outer_working_angle_lod`. `ScalarCoronagraph` stores calibrated constants
-for one declared aperture; its image methods return zero placeholders.
+for one declared aperture.
 `MultiBandCoronagraph` selects the nearest band without spectral interpolation.
 Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
 exposure durations remain seconds.

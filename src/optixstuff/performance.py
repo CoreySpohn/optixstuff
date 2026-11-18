@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 from hwoutils.grids import Frame
 from hwoutils.map_coordinates import map_coordinates
+from hwoutils.radial import radial_profile
 from hwoutils.transforms import downsample_psf
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import root_scalar
@@ -1164,6 +1165,19 @@ class SampledProfile(eqx.Module):
             raise ValueError(f"{quantity} must have shape {self.separation_lod.shape}")
         # dataclasses.replace passes the previous fit; refit the current samples.
         self._fit = _profile_fit(self.separation_lod, self.values, interpolation)
+
+    @classmethod
+    def from_uniform_sky(cls, sky):
+        """Prepare the annular mean of a dimensionless native uniform-sky map."""
+        radii, values, counts = radial_profile(sky)
+        populated = np.asarray(counts) > 0
+        return cls(
+            np.asarray(radii)[populated],
+            np.asarray(values)[populated],
+            quantity="uniform_sky_response",
+            frame=sky.grid.frame,
+            interpolation="linear",
+        )
 
     def evaluate(self, separation_lod):
         """Evaluate on an arbitrary scalar or array of separations in this frame."""

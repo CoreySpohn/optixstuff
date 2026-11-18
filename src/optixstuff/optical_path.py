@@ -48,7 +48,7 @@ class OpticalPath(eqx.Module):
 
     primary: AbstractPrimary
     attenuating_elements: tuple[AbstractOpticalElement, ...]
-    coronagraph: AbstractCoronagraph
+    coronagraph: AbstractCoronagraph | None
     detector: AbstractDetector
     disperser: AbstractDisperser | None = None
     n_channels: float = 1.0
@@ -64,11 +64,11 @@ class OpticalPath(eqx.Module):
         from another. Rescaling a coronagraph to a new telescope is a modelling
         choice the caller makes explicitly, not a silent default.
         """
+        if self.coronagraph is None:
+            return
         coronagraphs = getattr(self.coronagraph, "bands", None) or (self.coronagraph,)
         for coronagraph in coronagraphs:
-            frame = getattr(getattr(coronagraph, "grid", None), "frame", None)
-            if frame is None:
-                continue
+            frame = coronagraph.frame
             supplied = self.primary.diameter(frame.diameter_convention)
             if isinstance(supplied, jax.core.Tracer):
                 continue
@@ -132,7 +132,7 @@ class OpticalPath(eqx.Module):
         coro = coronagraph
 
         if circumscribed_diameter_m is None:
-            frame = coro.grid.frame
+            frame = coro.frame
             if frame.diameter_convention != "circumscribed":
                 raise ValueError(
                     "the coronagraph frame is inscribed: pass circumscribed_diameter_m"
