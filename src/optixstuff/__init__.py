@@ -31,7 +31,7 @@ from optixstuff.detector import (
     IdealDetector,
 )
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
-from optixstuff.exposure import FramePlan, frames_for_time
+from optixstuff.exposure import Exposure, FramePlan, frames_for_time
 from optixstuff.instrument import Instrument
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
@@ -61,6 +61,7 @@ __all__ = [
     "ConstantThroughput",
     "Detector",
     "ElectronRates",
+    "Exposure",
     "FocalResponse",
     "FramePlan",
     "HalfMaximum",

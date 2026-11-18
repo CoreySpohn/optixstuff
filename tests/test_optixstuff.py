@@ -138,3 +138,29 @@ class TestInstrument:
         )
         assert path.n_channels == 2.0
         assert path.npix_multiplier == 3.0
+
+
+def test_exposure_is_a_record_of_one_observation():
+    """Fails if Exposure loses a field, its ecliptic defaults, or static roll.
+
+    The record is a pytree whose roll is host geometry: the roll stays a Python
+    float after flattening, and the plan may be absent.
+    """
+    from hwoutils.spectral import Band, Quadrature
+
+    quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
+    exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)
+    assert exposure.plan is None
+    assert exposure.roll_deg == 15.0
+    assert (exposure.ecliptic_latitude_deg, exposure.solar_longitude_deg) == (
+        0.0,
+        135.0,
+    )
+    assert isinstance(exposure.roll_deg, float)
+    planned = eqx.tree_at(
+        lambda e: e.plan,
+        exposure,
+        ox.frames_for_time(60.0, 10.0),
+        is_leaf=lambda x: x is None,
+    )
+    assert float(planned.plan.n_frames) == 6.0

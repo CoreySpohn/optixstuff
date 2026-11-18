@@ -2,6 +2,7 @@
 
 import equinox as eqx
 import jax.numpy as jnp
+from hwoutils.spectral import Quadrature
 
 
 def _band_shape(first, second):
@@ -74,3 +75,35 @@ def frames_for_time(time_s, frame_time_s) -> FramePlan:
     exact = (nearest > 0) & (jnp.abs(ratio - nearest) <= rtol * nearest)
     count = jnp.maximum(jnp.ceil(jnp.where(exact, nearest, ratio)), 1.0)
     return FramePlan(frame_time_s, jnp.where(time_s > 0, count, 0.0))
+
+
+class Exposure(eqx.Module):
+    """Everything about one observation except the scene and the instrument.
+
+    The record holds when and where the telescope points, how each band is
+    integrated over wavelength, and (for a drawn frame) how long the detector
+    collects. Build it on the host with ``coronagraphoto.build_exposure``;
+    the quadrature is concrete host geometry, so close over an exposure under
+    JIT rather than passing it as an argument.
+
+    Args:
+        time_d: Observation epoch in days from the scene epoch.
+        roll_deg: Position angle of detector +y, north through east, in
+            degrees; a concrete host number, not a traced value.
+        quadrature: Per-band wavelength nodes and weights.
+        plan: Whole-frame integration plan; None when only expected rates
+            are wanted.
+        ecliptic_latitude_deg: Ecliptic latitude of the line of sight used
+            for the local zodi. Known limitation: the default, 0 deg, is a
+            fixed stand-in, not derived from the target or the epoch.
+        solar_longitude_deg: Solar longitude of the line of sight used for
+            the local zodi. Known limitation: the default, 135 deg, is a
+            fixed stand-in, not derived from the target or the epoch.
+    """
+
+    time_d: jnp.ndarray | float
+    roll_deg: float = eqx.field(static=True, converter=float)
+    quadrature: Quadrature
+    plan: FramePlan | None = None
+    ecliptic_latitude_deg: jnp.ndarray | float = 0.0
+    solar_longitude_deg: jnp.ndarray | float = 135.0
