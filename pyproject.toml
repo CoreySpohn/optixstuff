@@ -29,6 +29,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pre-commit>=3.5"]
+# optixstuff.viz plot functions.
+viz = ["eyepiece>=0.17.0"]
 docs = [
     "sphinx>=7.2",
     "myst-nb>=1.0",
@@ -37,6 +39,7 @@ docs = [
     "sphinxcontrib-mermaid>=0.9",
     "ipython>=8.18",
     "matplotlib>=3.10.7",
+    "eyepiece>=0.17.0",
 ]
 test = [
     "pytest>=7.3.2",
@@ -48,6 +51,7 @@ test = [
     "pytest-fail-slow>=0.1.0",
     # The optional hwoutils budget plugin uses psutil for portable RSS sampling.
     "psutil>=5.9.4",
+    "eyepiece>=0.17.0",
     "numpy>=2.0",
 ]
 
@@ -83,7 +87,11 @@ packages = ["src/optixstuff"]
 exclude = ["/scripts", "/docs", "/tests", "/.github"]
 
 [tool.pytest.ini_options]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # tol_colors constructs colormaps with Matplotlib's pending-deprecated set_bad.
+    'ignore:The set_bad function will be deprecated.*:PendingDeprecationWarning:tol_colors',
+]
 markers = [
     "medium: tests with a 30-second default time budget",
     "slow: tests with a 300-second default time budget, run nightly",
