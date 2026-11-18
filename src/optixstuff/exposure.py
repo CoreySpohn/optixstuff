@@ -82,14 +82,14 @@ class Exposure(eqx.Module):
 
     The record holds when and where the telescope points, how each band is
     integrated over wavelength, and (for a drawn frame) how long the detector
-    collects. Build it on the host with ``coronagraphoto.build_exposure``;
-    the quadrature is concrete host geometry, so close over an exposure under
-    JIT rather than passing it as an argument.
+    collects. Build it on the host with ``coronagraphoto.build_exposure``.
+    The roll, the epoch and the quadrature nodes and weights are array
+    leaves, so an exposure can be an argument of JIT, vmap and grad.
 
     Args:
         time_d: Observation epoch in days from the scene epoch.
         roll_deg: Position angle of detector +y, north through east, in
-            degrees; a concrete host number, not a traced value.
+            degrees; a traced leaf.
         quadrature: Per-band wavelength nodes and weights.
         plan: Whole-frame integration plan; None when only expected rates
             are wanted.
@@ -102,7 +102,7 @@ class Exposure(eqx.Module):
     """
 
     time_d: jnp.ndarray | float
-    roll_deg: float = eqx.field(static=True, converter=float)
+    roll_deg: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
     quadrature: Quadrature
     plan: FramePlan | None = None
     ecliptic_latitude_deg: jnp.ndarray | float = 0.0

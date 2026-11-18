@@ -141,10 +141,10 @@ class TestInstrument:
 
 
 def test_exposure_is_a_record_of_one_observation():
-    """Fails if Exposure loses a field, its ecliptic defaults, or static roll.
+    """Fails if Exposure loses a field, its ecliptic defaults, or its traced roll.
 
-    The record is a pytree whose roll is host geometry: the roll stays a Python
-    float after flattening, and the plan may be absent.
+    The record is a pytree whose roll is an array leaf that vmap can map, and
+    the plan may be absent.
     """
     from hwoutils.spectral import Band, Quadrature
 
@@ -156,7 +156,11 @@ def test_exposure_is_a_record_of_one_observation():
         0.0,
         135.0,
     )
-    assert isinstance(exposure.roll_deg, float)
+    assert exposure.roll_deg in jax.tree.leaves(exposure)
+    rolled = jax.vmap(
+        lambda r: eqx.tree_at(lambda e: e.roll_deg, exposure, r).roll_deg * 2.0
+    )(jnp.array([1.0, 2.0]))
+    assert rolled.tolist() == [2.0, 4.0]
     planned = eqx.tree_at(
         lambda e: e.plan,
         exposure,
