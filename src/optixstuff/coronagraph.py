@@ -257,8 +257,7 @@ class AbstractCoronagraph(eqx.Module):
 
     def separation_map(self):
         """Native off-axis pixel radii in lambda/D, including the full grid basis."""
-        x, y = self.grid.coordinates()
-        return jnp.hypot(x, y)
+        return self.grid.radius()
 
     def throughput_map(self, rules=None, *, variance=False):
         """Project throughput, stacking explicitly prepared rules on the last axis."""
