@@ -240,7 +240,7 @@ class LinearSpeckleField(AbstractSpeckleField):
     def broadened(self, *, quadrature: Quadrature, time_d: ArrayLike = 0.0) -> Image:
         """Integrate realized nodes with unit-sum weights in each band.
 
-        Quadrature.weights_nm sum to the represented band width in nm.
+        The response weights sum to the represented band width in nm.
         Dividing by that nonzero sum gives a uniform-wavelength band mean,
         in per-pixel stellar flux fractions, shape (W, *time_shape, ny, nx).
         Every node is evaluated; a quadratic law at one band-center

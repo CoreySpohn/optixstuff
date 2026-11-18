@@ -42,7 +42,7 @@ def test_band_operations_preserve_supplied_edges(lo, hi):
         for i, channel in enumerate(channels):
             row = rule.band(i)
             assert row.bands == (channel,)
-            assert float(row.weights_nm[0, 0]).hex() == channel.width_nm.hex()
+            assert float(row.weights()[0, 0]).hex() == channel.width_nm.hex()
     with jax.enable_x64(False):
         # Host support must survive even when device evaluation uses float32.
         hat = Transmission.from_band(band)
@@ -82,9 +82,9 @@ def test_split_quadrature_weights_and_piecewise_linear_integral():
     for order in (1, 3):
         rule = Quadrature.build(bands, order=order, breaks_nm=knots)
         np.testing.assert_array_max_ulp(
-            np.asarray(rule.weights_nm.sum(-1)), widths, maxulp=4
+            np.asarray(rule.weights().sum(-1)), widths, maxulp=4
         )
-        padded = np.asarray(rule.weights_nm) == 0
+        padded = np.asarray(rule.weights()) == 0
         centers = np.broadcast_to(
             np.array([b.center_nm for b in bands])[:, None], padded.shape
         )
@@ -108,7 +108,7 @@ def test_split_quadrature_weights_and_piecewise_linear_integral():
         row = rule.band(1)
         assert isinstance(row, Quadrature)
         assert row.bands == (bands[1],)
-        np.testing.assert_array_equal(row.weights_nm, rule.weights_nm[1:2])
+        np.testing.assert_array_equal(row.weights(), rule.weights()[1:2])
         np.testing.assert_array_equal(row.nodes_nm, rule.nodes_nm[1:2])
         np.testing.assert_allclose(row.integrate(vector[1:2]), result[1:2], rtol=3e-15)
 
@@ -137,7 +137,7 @@ def test_monochromatic_selects_an_integrated_rate():
     assert rule.bands == (Band(537.0, 537.0),)
     assert rule.bands[0].width_nm == 0
     np.testing.assert_array_equal(rule.band(0).nodes_nm, [[537.0]])
-    np.testing.assert_array_equal(rule.weights_nm, [[1.0]])
+    np.testing.assert_array_equal(rule.weights(), [[1.0]])
     rates = jnp.arange(6.0).reshape((1, 1, 2, 3))
     np.testing.assert_array_equal(rule.integrate(rates), rates[:, 0])
     with pytest.raises(ValueError, match="monochromatic"):

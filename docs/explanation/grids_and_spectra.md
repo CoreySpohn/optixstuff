@@ -25,6 +25,37 @@ breaks before applying Gauss-Legendre integration. The first two axes of
 the samples index bands and nodes. Integration preserves all trailing axes.
 `rule.band(i)` selects a single band while retaining the band axis.
 
+A rough spectrum that every term shares, such as a tabulated star, is better
+absorbed into the weights than sampled at the nodes. Pass the instrument
+response as `response=` and each such spectrum by name in `spectra=`. The
+nodes become the Gauss nodes of the response times the first spectrum, and
+the rule carries one weight row per name next to the `"response"` row that
+is always present.
+
+```python
+from optixstuff.spectral import Band, Quadrature, Transmission
+
+star = Transmission([400, 500, 520, 700], [0.6, 1.0, 0.7, 0.8])
+rule = Quadrature.build(
+    (Band(450, 650),),
+    order=4,
+    response=Transmission([450, 470, 630, 650], [0, 1, 1, 0]),
+    spectra={"star": star},
+)
+contrast = 1e-10 * (rule.nodes_nm / 550.0) ** -4
+planet_rate = rule.integrate(contrast, "star")
+star_rate = rule.weights("star").sum(-1)
+```
+
+The values passed to `integrate` are the smooth remainder: the contrast
+above, never the star again. Order 4 serves contrast-form terms. A
+flux-form term under the response weights, such as thermal emission, needs
+order 6 to 8 in bands 20 percent or wider. A `Probe` passed in `probes=`
+stores the worst relative error of an integrand family over the admissible
+range of its parameters in `rule.envelope_error`. A factor that is evaluated
+at the nodes and has a feature narrower than about the band width over the
+order still needs a declared break.
+
 `Quadrature.monochromatic(wavelength_nm)` represents an already integrated
 rate at one wavelength. Its single node has unit weight. A mean density
 is undefined for this zero-width channel.

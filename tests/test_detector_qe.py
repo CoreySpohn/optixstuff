@@ -43,7 +43,7 @@ def test_electrons_from_primitives(spatial):
         for w in range(2):
             for q in range(3):
                 expected[w] += (
-                    float(quad.weights_nm[w, q]) * 0.9 * qe[w][q] * image[w, q]
+                    float(quad.weights()[w, q]) * 0.9 * qe[w][q] * image[w, q]
                 )
         actual = det.electrons(rates)
         compiled = eqx.filter_jit(lambda d, r: d.electrons(r))(det, rates)
@@ -64,8 +64,8 @@ def test_electrons_from_primitives(spatial):
             atol=0,
         )
         integrated = np.asarray(rates.integrate().planet)
-        mean_qe = np.sum(np.asarray(quad.weights_nm) * qe, axis=1) / np.sum(
-            np.asarray(quad.weights_nm), axis=1
+        mean_qe = np.sum(np.asarray(quad.weights()) * qe, axis=1) / np.sum(
+            np.asarray(quad.weights()), axis=1
         )
         wrong_order = 0.9 * integrated * mean_qe.reshape((2, *(1 for _ in spatial)))
         assert np.all(np.abs(np.asarray(actual.planet) / wrong_order - 1) > 0.02)
@@ -83,7 +83,7 @@ def test_yield_contract(detector_cls):
     rates = ox.PhotonRates(quad, planet=jnp.ones((1, 3, 2, 3)))
     assert det.quantum_efficiency(quad.nodes_nm).shape == (1, 3)
     result = det.electrons(rates)
-    expected = jnp.sum(quad.weights_nm * det.quantum_efficiency(quad.nodes_nm)) * 0.9
+    expected = jnp.sum(quad.weights() * det.quantum_efficiency(quad.nodes_nm)) * 0.9
     np.testing.assert_allclose(
         result.total(), expected, rtol=8 * np.finfo(np.float32).eps
     )
