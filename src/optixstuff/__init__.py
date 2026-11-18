@@ -38,7 +38,7 @@ from optixstuff.optical_path import OpticalPath
 from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
-from optixstuff.speckle import AbstractSpeckleField, LinearSpeckleField
+from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 
 __all__ = [
     "DEFAULT_APERTURE_RULE",
@@ -56,6 +56,7 @@ __all__ = [
     "ConstantThroughput",
     "Detector",
     "ElectronRates",
+    "FocalResponse",
     "FramePlan",
     "HalfMaximum",
     "IdealDetector",

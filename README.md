@@ -84,12 +84,12 @@ exposure durations remain seconds.
 ### Linear speckle fields
 
 Subclass `LinearSpeckleField` and implement `coefficients(time_d)`, subtracting
-its static host `epoch_d` internally. Supply complex per-pixel amplitudes `e_nom`,
-sensitivities `G`, unocculted `input_energy`, a native `lod` grid with its frame,
-and `reference_wavelength_nm`. The shared stable law returns only the excess
+its static host `epoch_d` internally. Construct a `FocalResponse` with the
+complex nominal amplitude density `e_nom`, sensitivity density `G`, native
+`lod` grid, unocculted input energy and reference wavelength. The shared law
+uses `response.per_pixel()` and returns the excess
 `[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`, with `G` scaled by
-`reference_wavelength_nm / wavelength_nm`. Density-amplitude inputs must first
-be multiplied by the square root of the native pixel area.
+`reference_wavelength_nm / wavelength_nm`.
 
 `realize(wavelength_nm=..., time_d=...)` returns an `Image` on the field's own
 grid, with `per_pixel`, `stellar_flux_fraction`, `band_limited`, and `reflect`

@@ -217,11 +217,13 @@ def linear_speckle():
         grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=primary.frame(500.0))
         y, x = np.indices(grid.shape)
         yield SinusoidalSpeckle(
-            e_nom=(1 + 0.1 * x) + 1j * (0.4 - 0.2 * y),
-            G=np.stack([(0.3 + 0.2j) * (x + 1), (-0.2 + 0.4j) * (y + 1)]),
-            input_energy=7.3,
-            grid=grid,
-            reference_wavelength_nm=500.0,
+            ox.FocalResponse(
+                (1 + 0.1 * x) + 1j * (0.4 - 0.2 * y),
+                np.stack([(0.3 + 0.2j) * (x + 1), (-0.2 + 0.4j) * (y + 1)]),
+                grid,
+                7.3,
+                500.0,
+            ),
             offset_nm=jnp.array([0.03, -0.02]),
             amplitude_nm=jnp.array([0.05, 0.04]),
             angular_frequency_per_d=jnp.array([2.0, 3.0]),

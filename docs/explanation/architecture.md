@@ -242,13 +242,12 @@ law for coefficient-driven fields; subclasses implement `coefficients(time_d)`
 and subtract `epoch_d` internally. Wavelengths are nm, absolute times are days
 from the scene epoch, and exposure durations are seconds.
 
-The linear family's `e_nom` and `G` have shapes `(ny, nx)` and
-`(n_modes, ny, nx)`. Amplitudes have squared magnitudes in energy per pixel;
-`G` is amplitude per coefficient unit. `input_energy` is the unocculted energy.
-Density-amplitude producers multiply both arrays by `sqrt(grid.pixel_area)`
-at construction. The stable excess is
-`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`, with the nominal floor
-excluded and `G` scaled by `reference_wavelength_nm / wavelength_nm`.
+A `FocalResponse` stores the linear family's nominal amplitude density
+`e_nom` and sensitivity density `G` with shapes `(ny, nx)` and
+`(n_modes, ny, nx)`, as well as the grid and unocculted input energy.
+`response.per_pixel()` supplies the amplitudes for the stable excess law
+`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`. The shared law scales
+`G` by `reference_wavelength_nm / wavelength_nm`.
 
 `realize(wavelength_nm=..., time_d=...)` returns an `Image` on `self.grid`,
 with `per_pixel`, `stellar_flux_fraction`, `band_limited`, and `reflect`

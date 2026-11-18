@@ -8,16 +8,73 @@ unocculted stellar flux; coherent interference can make the excess negative.
 import abc
 import math
 from dataclasses import replace
+from typing import ClassVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from equinox import AbstractVar
 from hwoutils.constants import s2d
 from hwoutils.grids import Image, PixelGrid
 from hwoutils.spectral import Quadrature
 from jax.typing import ArrayLike
 from jaxtyping import Array
+
+
+class FocalResponse(eqx.Module):
+    """Complex focal amplitudes and their photometric reference.
+
+    e_nom is in sqrt(photons) per sqrt(grid unit area), e.g.
+    sqrt(photons) / (lambda/D) on a lod grid. G has the same units
+    per unit of its corresponding command or mode coefficient. Their shapes
+    are (y, x) and (m, y, x), or (w, y, x) and (w, m, y, x) for a table
+    of wavelength nodes. input_energy is the total incident photon
+    count, scalar or one count per wavelength node.
+    """
+
+    e_nom: Array = eqx.field(converter=jnp.asarray)
+    G: Array = eqx.field(converter=jnp.asarray)
+    grid: PixelGrid
+    input_energy: Array = eqx.field(converter=jnp.asarray)
+    reference_wavelength_nm: float = eqx.field(static=True, converter=float)
+
+    def __check_init__(self):
+        """Validate the sampled arrays and their reference."""
+        if self.e_nom.ndim not in (2, 3) or self.e_nom.shape[-2:] != self.grid.shape:
+            raise ValueError("e_nom must have shape (y, x) or (w, y, x) on grid")
+        if (
+            self.G.ndim != self.e_nom.ndim + 1
+            or self.G.shape[:-3] != self.e_nom.shape[:-2]
+            or self.G.shape[-2:] != self.grid.shape
+        ):
+            raise ValueError("G must have shape (m, y, x) or (w, m, y, x) on grid")
+        if self.input_energy.shape not in ((), self.e_nom.shape[:-2]):
+            raise ValueError("input_energy must be scalar or match the wavelength axis")
+        if not isinstance(self.input_energy, jax.core.Tracer):
+            energy = np.asarray(self.input_energy)
+            if not np.all(np.isfinite(energy) & (energy > 0)):
+                raise ValueError("input_energy must be positive and finite")
+        if (
+            self.grid.frame is not None
+            and self.reference_wavelength_nm != self.grid.frame.reference_wavelength_nm
+        ):
+            raise ValueError("reference_wavelength_nm must match grid.frame")
+
+    def per_pixel(self, *, pixels=None) -> tuple[Array, Array]:
+        """Return (e_nom, G) in sqrt(photons) per pixel and per command unit.
+
+        If given, pixels is a (rows, columns) index pair on the grid.
+        """
+        e_nom, G = self.e_nom, self.G
+        if pixels is not None:
+            rows, cols = pixels
+            e_nom, G = e_nom[..., rows, cols], G[..., rows, cols]
+        scale = self._pixel_amplitude_scale()
+        return e_nom * scale, G * scale
+
+    def _pixel_amplitude_scale(self) -> Array:
+        return jnp.sqrt(self.grid.pixel_area)
 
 
 class AbstractSpeckleField(eqx.Module):
@@ -85,13 +142,9 @@ class AbstractSpeckleField(eqx.Module):
 class LinearSpeckleField(AbstractSpeckleField):
     """Abstract coefficient-driven family with one linear field law.
 
-    e_nom is the complex nominal focal amplitude at reference_wavelength_nm,
-    shape (ny, nx). G is the complex amplitude sensitivity per coefficient
-    unit, shape (n_modes, ny, nx). Amplitudes are in sqrt(energy per pixel):
-    their squared magnitudes divided by input_energy (unocculted energy)
-    are per-pixel stellar flux fractions. A producer of intensity-density
-    amplitudes must multiply BOTH e_nom and G by sqrt(grid.pixel_area) first.
-    No further pixel-area factor or peak normalization is applied here.
+    The response holds the nominal focal amplitude and its sensitivity in
+    density units. Squared per-pixel amplitudes divided by the response's
+    input energy (unocculted photon count) are per-pixel stellar flux fractions.
 
     At wavelength lambda, the phase sensitivity is G * lambda_ref / lambda;
     e_nom is held fixed. Native coordinates u = basis @ (pixel - center)
@@ -113,29 +166,21 @@ class LinearSpeckleField(AbstractSpeckleField):
     requires x64 arrays; this class does not change global JAX precision.
     """
 
-    e_nom: Array = eqx.field(converter=jnp.asarray)
-    G: Array = eqx.field(converter=jnp.asarray)
-    input_energy: Array = eqx.field(converter=jnp.asarray)
-    grid: PixelGrid
-    reference_wavelength_nm: float = eqx.field(static=True, converter=float)
+    response: FocalResponse
     epoch_d: float = eqx.field(static=True, converter=float, default=0.0, kw_only=True)
+    _response_ndim: ClassVar[int] = 2
+
+    @property
+    def grid(self) -> PixelGrid:
+        """The native focal grid of the response."""
+        return self.response.grid
 
     def __check_init__(self):
         """Validate native geometry and photometric ingredient shapes eagerly."""
         if self.grid.unit != "lod":
             raise ValueError("grid must use lod with its own Frame")
-        if self.e_nom.shape != self.grid.shape:
-            raise ValueError("e_nom must have shape grid.shape (ny, nx)")
-        if self.G.ndim != 3 or self.G.shape[1:] != self.grid.shape:
-            raise ValueError("G must have shape (n_modes, ny, nx)")
-        if self.input_energy.ndim != 0:
-            raise ValueError("input_energy must be scalar")
-        if not isinstance(self.input_energy, jax.core.Tracer):
-            energy = float(self.input_energy)
-            if not math.isfinite(energy) or energy <= 0:
-                raise ValueError("input_energy must be positive and finite")
-        if self.reference_wavelength_nm != self.grid.frame.reference_wavelength_nm:
-            raise ValueError("reference_wavelength_nm must match grid.frame")
+        if self.response.e_nom.ndim != self._response_ndim:
+            raise ValueError("response has the wrong number of wavelength axes")
         if not math.isfinite(self.epoch_d):
             raise ValueError("epoch_d must be finite")
 
@@ -159,10 +204,13 @@ class LinearSpeckleField(AbstractSpeckleField):
         """
         wavelengths = jnp.asarray(wavelength_nm)
         eps = self.coefficients(time_d)
-        delta_e = jnp.einsum("...m,myx->...yx", eps, self.G)
-        scale = self.reference_wavelength_nm / wavelengths
+        # Contract densities first to avoid a per-realization copy of G.
+        pixel_scale = self.response._pixel_amplitude_scale()
+        e_nom = self.response.e_nom * pixel_scale
+        delta_e = jnp.einsum("...m,myx->...yx", eps, self.response.G) * pixel_scale
+        scale = self.response.reference_wavelength_nm / wavelengths
         delta_e = scale.reshape((*scale.shape, *((1,) * delta_e.ndim))) * delta_e
-        delta = 2 * jnp.real(jnp.conj(self.e_nom) * delta_e) + jnp.abs(delta_e) ** 2
+        delta = 2 * jnp.real(jnp.conj(e_nom) * delta_e) + jnp.abs(delta_e) ** 2
         if wavelengths.ndim == 2:
             wave_axes = ("band", "quadrature")
         elif wavelengths.ndim == 1:
@@ -171,7 +219,7 @@ class LinearSpeckleField(AbstractSpeckleField):
             wave_axes = tuple(f"wavelength_{i}" for i in range(wavelengths.ndim))
         time_axes = tuple(f"time_{i}" for i in range(eps.ndim - 1))
         return Image(
-            delta / self.input_energy,
+            delta / self.response.input_energy,
             self.grid,
             wave_axes + time_axes,
             "per_pixel",

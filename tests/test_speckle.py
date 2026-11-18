@@ -9,10 +9,24 @@ import numpy as np
 import pytest
 from conftest import SinusoidalSpeckle, scalar_coronagraph
 from hwoutils.constants import s2d
-from hwoutils.grids import Image, PixelGrid
+from hwoutils.grids import Frame, Image, PixelGrid
 from hwoutils.spectral import Quadrature
 
 import optixstuff as ox
+
+
+def test_focal_response_integrates_density_over_the_grid():
+    """Fails if either amplitude skips or repeats the pixel-area conversion."""
+    grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
+    nominal = jnp.array([[1 + 2j, -3j], [2 - 1j, 0.5j]])
+    jacobian = jnp.array([[[0.5j, 1.0], [-2 * (1 + 1j), 0.0]]])
+    response = ox.FocalResponse(nominal, jacobian, grid, 12.0, 500.0)
+    e_pixel, g_pixel = response.per_pixel()
+    np.testing.assert_allclose(
+        [jnp.sum(jnp.abs(e_pixel) ** 2), jnp.sum(jnp.abs(g_pixel) ** 2)],
+        [19.25 / 16.0, 9.25 / 16.0],
+        rtol=1e-7,
+    )
 
 
 def test_law_and_cancellation(linear_speckle):
@@ -27,19 +41,28 @@ def test_law_and_cancellation(linear_speckle):
     eps = np.array([0.03, -0.02]) + np.array([0.05, 0.04]) * np.sin(
         time * np.array([2.0, 3.0])
     )
-    nominal, g = np.asarray(field.e_nom), np.asarray(field.G)
+    nominal, g = np.asarray(field.response.e_nom), np.asarray(field.response.G)
     delta_e = np.einsum("m,myx->yx", eps, g)
-    expected = (np.abs(nominal + delta_e) ** 2 - np.abs(nominal) ** 2) / 7.3
+    expected = (
+        (np.abs(nominal + delta_e) ** 2 - np.abs(nominal) ** 2)
+        * field.grid.pixel_area
+        / 7.3
+    )
     got = field.realize(wavelength_nm=500.0, time_d=time).data
     np.testing.assert_allclose(
         got, expected, rtol=0, atol=1e-10 * np.max(np.abs(nominal) ** 2) / 7.3
     )
     tiny = eqx.tree_at(
-        lambda f: (f.e_nom, f.G, f.offset_nm, f.amplitude_nm),
+        lambda f: (f.response.e_nom, f.response.G, f.offset_nm, f.amplitude_nm),
         field,
         (
-            jnp.ones_like(field.e_nom),
-            jnp.stack([jnp.ones_like(field.e_nom), jnp.zeros_like(field.e_nom)]),
+            jnp.ones_like(field.response.e_nom),
+            jnp.stack(
+                [
+                    jnp.ones_like(field.response.e_nom),
+                    jnp.zeros_like(field.response.e_nom),
+                ]
+            ),
             jnp.array([1e-18, 0.0]),
             jnp.zeros(2),
         ),
@@ -48,7 +71,7 @@ def test_law_and_cancellation(linear_speckle):
     assert naive == 0
     np.testing.assert_allclose(
         tiny.realize(wavelength_nm=500.0).data,
-        (2e-18 + 1e-36) / 7.3,
+        (2e-18 + 1e-36) * field.grid.pixel_area / 7.3,
         rtol=16 * np.finfo(float).eps,
         atol=0,
     )
@@ -61,11 +84,18 @@ def test_chromatic_linear_and_quadratic_terms(linear_speckle):
     term quarters, within 32 float64 eps of the per-pixel term scale.
     """
     field = linear_speckle
-    halo = eqx.tree_at(lambda f: f.e_nom, field, jnp.zeros_like(field.e_nom))
+    halo = eqx.tree_at(
+        lambda f: f.response.e_nom, field, jnp.zeros_like(field.response.e_nom)
+    )
     wavelengths = jnp.array([500.0, 1000.0])
-    delta_e = np.einsum("m,myx->yx", [0.03, -0.02], np.asarray(field.G))
-    linear = 2 * np.real(np.conj(np.asarray(field.e_nom)) * delta_e) / 7.3
-    quadratic = np.abs(delta_e) ** 2 / 7.3
+    delta_e = np.einsum("m,myx->yx", [0.03, -0.02], np.asarray(field.response.G))
+    linear = (
+        2
+        * np.real(np.conj(np.asarray(field.response.e_nom)) * delta_e)
+        * field.grid.pixel_area
+        / 7.3
+    )
+    quadratic = np.abs(delta_e) ** 2 * field.grid.pixel_area / 7.3
     got = field.realize(wavelength_nm=wavelengths).data
     quadratic_got = halo.realize(wavelength_nm=wavelengths).data
     floor = 32 * np.finfo(float).eps
@@ -105,8 +135,14 @@ def test_broadened_node_integral(linear_speckle):
     assert got.leading_axes == ("band",)
     compiled = eqx.filter_jit(field.broadened)(quadrature=quadrature)
     np.testing.assert_allclose(compiled.data, got.data, rtol=32 * np.finfo(float).eps)
-    halo = eqx.tree_at(lambda f: f.e_nom, field, jnp.zeros_like(field.e_nom))
-    b = np.abs(np.einsum("m,myx->yx", [0.03, -0.02], np.asarray(field.G))) ** 2 / 7.3
+    halo = eqx.tree_at(
+        lambda f: f.response.e_nom, field, jnp.zeros_like(field.response.e_nom)
+    )
+    b = (
+        np.abs(np.einsum("m,myx->yx", [0.03, -0.02], np.asarray(field.response.G))) ** 2
+        * field.grid.pixel_area
+        / 7.3
+    )
     correction = (weights * (500 / nodes) ** 2).sum(axis=1) / weights.sum(axis=1)
     correction -= (500 / np.array([500.0, 700.0])) ** 2
     assert np.all(correction > 0.01)
@@ -301,11 +337,12 @@ def test_construction_and_optical_path(linear_speckle):
         {"e_nom": jnp.ones((2, 4))},
         {"G": jnp.ones((2, 4))},
         {"reference_wavelength_nm": 600.0},
-        {"epoch_d": np.inf},
         {"grid": PixelGrid.regular((3, 4), 0.37, "arcsec")},
     ]:
         with pytest.raises(ValueError):
-            replace(field, **changes)
+            replace(field, response=replace(field.response, **changes))
+    with pytest.raises(ValueError, match="epoch_d"):
+        replace(field, epoch_d=np.inf)
     assert isinstance(field, SinusoidalSpeckle)
     path = ox.OpticalPath.from_default_setup(scalar_coronagraph(), speckle=field)
     assert path.speckle is field
