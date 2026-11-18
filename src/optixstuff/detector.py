@@ -109,7 +109,9 @@ class AbstractDetector(eqx.Module):
     ) -> tuple[Array, Array]:
         """Return electron count mean and variance, each ``(W, *spatial)``.
 
-        Rates are already in electrons/s. For a weighted aperture, supply
+        Rates are already in electrons/s. A scalar plan applies to all
+        bands. A (W,) field applies along axis zero and must match that axis.
+        For a weighted aperture, supply
         rates summed with w and w**2 in electron_rates and variance_rates,
         and the corresponding sums of weights in n_pix and n_pix_variance.
         Omitted variance inputs default individually to their mean inputs.
@@ -119,23 +121,22 @@ class AbstractDetector(eqx.Module):
         Bands and pixels are independent in this model.
         """
 
-        def poisson_counts(rates, pixels):
-            return (
-                rates.total() + pixels * self.dark_current_e_per_pixel_s
-            ) * plan.live_time_s + (
-                pixels * self.clock_induced_charge_e_per_pixel_frame * plan.n_frames
+        def poisson_counts(rate, pixels):
+            live_time, frames = plan._for_rate_shape(rate.shape)
+            counts = (rate + pixels * self.dark_current_e_per_pixel_s) * live_time + (
+                pixels * self.clock_induced_charge_e_per_pixel_frame * frames
             )
+            return counts, frames
 
-        mean = poisson_counts(electron_rates, n_pix)
+        rate = electron_rates.total()
+        mean, frames = poisson_counts(rate, n_pix)
         variance_pixels = n_pix if n_pix_variance is None else n_pix_variance
         shot_variance = mean
         if variance_rates is not None or n_pix_variance is not None:
-            shot_variance = poisson_counts(
-                electron_rates if variance_rates is None else variance_rates,
-                variance_pixels,
-            )
+            variance_rate = rate if variance_rates is None else variance_rates.total()
+            shot_variance, frames = poisson_counts(variance_rate, variance_pixels)
         variance = self.excess_noise_factor_sq * shot_variance + (
-            variance_pixels * self.read_noise_e_rms**2 * plan.n_frames
+            variance_pixels * self.read_noise_e_rms**2 * frames
         )
         if sum_bands:
             return jnp.sum(mean, axis=0), jnp.sum(variance, axis=0)
@@ -144,6 +145,7 @@ class AbstractDetector(eqx.Module):
     def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
         """Sample independent pixels/bands, shape ``(W, *spatial)``, n_pix=1.
 
+        A (W,) plan field must match the leading axis of the rates.
         Draw source plus dark as Poisson, and CIC as an independent Poisson.
         Their sum N has mean and variance lambda. For F2=1 return N plus
         independent Gaussian read noise with variance sigma_r^2*n_frames.
@@ -158,14 +160,14 @@ class AbstractDetector(eqx.Module):
         interpixel correlations, and digitization. It is not a full sensor
         response model. Yield has already been applied by ``electrons``.
         """
+        rate = electron_rates.total()
+        live_time, frames = plan._for_rate_shape(rate.shape)
         key_source, key_cic, key_gain, key_read = jax.random.split(key, 4)
-        source_mean = (
-            electron_rates.total() + self.dark_current_e_per_pixel_s
-        ) * plan.live_time_s
+        source_mean = (rate + self.dark_current_e_per_pixel_s) * live_time
         source = jax.random.poisson(key_source, source_mean)
         cic = jax.random.poisson(
             key_cic,
-            self.clock_induced_charge_e_per_pixel_frame * plan.n_frames,
+            self.clock_induced_charge_e_per_pixel_frame * frames,
             shape=source.shape,
         )
         counts = (source + cic).astype(source_mean.dtype)
@@ -183,7 +185,7 @@ class AbstractDetector(eqx.Module):
         )
         read = (
             self.read_noise_e_rms
-            * jnp.sqrt(plan.n_frames)
+            * jnp.sqrt(frames)
             * jax.random.normal(key_read, shape=source.shape, dtype=source_mean.dtype)
         )
         return signal + read
@@ -217,7 +219,9 @@ class IdealDetector(AbstractDetector):
 
     def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
         """Draw only Poisson source electrons of shape ``(W, *spatial)``."""
-        return jax.random.poisson(key, electron_rates.total() * plan.live_time_s)
+        rate = electron_rates.total()
+        live_time, _ = plan._for_rate_shape(rate.shape)
+        return jax.random.poisson(key, rate * live_time)
 
     def __repr__(self) -> str:
         """Summarize detector geometry and ideal yield."""

@@ -56,6 +56,11 @@ def test_frames_for_time(dtype):
         derivative = jax.vmap(jax.grad(lambda t: ox.frames_for_time(t, 1.0).n_frames))
         np.testing.assert_array_equal(derivative(jnp.array(ratios)), 0.0)
 
+        with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+            ox.frames_for_time(jnp.ones((2, 1)), frame)
+        with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+            ox.frames_for_time(jnp.ones(1), jnp.ones(2))
+
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())
 def test_frame_occupancy(detector_cls):
@@ -257,3 +262,41 @@ def test_draw_key_contract(detector_cls):
     )
     zero = det.draw(keys[0], rates, ox.FramePlan(1.0, 0.0))
     np.testing.assert_array_equal(zero, 0.0)
+
+
+@pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())
+def test_frame_plan_band_axis(detector_cls):
+    """Fails when an image's x axis takes the durations or frames for each band.
+
+    Exact multiplication uses integer-valued rates and durations. The
+    zero-frame band must also produce zero in a draw with nonzero CIC/read.
+    """
+    shape = (2, 3, 2)
+    rates = ox.ElectronRates(planet=jnp.arange(1.0, 13.0).reshape(shape))
+    det = detector_cls(pixel_scale_arcsec=0.01, shape=shape[1:])
+    duration = jnp.array([2.0, 7.0])
+    plan = ox.FramePlan(duration, 1.0)
+    mean, var = det.mean_and_variance(rates, plan)
+    expected = np.stack([2.0 * rates.planet[0], 7.0 * rates.planet[1]])
+    np.testing.assert_array_equal(mean, expected)
+    np.testing.assert_array_equal(var, expected)
+
+    if detector_cls is ox.Detector:
+        det = eqx.tree_at(
+            lambda d: (d.clock_induced_charge_e_per_pixel_frame, d.read_noise_e_rms),
+            det,
+            (jnp.asarray(1.0), jnp.asarray(1.0)),
+        )
+    draw = det.draw(jax.random.key(0), rates, ox.FramePlan(duration, jnp.array([0, 1])))
+    np.testing.assert_array_equal(draw[0], 0)
+    assert jnp.any(draw[1] != 0)
+
+    with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+        ox.FramePlan(jnp.ones((2, 1)), 1.0)
+    with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+        ox.FramePlan(duration, jnp.ones(1))
+    mismatched = ox.FramePlan(jnp.ones(1), 1.0)
+    with pytest.raises(ValueError, match="leading"):
+        det.mean_and_variance(rates, mismatched)
+    with pytest.raises(ValueError, match="leading"):
+        det.draw(jax.random.key(0), rates, mismatched)

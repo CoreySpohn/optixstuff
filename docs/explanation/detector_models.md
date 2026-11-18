@@ -59,6 +59,9 @@ Concrete survival or QE outside `[0, 1]` raises at construction.
 ## Frames and observatory time
 
 Frame duration belongs to the observation's `FramePlan(frame_time_s, n_frames)`.
+Each field is scalar or a vector with one entry per band. Vectors align with
+axis 0 of the electron rates, including when the rates are images. Use
+`jax.vmap` to batch independent plans and their rates.
 `frames_for_time` rounds requested live time up to whole frames. Ratios
 within relative tolerance `max(1e-12, 4 * eps)` of a positive integer count
 as exact multiples. Every positive sub-frame request takes one frame;
