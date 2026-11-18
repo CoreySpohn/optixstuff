@@ -40,7 +40,7 @@ def coro(request, table):
     if cls is ox.ScalarCoronagraph:
         return scalar(table.grid)
     if cls is ox.MultiBandCoronagraph:
-        return cls([500.0, 800.0], [table, scalar(table.grid)])
+        return cls([table, scalar(table.grid, bandpass=Band(750.0, 850.0))])
     pytest.fail(f"Add a synthetic fixture for {cls.__name__}")
 
 
@@ -201,19 +201,21 @@ def test_rule_records_and_constants(table):
     np.testing.assert_allclose(
         c.curves().leakage_fraction, [3e-9], rtol=2 * np.finfo(float).eps
     )
-    mb = ox.MultiBandCoronagraph([500.0, 800.0], [table, c])
+    mb = ox.MultiBandCoronagraph([table, c])
     assert mb.curves() is a
     assert mb.bandpass == Band(450.0, 850.0)
-    assert (
-        ox.MultiBandCoronagraph([500.0, 800.0], [table, scalar(table.grid)]).bandpass
-        is None
-    )
+    np.testing.assert_array_equal(mb.spectral_breaks_nm(), [450, 550, 750, 850])
+    with pytest.raises(ValueError, match="declare its bandpass"):
+        ox.MultiBandCoronagraph([table, scalar(table.grid)])
+    with pytest.raises(ValueError, match="covers"):
+        mb.band(650)
     np.testing.assert_array_equal(mb.throughput(2.0, 800.0), c.throughput(2.0))
 
 
 def test_capability_selection(table):
-    performance = scalar(table.grid)
-    model = ox.MultiBandCoronagraph((500.0, 800.0), (table, performance))
+    performance = scalar(table.grid, bandpass=Band(550, 850))
+    model = ox.MultiBandCoronagraph((table, performance))
+    assert model.band(565.0) is performance
     assert model.band(800.0).frame == performance.frame
     assert (
         model.band(500.0).stellar_frame(500.0)
@@ -232,9 +234,9 @@ def test_prepare_fixed_angle_preserves_centre_and_reference():
     coro = synthetic_coronagraph(n=8, rules=rules)
     path = ox.OpticalPath.from_default_setup(coro, detector_shape=(4, 4))
     band = Band(450.0, 750.0)
-    q = Quadrature(jnp.array([[480.0, 600.0, 720.0]]), jnp.ones((1, 3)))
+    q = Quadrature((band,), jnp.array([[480.0, 600.0, 720.0]]), jnp.ones((1, 3)))
 
-    aperture = ox.prepare_aperture(path, band, q, rule=rules[1])
+    aperture = ox.prepare_aperture(path, q, rule=rules[1])
     (reference,) = aperture.references
     assert aperture.quadrature is q
     assert reference.wavelength_nm == 600.0
@@ -248,15 +250,14 @@ def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
     """A shifted reference requires template dilation only for table models."""
     path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
     band = Band(499.0, 501.0)
-    q = Quadrature(jnp.array([[500.0]]), jnp.ones((1, 1)))
+    q = Quadrature((band,), jnp.array([[500.0]]), jnp.ones((1, 1)))
     with pytest.raises(NotImplementedError, match="frozen reference"):
-        ox.prepare_aperture(path, band, q, rule=rule, reference_wavelength_nm=490.0)
+        ox.prepare_aperture(path, q, rule=rule, reference_wavelength_nm=490.0)
 
     if isinstance(rule, ox.Matched):
         with pytest.raises(ValueError, match=r"native.*images"):
             ox.prepare_aperture(
                 eqx.tree_at(lambda p: p.coronagraph, path, scalar(table.grid)),
-                band,
                 q,
                 rule=rule,
             )
@@ -270,9 +271,7 @@ def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
         rule=rule,
     )
     path = eqx.tree_at(lambda p: p.coronagraph, path, coro)
-    aperture = ox.prepare_aperture(
-        path, band, q, rule=rule, reference_wavelength_nm=490.0
-    )
+    aperture = ox.prepare_aperture(path, q, rule=rule, reference_wavelength_nm=490.0)
     (reference,) = aperture.references
     (node,) = reference.nodes
     assert reference.wavelength_nm == 490.0
@@ -310,7 +309,7 @@ def test_jit_and_gradient(table):
     path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
     band = Band(499.5, 500.5)
     aperture = ox.prepare_aperture(
-        path, band, Quadrature.build((band,), None, 1), rule=ox.Matched()
+        path, Quadrature.build((band,), path, order=1), rule=ox.Matched()
     )
     reference = aperture.references[0]
 

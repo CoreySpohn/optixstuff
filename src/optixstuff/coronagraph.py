@@ -2,15 +2,15 @@
 
 import abc
 from dataclasses import replace
-from itertools import pairwise
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from equinox import AbstractVar
 from hwoutils.grids import Frame, Image, PixelGrid, resample
-from hwoutils.spectral import Band
+from hwoutils.spectral import Band, spectral_breaks
 
 from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
 from optixstuff.performance import PerformanceCurves, SampledProfile
@@ -87,6 +87,11 @@ class AbstractCoronagraph(eqx.Module):
     ) -> tuple["AbstractCoronagraph", PerformanceCurves]:
         """Return a model and its usable record, preparing on the host if supported."""
         return self, self.curves(rule, leakage_rule=leakage_rule)
+
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the edges of the calibrated interval, when declared."""
+        band = self.bandpass
+        return np.empty(0) if band is None else np.array([band.lo_nm, band.hi_nm])
 
     def band(self, wavelength_nm):
         """Select the performance model at a concrete wavelength."""
@@ -558,7 +563,7 @@ class ScalarCoronagraph(AbstractCoronagraph):
 
 
 class MultiBandCoronagraph(AbstractCoronagraph):
-    """Nearest-band dispatch at a concrete wavelength, with no spectral interpolation.
+    """Dispatch by declared bandpass, in input order at shared wavelengths.
 
     curves() and frame use the reference band; band(wavelength_nm).curves(rule)
     selects another record. Convenience curves keep their optional wavelength
@@ -566,47 +571,44 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     their existing lack of additional wavelength dependence.
     """
 
-    band_centers_nm: tuple = eqx.field(static=True)
     bands: tuple
     reference_wavelength_nm: float = eqx.field(static=True)
 
-    def __init__(self, band_centers_nm, bands, *, reference_wavelength_nm=None):
+    def __init__(self, bands, *, reference_wavelength_nm=None):
         """Store one model per band, selecting the first as reference by default."""
-        self.band_centers_nm = tuple(float(c) for c in band_centers_nm)
         self.bands = tuple(bands)
-        if not self.bands or len(self.bands) != len(self.band_centers_nm):
-            raise ValueError("Need one or more bands, with one center per band")
+        if not self.bands:
+            raise ValueError("Need one or more coronagraph models")
+        if any(model.bandpass is None for model in self.bands):
+            raise ValueError("Each dispatched coronagraph must declare its bandpass")
         self.reference_wavelength_nm = float(
-            self.band_centers_nm[0]
+            self.bands[0].bandpass.center_nm
             if reference_wavelength_nm is None
             else reference_wavelength_nm
         )
 
     def band(self, wavelength_nm):
-        """Return the nearest band; wavelength is a concrete host scalar."""
+        """Return the first calibrated model covering the concrete wavelength."""
         if wavelength_nm is None:
             wavelength_nm = self.reference_wavelength_nm
-        index = min(
-            range(len(self.bands)),
-            key=lambda i: abs(self.band_centers_nm[i] - float(wavelength_nm)),
-        )
-        return self.bands[index]
+        wave = float(wavelength_nm)
+        for model in self.bands:
+            if model.bandpass.lo_nm <= wave <= model.bandpass.hi_nm:
+                return model
+        raise ValueError(f"No coronagraph bandpass covers {wave} nm")
 
     @property
     def bandpass(self):
-        """Span all declared band edges, or None if any band has unknown coverage."""
-        if any(band.bandpass is None for band in self.bands):
-            return None
+        """Span all declared band edges."""
         return Band(
             min(band.bandpass.lo_nm for band in self.bands),
             max(band.bandpass.hi_nm for band in self.bands),
         )
 
-    @property
-    def quadrature_knots_nm(self):
-        """Nearest-band dispatch breakpoints: midpoints between band centres [nm]."""
-        centers = sorted(self.band_centers_nm)
-        return tuple((a + b) / 2 for a, b in pairwise(centers))
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Union the child model breaks and every dispatch interval edge."""
+        edges = [(model.bandpass.lo_nm, model.bandpass.hi_nm) for model in self.bands]
+        return np.union1d(edges, spectral_breaks(*self.bands))
 
     @property
     def frame(self):

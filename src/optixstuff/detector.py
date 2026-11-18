@@ -1,14 +1,13 @@
 """One photon-to-electron contract for detector statistics and sampling."""
 
 import abc
-from dataclasses import fields
 from math import isfinite
 from typing import final
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from hwoutils.spectral import Quadrature
+import numpy as np
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -65,15 +64,11 @@ class AbstractDetector(eqx.Module):
         """Return QE in [0, 1], with the same shape as ``wavelength_nm``."""
         ...
 
-    def quadrature_knots_nm(self) -> Array:
-        """Wavelengths [nm] where the QE is not smooth, for band quadrature.
+    @abc.abstractmethod
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Wavelength breaks of the detector's quantum efficiency [nm]."""
 
-        A consumer building a ``Quadrature`` splits its bands at these points so
-        that each node interval sees a smooth QE. A constant QE has none.
-        """
-        return jnp.zeros((0,))
-
-    def electrons(self, rates: PhotonRates, quadrature: Quadrature) -> ElectronRates:
+    def electrons(self, rates: PhotonRates) -> ElectronRates:
         """Integrate survival * QE * photons/s/nm into electrons/s per field.
 
         This is the only place detector yield is applied anywhere in the
@@ -81,6 +76,7 @@ class AbstractDetector(eqx.Module):
         ``(W, *spatial)``, including scalar-zero absent contributions.
         QE is evaluated at every node before dimensional integration.
         """
+        quadrature = rates.quadrature
         shape = rates.total().shape or quadrature.nodes_nm.shape
         yield_fraction = self.survival_fraction * self.quantum_efficiency(
             quadrature.nodes_nm
@@ -89,12 +85,13 @@ class AbstractDetector(eqx.Module):
             yield_fraction, yield_fraction.shape + (1,) * (len(shape) - 2)
         )
         return ElectronRates(
+            quadrature.bands,
             **{
-                field.name: quadrature.integrate(
-                    yield_fraction * jnp.broadcast_to(getattr(rates, field.name), shape)
+                name: quadrature.integrate(
+                    yield_fraction * jnp.broadcast_to(getattr(rates, name), shape)
                 )
-                for field in fields(rates)
-            }
+                for name in rates.component_names()
+            },
         )
 
     def mean_and_variance(
@@ -120,9 +117,11 @@ class AbstractDetector(eqx.Module):
         zero only, returning ``spatial`` (a scalar for aperture rates).
         Bands and pixels are independent in this model.
         """
+        if variance_rates is not None and variance_rates.bands != electron_rates.bands:
+            raise ValueError("mean and variance rates must describe the same bands")
 
         def poisson_counts(rate, pixels):
-            live_time, frames = plan._for_rate_shape(rate.shape)
+            live_time, frames = plan._for_bands(electron_rates.bands, rate.ndim)
             counts = (rate + pixels * self.dark_current_e_per_pixel_s) * live_time + (
                 pixels * self.clock_induced_charge_e_per_pixel_frame * frames
             )
@@ -161,7 +160,7 @@ class AbstractDetector(eqx.Module):
         response model. Yield has already been applied by ``electrons``.
         """
         rate = electron_rates.total()
-        live_time, frames = plan._for_rate_shape(rate.shape)
+        live_time, frames = plan._for_bands(electron_rates.bands, rate.ndim)
         key_source, key_cic, key_gain, key_read = jax.random.split(key, 4)
         source_mean = (rate + self.dark_current_e_per_pixel_s) * live_time
         source = jax.random.poisson(key_source, source_mean)
@@ -213,6 +212,10 @@ class IdealDetector(AbstractDetector):
             overlaps_read=overlaps_read,
         )
 
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Unit QE has no wavelength breaks."""
+        return np.empty(0)
+
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
         """Return ones with the input wavelength shape."""
         return jnp.ones_like(jnp.asarray(wavelength_nm), dtype=jnp.result_type(float))
@@ -220,7 +223,7 @@ class IdealDetector(AbstractDetector):
     def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
         """Draw only Poisson source electrons of shape ``(W, *spatial)``."""
         rate = electron_rates.total()
-        live_time, _ = plan._for_rate_shape(rate.shape)
+        live_time, _ = plan._for_bands(electron_rates.bands, rate.ndim)
         return jax.random.poisson(key, rate * live_time)
 
     def __repr__(self) -> str:
@@ -309,15 +312,15 @@ class Detector(AbstractDetector):
         wavelengths_nm, qe = self._qe_curve
         return jnp.interp(wavelength_nm, wavelengths_nm, qe, left=0.0, right=0.0)
 
-    def quadrature_knots_nm(self) -> Array:
+    def spectral_breaks_nm(self) -> np.ndarray:
         """Tabulated QE wavelengths [nm]; empty for a constant QE.
 
         The linear interpolant has a kink at every table point, and the zero
         extension outside the table has a jump at both ends.
         """
         if self._qe_curve is None:
-            return jnp.zeros((0,))
-        return self._qe_curve[0]
+            return np.empty(0)
+        return np.asarray(self._qe_curve[0])
 
     def __repr__(self) -> str:
         """Summarize geometry, yield, and noise parameters."""

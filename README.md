@@ -80,7 +80,7 @@ Records contain throughput, core area, stellar leakage fraction, leakage density
 raw contrast, `iwa_lod`, and `data_extent_lod`. A known design limit is separately
 named `outer_working_angle_lod`. `ScalarCoronagraph` stores calibrated constants
 for one declared aperture.
-`MultiBandCoronagraph` selects the nearest band without spectral interpolation.
+`MultiBandCoronagraph` selects the first declared bandpass covering the wavelength.
 Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
 exposure durations remain seconds.
 
@@ -120,10 +120,10 @@ import jax.numpy as jnp
 from hwoutils.spectral import Band, Quadrature
 from optixstuff import Detector, PhotonRates, frames_for_time
 
-quadrature = Quadrature.build([Band(500.0, 600.0)], knots_nm=None, order=3)
-rates = PhotonRates(planet=jnp.ones((1, 3)))
 detector = Detector(pixel_scale_arcsec=0.01, shape=(1, 1), qe=0.9)
-electrons = detector.electrons(rates, quadrature)
+quadrature = Quadrature.build([Band(500.0, 600.0)], detector, order=3)
+rates = PhotonRates(quadrature, planet=jnp.ones((1, 3)))
+electrons = detector.electrons(rates)
 plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
 mean, variance = detector.mean_and_variance(electrons, plan)
 counts = detector.draw(jax.random.key(0), electrons, plan)

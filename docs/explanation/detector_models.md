@@ -7,10 +7,11 @@ with shape `(W, Q)` for apertures or `(W, Q, ny, nx)` for images.
 Absent terms may be scalar zero. The terms are `planet`, `star_leakage`,
 `local_zodi`, `exozodi`, `thermal`, and `stellar_companions`.
 
-`PhotonRates.integrate(quadrature)` returns `IntegratedPhotonRates`, a
-record in photons/s with the same fields and shape `(W, *spatial)`.
+`PhotonRates.integrate()` returns `IntegratedPhotonRates`, a
+record in photons/s with the same fields and shape `(W, *spatial)`. Both
+integrated rate types carry the original tuple of bands in `.bands`.
 It contains no detector effects. `total()` sums the fields with broadcasting.
-`PhotonRates.zeros((W, Q, ny, nx))` allocates six zero integrands.
+`PhotonRates.zeros(quadrature, (ny, nx))` allocates six zero integrands.
 
 ## Hardware and yield
 
@@ -28,8 +29,6 @@ import jax.numpy as jnp
 from hwoutils.spectral import Band, Quadrature
 from optixstuff import Detector, PhotonRates, frames_for_time
 
-quadrature = Quadrature.build([Band(500.0, 600.0)], knots_nm=None, order=3)
-rates = PhotonRates(planet=jnp.ones((1, 3, 2, 2)))
 detector = Detector(
     pixel_scale_arcsec=0.01,
     shape=(2, 2),
@@ -42,7 +41,9 @@ detector = Detector(
     read_time_s=0.05,
     overlaps_read=False,
 )
-electrons = detector.electrons(rates, quadrature)
+quadrature = Quadrature.build([Band(500.0, 600.0)], detector, order=3)
+rates = PhotonRates(quadrature, planet=jnp.ones((1, 3, 2, 2)))
+electrons = detector.electrons(rates)
 plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
 mean, variance = detector.mean_and_variance(electrons, plan)
 image = detector.draw(jax.random.key(0), electrons, plan)

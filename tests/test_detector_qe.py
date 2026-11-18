@@ -1,13 +1,11 @@
 """Code verification of the photon-to-electron boundary."""
 
-from dataclasses import fields
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Quadrature
+from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
 
@@ -21,6 +19,7 @@ def test_electrons_from_primitives(spatial):
     """
     with jax.enable_x64():
         quad = Quadrature(
+            (Band(400, 500), Band(600, 800)),
             jnp.array([[400, 450, 500], [600, 700, 800]], dtype=jnp.float64),
             jnp.array([[2, 3, 5], [7, 11, 13]], dtype=jnp.float64),
         )
@@ -33,7 +32,11 @@ def test_electrons_from_primitives(spatial):
         base = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
         image = base.reshape((2, 3, *(1 for _ in spatial))) * np.ones(spatial)
         rates = ox.PhotonRates(
-            **{f.name: (i + 1) * image for i, f in enumerate(fields(ox.PhotonRates))}
+            quad,
+            **{
+                name: (i + 1) * image
+                for i, name in enumerate(ox.PhotonRates.component_names())
+            },
         )
         qe = [[0.2, 0.35, 0.5], [0.8, 0.6, 0.4]]
         expected = np.zeros((2, *spatial))
@@ -42,24 +45,25 @@ def test_electrons_from_primitives(spatial):
                 expected[w] += (
                     float(quad.weights_nm[w, q]) * 0.9 * qe[w][q] * image[w, q]
                 )
-        actual = det.electrons(rates, quad)
-        compiled = eqx.filter_jit(lambda d, r, q: d.electrons(r, q))(det, rates, quad)
+        actual = det.electrons(rates)
+        compiled = eqx.filter_jit(lambda d, r: d.electrons(r))(det, rates)
         tol = 16 * np.finfo(float).eps
-        for i, field in enumerate(fields(rates)):
+        assert actual.bands == quad.bands
+        for i, name in enumerate(rates.component_names()):
             np.testing.assert_allclose(
-                getattr(actual, field.name), (i + 1) * expected, rtol=tol, atol=0
+                getattr(actual, name), (i + 1) * expected, rtol=tol, atol=0
             )
             np.testing.assert_allclose(
-                getattr(compiled, field.name), (i + 1) * expected, rtol=tol, atol=0
+                getattr(compiled, name), (i + 1) * expected, rtol=tol, atol=0
             )
         unit_survival = eqx.tree_at(lambda d: d.survival_fraction, det, jnp.array(1.0))
         np.testing.assert_allclose(
-            actual.planet / unit_survival.electrons(rates, quad).planet,
+            actual.planet / unit_survival.electrons(rates).planet,
             0.9,
             rtol=tol,
             atol=0,
         )
-        integrated = np.asarray(rates.integrate(quad).planet)
+        integrated = np.asarray(rates.integrate().planet)
         mean_qe = np.sum(np.asarray(quad.weights_nm) * qe, axis=1) / np.sum(
             np.asarray(quad.weights_nm), axis=1
         )
@@ -71,10 +75,14 @@ def test_electrons_from_primitives(spatial):
 def test_yield_contract(detector_cls):
     """Fails if constant QE is scalar or yield is applied twice; 8 float32 eps."""
     det = detector_cls(pixel_scale_arcsec=0.01, shape=(2, 3), survival_fraction=0.9)
-    quad = Quadrature(jnp.array([[450.0, 550.0, 650.0]]), jnp.array([[2.0, 3.0, 5.0]]))
-    rates = ox.PhotonRates(planet=jnp.ones((1, 3, 2, 3)))
+    quad = Quadrature(
+        (Band(450, 650),),
+        jnp.array([[450.0, 550.0, 650.0]]),
+        jnp.array([[2.0, 3.0, 5.0]]),
+    )
+    rates = ox.PhotonRates(quad, planet=jnp.ones((1, 3, 2, 3)))
     assert det.quantum_efficiency(quad.nodes_nm).shape == (1, 3)
-    result = det.electrons(rates, quad)
+    result = det.electrons(rates)
     expected = jnp.sum(quad.weights_nm * det.quantum_efficiency(quad.nodes_nm)) * 0.9
     np.testing.assert_allclose(
         result.total(), expected, rtol=8 * np.finfo(np.float32).eps
@@ -108,8 +116,8 @@ def test_linear_qe():
         atol=0,
     )
     # Quadrature breakpoints: the table points, none for a constant QE (exact).
-    np.testing.assert_array_equal(det.quadrature_knots_nm(), [400.0, 600.0, 800.0])
-    assert constant.quadrature_knots_nm().shape == (0,)
+    np.testing.assert_array_equal(det.spectral_breaks_nm(), [400.0, 600.0, 800.0])
+    assert constant.spectral_breaks_nm().shape == (0,)
 
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())

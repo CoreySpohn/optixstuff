@@ -10,7 +10,7 @@ import pytest
 from conftest import SinusoidalSpeckle, scalar_coronagraph
 from hwoutils.constants import s2d
 from hwoutils.grids import Frame, Image, PixelGrid
-from hwoutils.spectral import Quadrature
+from hwoutils.spectral import Band, Quadrature
 
 import optixstuff as ox
 
@@ -112,14 +112,14 @@ def test_chromatic_linear_and_quadratic_terms(linear_speckle):
 def test_broadened_node_integral(linear_speckle):
     """Fails if a band-center sample replaces the normalized node integral.
 
-    Weights in nm sum to widths 100, 200 nm; exact weighted algebra to 32
+    Weights in nm sum to widths 200, 200 nm; exact weighted algebra to 32
     float64 eps. For zero nominal field, center error is B*(mean(r^2)-r_c^2),
     where B=|G eps|^2/E_in and r=500/lambda; it is nonzero in both bands.
     """
     field = linear_speckle
     nodes = np.array([[400.0, 500.0, 600.0], [600.0, 700.0, 800.0]])
-    weights = np.array([[20.0, 60.0, 20.0], [50.0, 100.0, 50.0]])
-    quadrature = Quadrature(nodes, weights)
+    weights = np.array([[40.0, 120.0, 40.0], [50.0, 100.0, 50.0]])
+    quadrature = Quadrature((Band(400, 600), Band(600, 800)), nodes, weights)
     expected = np.stack(
         [
             sum(

@@ -79,7 +79,7 @@ into a single `OpticalPath`:
 
 `ConstantThroughput` and `TransmissiveElement` represent optical losses.
 Tabulated responses use `hwoutils.spectral.Transmission`,
-which interpolates linearly and is zero outside its table. `Transmission.tophat`
+which interpolates linearly and is zero outside its table. `Transmission.from_band`
 represents a unit bandpass; constant optical losses use a scalar
 `ConstantThroughput`. Mapping to real hardware:
 
@@ -157,11 +157,13 @@ class OpticalPath(eqx.Module):
     detector: AbstractDetector
 ```
 
-Two convenience methods compose elements:
+The path exposes three quantities used by the readers.
 
 - `system_throughput(wavelength_nm)` -- product of all element
   throughputs at a wavelength
 - `detector.quantum_efficiency(wavelength_nm)` -- detector QE at that wavelength
+- `spectral_breaks_nm()` -- union of the element, coronagraph, detector, disperser
+  and speckle breaks for host quadrature construction
 
 That's it. The container does not own simulation logic; it just holds
 hardware. Simulators (coronagraphoto, jaxEDITH) consume the container,
@@ -171,7 +173,7 @@ science-level outputs.
 ## Photon rates, electrons, and detector noise
 
 Scene readers supply `PhotonRates` at `hwoutils.spectral.Quadrature` nodes.
-`detector.electrons(rates, quadrature)` applies survival and QE at each
+`detector.electrons(rates)` applies survival and QE at each
 node, then integrates into `ElectronRates`. This is the only detector
 yield conversion. Optical throughput remains upstream of that boundary.
 
@@ -234,7 +236,9 @@ Finite stellar diameter remains an image capability; scalar records retain the
 diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
 selects a multiband record; `curves()` alone uses the reference band.
 `bandpass` is a `hwoutils.spectral.Band` or `None` for unknown coverage;
-a multiband model spans its children when every child declares its edges.
+each child of a multiband model must declare its interval. The first child
+covering the requested wavelength supplies the record, including at a shared
+edge. A wavelength outside all calibrated intervals raises `ValueError`.
 
 ## Speckle excess
 

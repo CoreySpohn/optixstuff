@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Transmission, spectral_knots
+from hwoutils.spectral import Transmission, spectral_breaks
 
 import optixstuff as ox
 
@@ -73,7 +73,7 @@ class TestOpticalPath:
                 rtol=0,
                 atol=2e-15,
             )
-            np.testing.assert_array_equal(spectral_knots(path), [500, 600])
+            np.testing.assert_array_equal(spectral_breaks(path), [500, 600])
             np.testing.assert_allclose(
                 element.apply(jnp.array([[2.0, 3.0]]), 550),
                 jnp.array([[2.0, 3.0]]) * ((0.2 + 0.8) / 2),

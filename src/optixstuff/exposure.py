@@ -30,17 +30,17 @@ class FramePlan(eqx.Module):
         """Validate field shapes before the plan is used."""
         _band_shape(self.frame_time_s.shape, self.n_frames.shape)
 
-    def _for_rate_shape(self, shape):
+    def _for_bands(self, rate_bands, ndim):
         """Return live time and frame counts aligned to the rates' band axis."""
         bands = _band_shape(self.frame_time_s.shape, self.n_frames.shape)
         if not bands:
             return self.live_time_s, self.n_frames
-        if bands != shape[:1]:
+        if bands != (len(rate_bands),):
             raise ValueError(
                 "FramePlan fields must be scalar or (W,) matching the rates' "
-                f"leading band axis; got plan {bands} and rates {shape}"
+                f"leading band axis; got plan {bands} for {len(rate_bands)} bands"
             )
-        band_index = (slice(None),) + (None,) * (len(shape) - 1)
+        band_index = (slice(None),) + (None,) * (ndim - 1)
         counts = self.n_frames
         return self.live_time_s[band_index], counts[
             band_index

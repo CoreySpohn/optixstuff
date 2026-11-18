@@ -94,6 +94,10 @@ class AbstractSpeckleField(eqx.Module):
     """Clock origin in days from the scene epoch, subtracted by implementations."""
 
     @abc.abstractmethod
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the host wavelength breaks [nm] for this model."""
+
+    @abc.abstractmethod
     def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
         """Return per_pixel stellar_flux_fraction excess on the field's grid.
 
@@ -170,6 +174,10 @@ class LinearSpeckleField(AbstractSpeckleField):
     epoch_d: float = eqx.field(static=True, converter=float, default=0.0, kw_only=True)
     _response_ndim: ClassVar[int] = 2
 
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """The wavelength dependence is smooth throughout the band."""
+        return np.empty(0)
+
     @property
     def grid(self) -> PixelGrid:
         """The native focal grid of the response."""
@@ -243,7 +251,5 @@ class LinearSpeckleField(AbstractSpeckleField):
         This helper neither applies a spectrum nor produces PhotonRates.
         """
         nodes = self.realize(wavelength_nm=quadrature.nodes_nm, time_d=time_d)
-        integral = quadrature.integrate(nodes.data)
-        width = jnp.sum(quadrature.weights_nm, axis=1)
-        mean = integral / width.reshape((-1, *((1,) * (integral.ndim - 1))))
+        mean = quadrature.mean(nodes.data)
         return replace(nodes, data=mean, leading_axes=("band", *nodes.leading_axes[2:]))

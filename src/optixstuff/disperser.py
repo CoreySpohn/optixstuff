@@ -10,6 +10,7 @@ import abc
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from optixstuff.optical_elements import AbstractOpticalElement, ConstantThroughput
@@ -21,6 +22,10 @@ class AbstractDisperser(eqx.Module):
     Only the scalar/ETC face is defined here. Render geometry lives in
     coronachrome and dispatches on the concrete descriptor type.
     """
+
+    @abc.abstractmethod
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the host wavelength breaks [nm] for this model."""
 
     @abc.abstractmethod
     def spectral_resolution(self, wavelength_nm):
@@ -92,6 +97,10 @@ class LensletDisperser(AbstractDisperser):
     throughput_element: AbstractOpticalElement = ConstantThroughput(1.0)
     sky_pitch_arcsec: float | None = None
     psflet_pack_path: str | None = eqx.field(static=True, default=None)
+
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """The smooth dispersion law adds no breaks to the throughput."""
+        return self.throughput_element.spectral_breaks_nm()
 
     def dispersion_px(self, wavelength_nm):
         """Spectral-axis detector offset [px] for the wavelength(s)."""

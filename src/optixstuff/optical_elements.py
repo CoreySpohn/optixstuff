@@ -4,6 +4,7 @@ import abc
 from typing import final
 
 import equinox as eqx
+import numpy as np
 from hwoutils.spectral import Transmission
 from jax.typing import ArrayLike
 from jaxtyping import Array
@@ -19,6 +20,10 @@ class AbstractOpticalElement(eqx.Module):
     Both methods are abstract: use AbstractUniformElement for elements
     with spatially uniform throughput, which provides a default apply().
     """
+
+    @abc.abstractmethod
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the host wavelength breaks [nm] for this model."""
 
     @abc.abstractmethod
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
@@ -74,6 +79,10 @@ class ConstantThroughput(AbstractUniformElement):
         """Return constant throughput, ignoring wavelength."""
         return self.throughput
 
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """The wavelength dependence is smooth throughout the band."""
+        return np.empty(0)
+
     def __repr__(self) -> str:
         """One-line summary of throughput value."""
         return (
@@ -92,6 +101,10 @@ class TransmissiveElement(AbstractUniformElement):
     """
 
     transmission: Transmission
+
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Delegate to the held transmission table."""
+        return self.transmission.spectral_breaks_nm()
 
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
         """Evaluate the held response at wavelengths in nanometers."""

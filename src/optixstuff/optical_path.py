@@ -8,6 +8,8 @@ from math import pi
 
 import equinox as eqx
 import jax
+import numpy as np
+from hwoutils.spectral import spectral_breaks
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
@@ -160,6 +162,15 @@ class OpticalPath(eqx.Module):
             n_channels=n_channels,
             npix_multiplier=npix_multiplier,
             speckle=speckle,
+        )
+
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Combine the breaks of the optical train and detector yield."""
+        optional = (self.coronagraph, self.disperser, self.speckle)
+        return spectral_breaks(
+            *self.attenuating_elements,
+            self.detector,
+            *(model for model in optional if model is not None),
         )
 
     def system_throughput(self, wavelength_nm: float) -> float:

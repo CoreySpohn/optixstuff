@@ -1,19 +1,17 @@
 """Code verification of spectral photon records and their dimensional weights."""
 
-from dataclasses import fields
-
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.spectral import Quadrature
+from hwoutils.spectral import Band, Quadrature, Transmission
 
 import optixstuff as ox
 
 
 @pytest.mark.parametrize("spatial", [(), (2, 3)])
 def test_weighted_integration(spatial):
-    """Fails if nm weights, the Q axis, or scalar absent terms are lost.
+    """Fails if integration misses a kink, reduces a spatial axis, or drops nm weights.
 
     Floating-point tolerance: 8 float64 eps for three multiply-adds.
     JIT/eager uses that same reduction-roundoff bound.
@@ -21,19 +19,23 @@ def test_weighted_integration(spatial):
     import jax
 
     with jax.enable_x64():
-        quad = Quadrature(
-            jnp.array([[400, 450, 500], [600, 700, 800]], dtype=jnp.float64),
-            jnp.array([[2, 3, 5], [7, 11, 13]], dtype=jnp.float64),
+        # Asymmetric triangular filter inside the first band. The second
+        # band lies entirely inside its falling branch and needs no split.
+        element = ox.TransmissiveElement(Transmission([420, 453, 610], [0, 1, 0]))
+        quad = Quadrature.build((Band(400, 610), Band(453, 610)), element, order=1)
+        scale = np.arange(1, 1 + int(np.prod(spatial))).reshape(spatial)
+        values = (
+            element.get_throughput(quad.nodes_nm).reshape(
+                (*quad.nodes_nm.shape, *(1 for _ in spatial))
+            )
+            * scale
         )
-        values = jnp.arange(1, 1 + 6 * int(np.prod(spatial)), dtype=jnp.float64)
-        values = values.reshape((2, 3, *spatial))
-        rates = ox.PhotonRates(planet=values, thermal=2 * values)
-        expected = np.zeros((2, *spatial))
-        for w in range(2):
-            for q in range(3):
-                expected[w] += float(quad.weights_nm[w, q]) * np.asarray(values[w, q])
-        result = rates.integrate(quad)
-        compiled = eqx.filter_jit(lambda r, q: r.integrate(q))(rates, quad)
+        rates = ox.PhotonRates(quad, planet=values, thermal=2 * values)
+        # Triangle area is base * height / 2. The second row is padded.
+        expected = np.array([95.0, 78.5]).reshape((2, *(1 for _ in spatial))) * scale
+        result = rates.integrate()
+        assert result.bands == quad.bands
+        compiled = eqx.filter_jit(lambda r: r.integrate())(rates)
         for name, factor in [("planet", 1), ("thermal", 2), ("star_leakage", 0)]:
             np.testing.assert_allclose(
                 getattr(result, name),
@@ -53,11 +55,15 @@ def test_weighted_integration(spatial):
 
 def test_zeros():
     """Fails if all-zero records lose bands or spatial pixels; exact algebra."""
-    for shape in [(2, 3), (2, 3, 2, 3)]:
-        rates = ox.PhotonRates.zeros(shape, dtype=jnp.float32)
-        for field in fields(rates):
-            np.testing.assert_array_equal(getattr(rates, field.name), np.zeros(shape))
-        quad = Quadrature(jnp.ones((2, 3)), jnp.ones((2, 3)))
-        assert rates.integrate(quad).total().shape == (2, *shape[2:])
-    empty = ox.PhotonRates()
-    assert empty.integrate(quad).total().shape == (2,)
+    quad = Quadrature.build((Band(400, 500), Band(600, 700)), order=3)
+    for spatial in [(), (2, 3)]:
+        rates = ox.PhotonRates.zeros(quad, spatial, dtype=jnp.float32)
+        for name in rates.component_names():
+            np.testing.assert_array_equal(
+                getattr(rates, name), np.zeros((2, 3, *spatial))
+            )
+        assert rates.integrate().total().shape == (2, *spatial)
+    with pytest.raises(ValueError, match="quadrature"):
+        ox.PhotonRates(quad, planet=jnp.ones((2, 1)))
+    empty = ox.PhotonRates(quad)
+    assert empty.integrate().total().shape == (2,)

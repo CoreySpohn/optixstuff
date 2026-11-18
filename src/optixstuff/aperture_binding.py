@@ -1,6 +1,5 @@
 """Bind a fixed angular photometric aperture to spectral quadrature nodes."""
 
-from collections.abc import Iterable
 from dataclasses import replace
 from typing import NamedTuple
 
@@ -9,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.conversions import arcsec_to_rad
-from hwoutils.spectral import Band, Quadrature
+from hwoutils.spectral import Quadrature
 
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
@@ -295,7 +294,6 @@ class PreparedAperture(eqx.Module):
 
 def prepare_aperture(
     optical_path: OpticalPath,
-    bands: Band | Iterable[Band],
     quadrature: Quadrature,
     *,
     rule: ApertureRule = DEFAULT_APERTURE_RULE,
@@ -312,14 +310,13 @@ def prepare_aperture(
     rule at every node. Polychromatic HalfMaximum and Matched table rules
     require dilation of the frozen reference aperture or template.
     """
-    bands = (bands,) if isinstance(bands, Band) else tuple(bands)
     waves = np.asarray(quadrature.nodes_nm)
-    if waves.shape[0] != len(bands):
-        raise ValueError("quadrature must have one row per band")
     coro = optical_path.coronagraph
     primary = optical_path.primary
     references = []
-    for band, row, node_waves in zip(bands, waves, quadrature.nodes_nm, strict=True):
+    for band, row, node_waves in zip(
+        quadrature.bands, waves, quadrature.nodes_nm, strict=True
+    ):
         ref = (
             band.center_nm
             if reference_wavelength_nm is None
