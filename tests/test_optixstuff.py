@@ -152,10 +152,8 @@ def test_exposure_is_a_record_of_one_observation():
     exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)
     assert exposure.plan is None
     assert exposure.roll_deg == 15.0
-    assert (exposure.ecliptic_latitude_deg, exposure.solar_longitude_deg) == (
-        0.0,
-        135.0,
-    )
+    assert not hasattr(exposure, "ecliptic_latitude_deg")
+    assert not hasattr(exposure, "solar_longitude_deg")
     assert exposure.roll_deg in jax.tree.leaves(exposure)
     rolled = jax.vmap(
         lambda r: eqx.tree_at(lambda e: e.roll_deg, exposure, r).roll_deg * 2.0

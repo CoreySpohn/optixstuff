@@ -81,30 +81,24 @@ def frames_for_time(time_s, frame_time_s) -> FramePlan:
 class Exposure(eqx.Module):
     """Everything about one observation except the scene and the instrument.
 
-    The record holds when and where the telescope points, how each band is
-    integrated over wavelength, and (for a drawn frame) how long the detector
-    collects. Build it on the host with ``coronagraphoto.build_exposure``.
-    The roll, the epoch and the quadrature nodes and weights are array
+    The record holds when the telescope observes and at what roll, how each
+    band is integrated over wavelength, and (for a drawn frame) how long the
+    detector collects. Build it on the host with ``coronagraphoto.build_exposure``.
+    The roll, the observation time and the quadrature nodes and weights are array
     leaves, so an exposure can be an argument of JIT, vmap and grad.
 
     Args:
-        time_d: Observation epoch in days from the scene epoch.
+        time_d: Observation time in days from the scene epoch. The local-zodi
+            sightline is derived from it, the scene's epoch and the target's
+            sky position, not stored here.
         roll_deg: Position angle of detector +y, north through east, in
             degrees; a traced leaf.
         quadrature: Per-band wavelength nodes and weights.
         plan: Whole-frame integration plan; None when only expected rates
             are wanted.
-        ecliptic_latitude_deg: Ecliptic latitude of the line of sight used
-            for the local zodi. Known limitation: the default, 0 deg, is a
-            fixed stand-in, not derived from the target or the epoch.
-        solar_longitude_deg: Solar longitude of the line of sight used for
-            the local zodi. Known limitation: the default, 135 deg, is a
-            fixed stand-in, not derived from the target or the epoch.
     """
 
     time_d: jnp.ndarray | float
     roll_deg: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
     quadrature: Quadrature
     plan: FramePlan | None = None
-    ecliptic_latitude_deg: jnp.ndarray | float = 0.0
-    solar_longitude_deg: jnp.ndarray | float = 135.0
