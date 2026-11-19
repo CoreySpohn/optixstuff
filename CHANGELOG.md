@@ -1,5 +1,62 @@
 # Changelog
 
+## [6.0.0](https://github.com/CoreySpohn/optixstuff/compare/v5.0.0...v6.0.0) (2026-11-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* reduce the scalar sky and stellar leakage to annular means of the aperture integral
+* mark transmission intensive and integrate native PSFs by measure
+* declare spectral breaks on hardware models and bind photon and electron rates to their quadrature
+* split the coronagraph contract into performance, imaging and scene capabilities with named sky responses
+* add FocalResponse as the one calibrated complex speckle response
+* add SampledProfile for standalone sampled curves and drop the zero-filled performance record
+* align frame plans to the rates' band axis and refuse ambiguous shapes
+* make Matched an inverse-variance aperture evaluated from scene rates at the exposure query
+* carry separate mean and variance moments for weighted apertures and integrate hard-edged rules over one region
+* bind fixed-angular apertures to quadrature nodes with prepare_aperture and the prepared and stellar_frame contract methods
+* own aperture rules and performance records, add bandpass, and drop the yippy backend
+* optical elements hold a hwoutils Transmission; delete SpectralThroughput
+* contract maps on AbstractCoronagraph; native grid=None reads; drop noise floors and off-contract methods
+* delete ExposureConfig, make dispersion_px public and read geometric centres from the grid
+* detector pixel scale is a validated static host float so readers jit with the path as an argument
+* one linear speckle field with the stable cross-term law, node-wavelength scaling and a day clock
+* put coronagraph products on shared grids with primary diameters, a centred fold and one performance record per rule
+* one detector contract with photon rates, a frame plan and a draw that matches its variance
+
+### Features
+
+* add FocalResponse as the one calibrated complex speckle response ([b20c708](https://github.com/CoreySpohn/optixstuff/commit/b20c708b655b94cd06ea8fc3acb26326952e7314))
+* add SampledProfile for standalone sampled curves and drop the zero-filled performance record ([650f1b7](https://github.com/CoreySpohn/optixstuff/commit/650f1b787c8f97c1db1148f99fd167350fda9b06))
+* bind fixed-angular apertures to quadrature nodes with prepare_aperture and the prepared and stellar_frame contract methods ([027cd1b](https://github.com/CoreySpohn/optixstuff/commit/027cd1b46b753ba3e80e2ec7a9aaf3ad3d2b569c))
+* contract maps on AbstractCoronagraph; native grid=None reads; drop noise floors and off-contract methods ([816ba79](https://github.com/CoreySpohn/optixstuff/commit/816ba7901e62ba9adf489a0a7132679edaaa9778))
+* **coronagraph:** accept a stellar diameter in leakage queries and add leakage_density_map ([6132543](https://github.com/CoreySpohn/optixstuff/commit/6132543bea44556aefda1c79b341a2923b2816fb))
+* declare spectral breaks on hardware models and bind photon and electron rates to their quadrature ([2f34050](https://github.com/CoreySpohn/optixstuff/commit/2f340505cfb52eb140d955adf96a6fc22c325eab))
+* detectors report their QE breakpoints for band quadrature ([ada25d1](https://github.com/CoreySpohn/optixstuff/commit/ada25d19f33419f0e63511fae7e028a614fa3eec))
+* make Matched an inverse-variance aperture evaluated from scene rates at the exposure query ([c2bfa51](https://github.com/CoreySpohn/optixstuff/commit/c2bfa515bb34416c617eae2f530f1d197a830a10))
+* one detector contract with photon rates, a frame plan and a draw that matches its variance ([e463415](https://github.com/CoreySpohn/optixstuff/commit/e463415c4bac98d63ca61a67c383339efd4c4751))
+* one linear speckle field with the stable cross-term law, node-wavelength scaling and a day clock ([c2cf7cb](https://github.com/CoreySpohn/optixstuff/commit/c2cf7cb8a670d0cfcda3bec15812753338707a9d))
+* own aperture rules and performance records, add bandpass, and drop the yippy backend ([15d38cb](https://github.com/CoreySpohn/optixstuff/commit/15d38cb23450bcd0b0dda106fa9d75d0e616f488))
+* put coronagraph products on shared grids with primary diameters, a centred fold and one performance record per rule ([03c46a6](https://github.com/CoreySpohn/optixstuff/commit/03c46a6c991cb9b82483b161bb7450ce45c66b8e))
+* split the coronagraph contract into performance, imaging and scene capabilities with named sky responses ([f36da34](https://github.com/CoreySpohn/optixstuff/commit/f36da343288629265b8017b56bea8e92889ab50a))
+
+
+### Bug Fixes
+
+* align frame plans to the rates' band axis and refuse ambiguous shapes ([0a8ad40](https://github.com/CoreySpohn/optixstuff/commit/0a8ad40150bb2c5ff863ebe913928671d964952b))
+* carry separate mean and variance moments for weighted apertures and integrate hard-edged rules over one region ([4476403](https://github.com/CoreySpohn/optixstuff/commit/4476403e0d2f70cec8eaecc16425cf638e7178c5))
+* **coronagraph:** resample native products on their own grid instead of returning them verbatim ([fb80cf4](https://github.com/CoreySpohn/optixstuff/commit/fb80cf44bc53b85c7f6534f6f07966b777fa4e75))
+* detector pixel scale is a validated static host float so readers jit with the path as an argument ([5f94077](https://github.com/CoreySpohn/optixstuff/commit/5f940779ccdf21466dc2145e5e441572bb52ba4f))
+* **optical-path:** reject a primary whose diameter disagrees with the coronagraph frame ([5ffa85c](https://github.com/CoreySpohn/optixstuff/commit/5ffa85cdb4a38a931832241074106d969edaf547))
+* reduce the scalar sky and stellar leakage to annular means of the aperture integral ([5895336](https://github.com/CoreySpohn/optixstuff/commit/589533660dc799e70e33a78ba2af85af616e2b8a))
+
+
+### Code Refactoring
+
+* delete ExposureConfig, make dispersion_px public and read geometric centres from the grid ([ea44609](https://github.com/CoreySpohn/optixstuff/commit/ea44609c8be960d070b92807553a06e591948aff))
+* mark transmission intensive and integrate native PSFs by measure ([ef602df](https://github.com/CoreySpohn/optixstuff/commit/ef602df71fe4bd8b57ba3e580d2f0761ddd3b0f3))
+* optical elements hold a hwoutils Transmission; delete SpectralThroughput ([bb00975](https://github.com/CoreySpohn/optixstuff/commit/bb00975cd9beab205e06eda0730765f8a5ec32ec))
+
 ## [5.0.0](https://github.com/CoreySpohn/optixstuff/compare/v4.1.0...v5.0.0) (2026-11-16)
 
 
