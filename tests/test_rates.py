@@ -30,7 +30,7 @@ def test_weighted_integration(spatial):
             )
             * scale
         )
-        rates = ox.PhotonRates(quad, planet=values, thermal=2 * values)
+        rates = ox.Rates(quad, "photon", planet=values, thermal=2 * values)
         # Triangle area is base * height / 2. The second row is padded.
         expected = np.array([95.0, 78.5]).reshape((2, *(1 for _ in spatial))) * scale
         result = rates.integrate()
@@ -50,20 +50,44 @@ def test_weighted_integration(spatial):
         np.testing.assert_allclose(
             result.total(), 3 * expected, rtol=8 * np.finfo(float).eps, atol=0
         )
-        assert not isinstance(result, ox.ElectronRates)
+        assert (rates.unit, result.unit) == ("photon/s/nm", "photon/s")
 
 
 def test_zeros():
     """Fails if all-zero records lose bands or spatial pixels; exact algebra."""
     quad = Quadrature.build((Band(400, 500), Band(600, 700)), order=3)
     for spatial in [(), (2, 3)]:
-        rates = ox.PhotonRates.zeros(quad, spatial, dtype=jnp.float32)
+        rates = ox.Rates.zeros(quad, "photon", spatial, dtype=jnp.float32)
         for name in rates.component_names():
             np.testing.assert_array_equal(
                 getattr(rates, name), np.zeros((2, 3, *spatial))
             )
         assert rates.integrate().total().shape == (2, *spatial)
     with pytest.raises(ValueError, match="quadrature"):
-        ox.PhotonRates(quad, planet=jnp.ones((2, 1)))
-    empty = ox.PhotonRates(quad)
+        ox.Rates(quad, "photon", planet=jnp.ones((2, 1)))
+    empty = ox.Rates(quad, "photon")
     assert empty.integrate().total().shape == (2,)
+
+
+def test_aperture_fields_follow_integration():
+    """Fails if integrating drops an aperture's pixel count or variance rates."""
+    quad = Quadrature.build((Band(400, 500), Band(600, 700)), order=3)
+    ones = jnp.ones((2, 3))
+    rates = ox.Rates(
+        quad,
+        "photon",
+        planet=ones,
+        n_pix=jnp.array([4.0, 5.0]),
+        variance=ox.Rates(quad, "photon", planet=ones / 2, n_pix=2.0),
+    )
+    result = rates.integrate()
+    assert not result.spectral and result.carrier == "photon"
+    np.testing.assert_array_equal(result.n_pix, [4.0, 5.0])
+    np.testing.assert_array_equal(result.variance.n_pix, 2.0)
+    np.testing.assert_array_equal(result.variance.planet, result.planet / 2)
+    with pytest.raises(ValueError, match="already integrated"):
+        result.integrate()
+    with pytest.raises(ValueError, match="same unit"):
+        ox.Rates(quad, "photon", variance=ox.Rates(quad, "electron"))
+    with pytest.raises(ValueError, match="carrier"):
+        ox.Rates(quad, "photons")

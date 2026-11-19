@@ -1,17 +1,27 @@
 # Detector models
 
 All detector calculations follow one chain:
-`PhotonRates -> detector.electrons -> ElectronRates -> moments or draw`.
+`Rates` (photon) `-> detector.electrons -> Rates` (electron) `-> moments or draw`.
 Readers supply the six source terms in photons/s/nm at quadrature nodes,
 with shape `(W, Q)` for apertures or `(W, Q, ny, nx)` for images.
 Absent terms may be scalar zero. The terms are `planet`, `star_leakage`,
 `local_zodi`, `exozodi`, `thermal`, and `stellar_companions`.
 
-`PhotonRates.integrate()` returns `IntegratedPhotonRates`, a
-record in photons/s with the same fields and shape `(W, *spatial)`. Both
-integrated rate types carry the original tuple of bands in `.bands`.
-It contains no detector effects. `total()` sums the fields with broadcasting.
-`PhotonRates.zeros(quadrature, (ny, nx))` allocates six zero integrands.
+One `Rates` type serves the whole chain. Its static `carrier` is `"photon"`
+or `"electron"`. Its `quadrature` is set while the fields are per-nm
+integrands at the nodes and is None once they are integrated over the bands;
+`unit` reads `photon/s/nm`, `photon/s` or `electron/s` accordingly. Every
+record carries the tuple of bands in `.bands`.
+
+`rates.integrate()` returns a record in photons/s with the same fields and
+shape `(W, *spatial)`. It contains no detector effects. `total()` sums the
+fields with broadcasting.
+`Rates.zeros(quadrature, "photon", (ny, nx))` allocates six zero integrands.
+
+Per-pixel records leave `n_pix` as None. A weighted aperture sets `n_pix` to
+the sum of its weights in detector pixels, and may carry a second record in
+`variance`, summed with the squared weights, whose own `n_pix` is the sum of
+squared weights.
 
 ## Hardware and yield
 
@@ -27,7 +37,7 @@ the same shape as the input, including for constant QE.
 import jax
 import jax.numpy as jnp
 from optixstuff.spectral import Band, Quadrature
-from optixstuff import Detector, PhotonRates, frames_for_time
+from optixstuff import Detector, Rates, frames_for_time
 
 detector = Detector(
     pixel_scale_arcsec=0.01,
@@ -42,7 +52,7 @@ detector = Detector(
     overlaps_read=False,
 )
 quadrature = Quadrature.build([Band(500.0, 600.0)], detector, order=3)
-rates = PhotonRates(quadrature, planet=jnp.ones((1, 3, 2, 2)))
+rates = Rates(quadrature, "photon", planet=jnp.ones((1, 3, 2, 2)))
 electrons = detector.electrons(rates)
 plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
 mean, variance = detector.mean_and_variance(electrons, plan)
@@ -83,10 +93,11 @@ mean = (E + n_pix*d)*t + n_pix*c*N
 variance = F2*mean + n_pix*sigma_r^2*N
 ```
 
-`mean_and_variance(electrons, plan, n_pix=1.0, sum_bands=False)` returns
+`mean_and_variance(electrons, plan, sum_bands=False)` returns
 two arrays of shape `(W, *spatial)`. With `sum_bands=True`, it sums only
 axis zero and returns shape `spatial`, scalar for an aperture. Image
-pixels use `n_pix=1`; aperture readers supply their effective pixel count.
+pixels use `n_pix=1`; aperture readers supply their effective pixel count
+in `electrons.n_pix`.
 Independent bands pay their own detector noise.
 
 `draw(key, electrons, plan)` samples per pixel, using independent subkeys
@@ -101,4 +112,4 @@ thresholding, saturation, gain-register geometry, and correlated noise.
 
 Combine all source contributions before drawing once, so the detector
 noise is paid once for each band and pixel. QE and survival never act
-again on `ElectronRates`.
+again on electron rates.

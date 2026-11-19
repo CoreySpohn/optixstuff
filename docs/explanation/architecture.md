@@ -172,9 +172,9 @@ science-level outputs.
 
 ## Photon rates, electrons, and detector noise
 
-Scene readers supply `PhotonRates` at `optixstuff.spectral.Quadrature` nodes.
+Scene readers supply photon `Rates` at `optixstuff.spectral.Quadrature` nodes.
 `detector.electrons(rates)` applies survival and QE at each
-node, then integrates into `ElectronRates`. This is the only detector
+node, then integrates into electron `Rates`. This is the only detector
 yield conversion. Optical throughput remains upstream of that boundary.
 
 The observer chooses a frame duration and calls

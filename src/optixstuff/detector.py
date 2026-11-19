@@ -12,7 +12,8 @@ from jax.typing import ArrayLike
 from jaxtyping import Array
 
 from optixstuff.exposure import FramePlan
-from optixstuff.rates import ElectronRates, PhotonRates
+from optixstuff.grids import PixelGrid
+from optixstuff.rates import Rates
 
 
 def _check_range(name, value, low, high=float("inf")):
@@ -24,12 +25,27 @@ def _check_range(name, value, low, high=float("inf")):
         raise ValueError(f"{name} must be finite and in [{low}, {high}]")
 
 
+def _check_electrons(rates):
+    """Require band-integrated electron rates, the detector statistics' input."""
+    if rates.carrier != "electron" or rates.spectral:
+        raise ValueError(f"rates must be in electron/s; got {rates.unit}")
+
+
+def _per_pixel_rate(rates):
+    """Total electron/s of per-pixel rates, the only kind draw can sample."""
+    _check_electrons(rates)
+    if rates.n_pix is not None or rates.variance is not None:
+        raise ValueError("draw samples per-pixel rates, not a weighted aperture")
+    return rates.total()
+
+
 class AbstractDetector(eqx.Module):
     """Focal-plane hardware; exposure timing belongs to a separate FramePlan.
 
     Noise parameters are per pixel, QE and survival are fractions, and
     ``excess_noise_factor_sq`` is a variance multiplier, at least one.
-    Pixel scale, shape and read overlap are static PyTree geometry fields.
+    Pixel scale, shape and read overlap are static PyTree geometry fields;
+    ``grid`` is the PixelGrid they define.
     Subclasses supply QE; statistics and sampling share the electron contract.
     """
 
@@ -59,6 +75,11 @@ class AbstractDetector(eqx.Module):
             _check_range(name, getattr(self, name), 0.0)
         _check_range("excess_noise_factor_sq", self.excess_noise_factor_sq, 1.0)
 
+    @property
+    def grid(self) -> PixelGrid:
+        """Centered detector pixel grid in arcsec, without a sky orientation."""
+        return PixelGrid.regular(self.shape, self.pixel_scale_arcsec, "arcsec")
+
     @abc.abstractmethod
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
         """Return QE in [0, 1], with the same shape as ``wavelength_nm``."""
@@ -68,24 +89,31 @@ class AbstractDetector(eqx.Module):
     def spectral_breaks_nm(self) -> np.ndarray:
         """Wavelength breaks of the detector's quantum efficiency [nm]."""
 
-    def electrons(self, rates: PhotonRates) -> ElectronRates:
-        """Integrate survival * QE * photons/s/nm into electrons/s per field.
+    def electrons(self, rates: Rates) -> Rates:
+        """Integrate survival * QE * photon/s/nm into electron/s per field.
 
         This is the only place detector yield is applied anywhere in the
         library. Inputs have shape ``(W, Q, *spatial)``; outputs have shape
         ``(W, *spatial)``, including scalar-zero absent contributions.
         QE is evaluated at every node before dimensional integration.
+        An aperture's ``n_pix`` is kept and its ``variance`` rates are
+        converted the same way.
         """
+        if rates.carrier != "photon" or not rates.spectral:
+            raise ValueError(f"rates must be in photon/s/nm; got {rates.unit}")
         quadrature = rates.quadrature
-        shape = rates.total().shape or quadrature.nodes_nm.shape
+        shape = rates.total().shape
         yield_fraction = self.survival_fraction * self.quantum_efficiency(
             quadrature.nodes_nm
         )
         yield_fraction = jnp.reshape(
             yield_fraction, yield_fraction.shape + (1,) * (len(shape) - 2)
         )
-        return ElectronRates(
+        return Rates(
             quadrature.bands,
+            "electron",
+            n_pix=rates.n_pix,
+            variance=None if rates.variance is None else self.electrons(rates.variance),
             **{
                 name: quadrature.integrate(
                     yield_fraction * jnp.broadcast_to(getattr(rates, name), shape)
@@ -95,45 +123,42 @@ class AbstractDetector(eqx.Module):
         )
 
     def mean_and_variance(
-        self,
-        electron_rates: ElectronRates,
-        plan: FramePlan,
-        n_pix: ArrayLike = 1.0,
-        *,
-        variance_rates: ElectronRates | None = None,
-        n_pix_variance: ArrayLike | None = None,
-        sum_bands: bool = False,
+        self, rates: Rates, plan: FramePlan, *, sum_bands: bool = False
     ) -> tuple[Array, Array]:
         """Return electron count mean and variance, each ``(W, *spatial)``.
 
-        Rates are already in electrons/s. A scalar plan applies to all
+        Rates are in electron/s. A scalar plan applies to all
         bands. A (W,) field applies along axis zero and must match that axis.
-        For a weighted aperture, supply
-        rates summed with w and w**2 in electron_rates and variance_rates,
-        and the corresponding sums of weights in n_pix and n_pix_variance.
-        Omitted variance inputs default individually to their mean inputs.
+        Dark current, CIC and read noise are paid once per pixel:
+        ``rates.n_pix`` pixels, or one when it is None (per-pixel rates).
+        For a weighted aperture, the rates are summed with w and
+        ``rates.variance`` with w**2, each with its own sum of weights in
+        ``n_pix``. Without variance rates the variance follows the mean
+        rates; variance rates without ``n_pix`` use the mean's pixel count.
         F2 scales source, dark and CIC variance. Read noise adds independent
         per-frame variance. With ``sum_bands=True``, sum axis
         zero only, returning ``spatial`` (a scalar for aperture rates).
         Bands and pixels are independent in this model.
         """
-        if variance_rates is not None and variance_rates.bands != electron_rates.bands:
-            raise ValueError("mean and variance rates must describe the same bands")
+        _check_electrons(rates)
 
         def poisson_counts(rate, pixels):
-            live_time, frames = plan._for_bands(electron_rates.bands, rate.ndim)
+            live_time, frames = plan._for_bands(rates.bands, rate.ndim)
             counts = (rate + pixels * self.dark_current_e_per_pixel_s) * live_time + (
                 pixels * self.clock_induced_charge_e_per_pixel_frame * frames
             )
             return counts, frames
 
-        rate = electron_rates.total()
-        mean, frames = poisson_counts(rate, n_pix)
-        variance_pixels = n_pix if n_pix_variance is None else n_pix_variance
+        n_pix = 1.0 if rates.n_pix is None else rates.n_pix
+        mean, frames = poisson_counts(rates.total(), n_pix)
+        variance_pixels = n_pix
         shot_variance = mean
-        if variance_rates is not None or n_pix_variance is not None:
-            variance_rate = rate if variance_rates is None else variance_rates.total()
-            shot_variance, frames = poisson_counts(variance_rate, variance_pixels)
+        if rates.variance is not None:
+            if rates.variance.n_pix is not None:
+                variance_pixels = rates.variance.n_pix
+            shot_variance, frames = poisson_counts(
+                rates.variance.total(), variance_pixels
+            )
         variance = self.excess_noise_factor_sq * shot_variance + (
             variance_pixels * self.read_noise_e_rms**2 * frames
         )
@@ -141,7 +166,7 @@ class AbstractDetector(eqx.Module):
             return jnp.sum(mean, axis=0), jnp.sum(variance, axis=0)
         return mean, variance
 
-    def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
+    def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Sample independent pixels/bands, shape ``(W, *spatial)``, n_pix=1.
 
         A (W,) plan field must match the leading axis of the rates.
@@ -159,8 +184,8 @@ class AbstractDetector(eqx.Module):
         interpixel correlations, and digitization. It is not a full sensor
         response model. Yield has already been applied by ``electrons``.
         """
-        rate = electron_rates.total()
-        live_time, frames = plan._for_bands(electron_rates.bands, rate.ndim)
+        rate = _per_pixel_rate(rates)
+        live_time, frames = plan._for_bands(rates.bands, rate.ndim)
         key_source, key_cic, key_gain, key_read = jax.random.split(key, 4)
         source_mean = (rate + self.dark_current_e_per_pixel_s) * live_time
         source = jax.random.poisson(key_source, source_mean)
@@ -220,10 +245,10 @@ class IdealDetector(AbstractDetector):
         """Return ones with the input wavelength shape."""
         return jnp.ones_like(jnp.asarray(wavelength_nm), dtype=jnp.result_type(float))
 
-    def draw(self, key: Array, electron_rates: ElectronRates, plan: FramePlan) -> Array:
+    def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Draw only Poisson source electrons of shape ``(W, *spatial)``."""
-        rate = electron_rates.total()
-        live_time, _ = plan._for_bands(electron_rates.bands, rate.ndim)
+        rate = _per_pixel_rate(rates)
+        live_time, _ = plan._for_bands(rates.bands, rate.ndim)
         return jax.random.poisson(key, rate * live_time)
 
     def __repr__(self) -> str:

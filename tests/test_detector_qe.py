@@ -31,11 +31,12 @@ def test_electrons_from_primitives(spatial):
         )
         base = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
         image = base.reshape((2, 3, *(1 for _ in spatial))) * np.ones(spatial)
-        rates = ox.PhotonRates(
+        rates = ox.Rates(
             quad,
+            "photon",
             **{
                 name: (i + 1) * image
-                for i, name in enumerate(ox.PhotonRates.component_names())
+                for i, name in enumerate(ox.Rates.component_names())
             },
         )
         qe = [[0.2, 0.35, 0.5], [0.8, 0.6, 0.4]]
@@ -80,16 +81,17 @@ def test_yield_contract(detector_cls):
         jnp.array([[450.0, 550.0, 650.0]]),
         jnp.array([[2.0, 3.0, 5.0]]),
     )
-    rates = ox.PhotonRates(quad, planet=jnp.ones((1, 3, 2, 3)))
+    rates = ox.Rates(quad, "photon", planet=jnp.ones((1, 3, 2, 3)))
     assert det.quantum_efficiency(quad.nodes_nm).shape == (1, 3)
     result = det.electrons(rates)
     expected = jnp.sum(quad.weights() * det.quantum_efficiency(quad.nodes_nm)) * 0.9
     np.testing.assert_allclose(
         result.total(), expected, rtol=8 * np.finfo(np.float32).eps
     )
-    mean, _ = det.mean_and_variance(result, ox.FramePlan(1.0, 1.0), n_pix=0.0)
+    mean, _ = det.mean_and_variance(result, ox.FramePlan(1.0, 1.0))
     np.testing.assert_allclose(mean, result.total(), rtol=8 * np.finfo(np.float32).eps)
     assert result.star_leakage.shape == (1, 2, 3)
+    assert det.grid == ox.grids.PixelGrid.regular((2, 3), 0.01, "arcsec")
 
 
 def test_linear_qe():

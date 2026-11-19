@@ -97,10 +97,12 @@ def test_moment_contract(detector_cls):
         )
     )
     det = detector_cls(pixel_scale_arcsec=0.01, shape=(2, 3), **kwargs)
-    rates = ox.ElectronRates(
+    rates = ox.Rates(
         BANDS,
+        "electron",
         planet=jnp.arange(1.0, 13.0).reshape((2, 2, 3)),
         thermal=jnp.full((2, 2, 3), 2.0),
+        n_pix=5.0,
     )
     plan = ox.FramePlan(3.0, 4.0)
     n_pix = 5.0
@@ -112,7 +114,7 @@ def test_moment_contract(detector_cls):
     )
     expected_mean = (source + n_pix * dark) * 12.0 + n_pix * cic * 4.0
     expected_var = f2 * expected_mean + n_pix * rn**2 * 4.0
-    eager = det.mean_and_variance(rates, plan, n_pix=n_pix)
+    eager = det.mean_and_variance(rates, plan)
     old_mean = (
         rates.total() + n_pix * det.dark_current_e_per_pixel_s
     ) * plan.live_time_s + (
@@ -123,22 +125,23 @@ def test_moment_contract(detector_cls):
     )
     np.testing.assert_array_equal(eager[0], old_mean)
     np.testing.assert_array_equal(eager[1], old_var)
-    weighted_rates = ox.ElectronRates(
-        BANDS, planet=rates.planet / 2, thermal=rates.thermal
-    )
+    weighted = dict(planet=rates.planet / 2, thermal=rates.thermal)
+    unweighted = dict(planet=rates.planet, thermal=rates.thermal)
     for source_override, pixel_override in [
-        (weighted_rates, None),
+        (weighted, None),
         (None, 3.5),
-        (weighted_rates, 3.5),
+        (weighted, 3.5),
     ]:
         variance_source = source if source_override is None else (source - 2) / 2 + 2
         pixels = n_pix if pixel_override is None else pixel_override
+        variance_rates = ox.Rates(
+            BANDS, "electron", n_pix=pixel_override, **(source_override or unweighted)
+        )
         mean, variance = det.mean_and_variance(
-            rates,
+            eqx.tree_at(
+                lambda r: r.variance, rates, variance_rates, is_leaf=lambda x: x is None
+            ),
             plan,
-            n_pix,
-            variance_rates=source_override,
-            n_pix_variance=pixel_override,
             sum_bands=True,
         )
         poisson = (variance_source + pixels * dark) * 12 + pixels * cic * 4
@@ -147,7 +150,7 @@ def test_moment_contract(detector_cls):
         np.testing.assert_allclose(
             variance, expected.sum(axis=0), rtol=16 * np.finfo(np.float32).eps
         )
-    compiled = eqx.filter_jit(lambda d, r, p: d.mean_and_variance(r, p, n_pix=5.0))(
+    compiled = eqx.filter_jit(lambda d, r, p: d.mean_and_variance(r, p))(
         det, rates, plan
     )
     for actual in [eager, compiled]:
@@ -155,7 +158,7 @@ def test_moment_contract(detector_cls):
             np.testing.assert_allclose(
                 got, expected, rtol=16 * np.finfo(np.float32).eps
             )
-    reduced = det.mean_and_variance(rates, plan, n_pix=n_pix, sum_bands=True)
+    reduced = det.mean_and_variance(rates, plan, sum_bands=True)
     for got, expected in zip(reduced, [expected_mean, expected_var], strict=True):
         np.testing.assert_allclose(
             got, expected.sum(axis=0), rtol=16 * np.finfo(np.float32).eps
@@ -169,9 +172,9 @@ def test_noise_terms_independently():
     cancellation when subtracting count budgets of order 100.
     """
     det = ox.Detector(pixel_scale_arcsec=0.01, shape=(1, 1))
-    rates = ox.ElectronRates(BANDS, planet=jnp.array([2.0, 3.0]))
+    rates = ox.Rates(BANDS, "electron", planet=jnp.array([2.0, 3.0]), n_pix=5.0)
     plan = ox.FramePlan(3.0, 4.0)
-    baseline = det.mean_and_variance(rates, plan, n_pix=5.0)
+    baseline = det.mean_and_variance(rates, plan)
     variants = [
         ("dark_current_e_per_pixel_s", 0.2, 12.0, 12.0),
         ("clock_induced_charge_e_per_pixel_frame", 0.3, 6.0, 6.0),
@@ -182,7 +185,7 @@ def test_noise_terms_independently():
         changed = eqx.tree_at(
             lambda d, name=name: getattr(d, name), det, jnp.array(value)
         )
-        got = changed.mean_and_variance(rates, plan, n_pix=5.0)
+        got = changed.mean_and_variance(rates, plan)
         for observed, original, expected in zip(
             got, baseline, [delta_mean, delta_var], strict=True
         ):
@@ -222,7 +225,7 @@ def test_draw_moments(detector_cls, f2):
         )
     )
     det = detector_cls(pixel_scale_arcsec=0.01, shape=(1, 1), **kwargs)
-    rates = ox.ElectronRates(BANDS, planet=jnp.array([0.2, 80.0]).reshape(2, 1, 1))
+    rates = ox.Rates(BANDS, "electron", planet=jnp.array([0.2, 80.0]).reshape(2, 1, 1))
     plan = ox.FramePlan(0.5, 2.0)
     n = 2000
     keys = jax.random.split(jax.random.key(0), n)
@@ -257,7 +260,7 @@ def test_draw_key_contract(detector_cls):
         )
     )
     det = detector_cls(pixel_scale_arcsec=0.01, shape=(1, 1), **kwargs)
-    rates = ox.ElectronRates(BANDS, planet=jnp.array([1.0, 20.0]).reshape(2, 1, 1))
+    rates = ox.Rates(BANDS, "electron", planet=jnp.array([1.0, 20.0]).reshape(2, 1, 1))
     plan = ox.FramePlan(1.0, 2.0)
     keys = jax.random.split(jax.random.key(0), 3)
     draw = eqx.filter_jit(lambda d, r, p, k: d.draw(k, r, p))
@@ -278,7 +281,7 @@ def test_frame_plan_band_axis(detector_cls):
     zero-frame band must also produce zero in a draw with nonzero CIC/read.
     """
     shape = (2, 3, 2)
-    rates = ox.ElectronRates(BANDS, planet=jnp.arange(1.0, 13.0).reshape(shape))
+    rates = ox.Rates(BANDS, "electron", planet=jnp.arange(1.0, 13.0).reshape(shape))
     det = detector_cls(pixel_scale_arcsec=0.01, shape=shape[1:])
     duration = jnp.array([2.0, 7.0])
     plan = ox.FramePlan(duration, 1.0)
@@ -301,13 +304,17 @@ def test_frame_plan_band_axis(detector_cls):
         ox.FramePlan(jnp.ones((2, 1)), 1.0)
     with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
         ox.FramePlan(duration, jnp.ones(1))
-    empty_rates = ox.ElectronRates(BANDS)
+    empty_rates = ox.Rates(BANDS, "electron")
     empty_mean, _ = det.mean_and_variance(empty_rates, plan)
     np.testing.assert_array_equal(
         empty_mean, jnp.full(2, det.clock_induced_charge_e_per_pixel_frame)
     )
     with pytest.raises(ValueError, match="same bands"):
-        det.mean_and_variance(rates, plan, variance_rates=ox.ElectronRates(BANDS[::-1]))
+        ox.Rates(BANDS, "electron", variance=ox.Rates(BANDS[::-1], "electron"))
+    with pytest.raises(ValueError, match="electron/s"):
+        det.mean_and_variance(ox.Rates(BANDS, "photon"), plan)
+    with pytest.raises(ValueError, match="per-pixel"):
+        det.draw(jax.random.key(0), ox.Rates(BANDS, "electron", n_pix=2.0), plan)
     mismatched = ox.FramePlan(jnp.ones(1), 1.0)
     with pytest.raises(ValueError, match="leading"):
         det.mean_and_variance(rates, mismatched)

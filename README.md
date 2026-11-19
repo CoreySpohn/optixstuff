@@ -110,19 +110,19 @@ continue to implement `AbstractSpeckleField` directly.
 
 ### Detector chain
 
-Readers supply `PhotonRates` in photons/s/nm at shared quadrature nodes.
-The detector converts them to `ElectronRates` with spectral QE and survival
-applied once, before integration. The observer owns the frame plan.
+Readers supply `Rates` tagged `"photon"`, in photons/s/nm at shared quadrature
+nodes. The detector converts them to `Rates` tagged `"electron"`, with spectral
+QE and survival applied once, before integration. The observer owns the frame plan.
 
 ```python
 import jax
 import jax.numpy as jnp
 from optixstuff.spectral import Band, Quadrature
-from optixstuff import Detector, PhotonRates, frames_for_time
+from optixstuff import Detector, Rates, frames_for_time
 
 detector = Detector(pixel_scale_arcsec=0.01, shape=(1, 1), qe=0.9)
 quadrature = Quadrature.build([Band(500.0, 600.0)], detector, order=3)
-rates = PhotonRates(quadrature, planet=jnp.ones((1, 3)))
+rates = Rates(quadrature, "photon", planet=jnp.ones((1, 3)))
 electrons = detector.electrons(rates)
 plan = frames_for_time(time_s=600.0, frame_time_s=300.0)
 mean, variance = detector.mean_and_variance(electrons, plan)

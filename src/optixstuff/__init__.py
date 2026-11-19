@@ -42,7 +42,7 @@ from optixstuff.optical_elements import (
 from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.psflet_pack import PsfletPack, load_psflet_pack, save_psflet_pack
-from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
+from optixstuff.rates import Rates
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 
 __all__ = [
@@ -61,24 +61,22 @@ __all__ = [
     "Circular",
     "ConstantThroughput",
     "Detector",
-    "ElectronRates",
     "Exposure",
     "FocalResponse",
     "FramePlan",
     "HalfMaximum",
     "IdealDetector",
     "Instrument",
-    "IntegratedPhotonRates",
     "LensletDisperser",
     "LinearSpeckleField",
     "Matched",
     "MatchedStamps",
     "MultiBandCoronagraph",
     "PerformanceCurves",
-    "PhotonRates",
     "PreparedAperture",
     "ProductGrids",
     "PsfletPack",
+    "Rates",
     "SampledProfile",
     "ScalarCoronagraph",
     "SceneRender",

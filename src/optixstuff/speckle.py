@@ -249,7 +249,7 @@ class LinearSpeckleField(AbstractSpeckleField):
         This mean is at fixed native lambda/D coordinates. For a fixed
         angular detector, resample EACH node using its wavelength first,
         then integrate with the stellar spectrum and throughput at the nodes.
-        This helper neither applies a spectrum nor produces PhotonRates.
+        This helper neither applies a spectrum nor produces Rates.
         """
         nodes = self.realize(wavelength_nm=quadrature.nodes_nm, time_d=time_d)
         mean = quadrature.mean(nodes.data)
