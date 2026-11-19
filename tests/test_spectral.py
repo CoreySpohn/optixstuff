@@ -35,10 +35,10 @@ def test_band_operations_preserve_supplied_edges(lo, hi):
     for spacing in ("linear", "log"):
         channels = band.channels(7, spacing)
         rule = Quadrature.build(channels, order=1)
-        assert rule.bands[0].lo_nm.hex() == lo.hex()
-        assert rule.bands[-1].hi_nm.hex() == hi.hex()
+        assert rule.bands[0].low_nm.hex() == lo.hex()
+        assert rule.bands[-1].high_nm.hex() == hi.hex()
         for left, right in pairwise(rule.bands):
-            assert left.hi_nm.hex() == right.lo_nm.hex()
+            assert left.high_nm.hex() == right.low_nm.hex()
         for i, channel in enumerate(channels):
             row = rule.band(i)
             assert row.bands == (channel,)

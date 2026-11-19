@@ -111,7 +111,7 @@ class AbstractCoronagraph(eqx.Module):
     def spectral_breaks_nm(self) -> np.ndarray:
         """Return the edges of the calibrated interval, when declared."""
         band = self.bandpass
-        return np.empty(0) if band is None else np.array([band.lo_nm, band.hi_nm])
+        return np.empty(0) if band is None else np.array([band.low_nm, band.high_nm])
 
     def band(self, wavelength_nm):
         """Select the performance model at a concrete wavelength."""
@@ -613,7 +613,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             wavelength_nm = self.reference_wavelength_nm
         wave = float(wavelength_nm)
         for model in self.bands:
-            if model.bandpass.lo_nm <= wave <= model.bandpass.hi_nm:
+            if model.bandpass.low_nm <= wave <= model.bandpass.high_nm:
                 return model
         raise ValueError(f"No coronagraph bandpass covers {wave} nm")
 
@@ -621,13 +621,15 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     def bandpass(self):
         """Span all declared band edges."""
         return Band(
-            min(band.bandpass.lo_nm for band in self.bands),
-            max(band.bandpass.hi_nm for band in self.bands),
+            min(band.bandpass.low_nm for band in self.bands),
+            max(band.bandpass.high_nm for band in self.bands),
         )
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Union the child model breaks and every dispatch interval edge."""
-        edges = [(model.bandpass.lo_nm, model.bandpass.hi_nm) for model in self.bands]
+        edges = [
+            (model.bandpass.low_nm, model.bandpass.high_nm) for model in self.bands
+        ]
         return np.union1d(edges, spectral_breaks(*self.bands))
 
     @property

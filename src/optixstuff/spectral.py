@@ -68,30 +68,30 @@ def spectral_breaks(*models: SpectralBreaks) -> np.ndarray:
 class Band:
     """Positive wavelength interval [nm], stored as hashable host floats."""
 
-    lo_nm: float
-    hi_nm: float
+    low_nm: float
+    high_nm: float
 
     def __post_init__(self):
         """Canonicalize concrete edges and reject reversed or unbounded bands."""
-        object.__setattr__(self, "lo_nm", float(self.lo_nm))
-        object.__setattr__(self, "hi_nm", float(self.hi_nm))
-        if not (0 < self.lo_nm <= self.hi_nm < float("inf")):
+        object.__setattr__(self, "low_nm", float(self.low_nm))
+        object.__setattr__(self, "high_nm", float(self.high_nm))
+        if not (0 < self.low_nm <= self.high_nm < float("inf")):
             raise ValueError("Band edges must be finite and satisfy 0 < lo <= hi")
 
     @property
     def center_nm(self) -> float:
         """Arithmetic band center [nm]."""
-        return self.lo_nm + self.width_nm / 2
+        return self.low_nm + self.width_nm / 2
 
     @property
     def geometric_center_nm(self) -> float:
-        """Geometric band center sqrt(lo_nm * hi_nm) [nm]."""
-        return math.sqrt(self.lo_nm * self.hi_nm)
+        """Geometric band center sqrt(low_nm * high_nm) [nm]."""
+        return math.sqrt(self.low_nm * self.high_nm)
 
     @property
     def width_nm(self) -> float:
         """Full band width [nm]."""
-        return self.hi_nm - self.lo_nm
+        return self.high_nm - self.low_nm
 
     def channels(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
         """Partition into n bands using one shared edge table, including endpoints."""
@@ -99,12 +99,12 @@ class Band:
         if n < 1:
             raise ValueError("n must be a positive integer")
         if spacing == "linear":
-            edges = np.linspace(self.lo_nm, self.hi_nm, n + 1)
+            edges = np.linspace(self.low_nm, self.high_nm, n + 1)
         elif spacing == "log":
-            edges = np.geomspace(self.lo_nm, self.hi_nm, n + 1)
+            edges = np.geomspace(self.low_nm, self.high_nm, n + 1)
         else:
             raise ValueError("spacing must be 'linear' or 'log'")
-        edges[0], edges[-1] = self.lo_nm, self.hi_nm
+        edges[0], edges[-1] = self.low_nm, self.high_nm
         return tuple(Band(lo, hi) for lo, hi in pairwise(edges))
 
 
@@ -139,10 +139,10 @@ def rebin_bands(values, src_bands, dst_bands, axis=0):
         raise ValueError("source bands must match the spectral axis")
     if any(b.width_nm == 0 for b in (*src_bands, *dst_bands)):
         raise ValueError("overlap rebinning requires positive-width bands")
-    src_lo = jnp.asarray([b.lo_nm for b in src_bands])
-    src_hi = jnp.asarray([b.hi_nm for b in src_bands])
-    dst_lo = jnp.asarray([b.lo_nm for b in dst_bands])
-    dst_hi = jnp.asarray([b.hi_nm for b in dst_bands])
+    src_lo = jnp.asarray([b.low_nm for b in src_bands])
+    src_hi = jnp.asarray([b.high_nm for b in src_bands])
+    dst_lo = jnp.asarray([b.low_nm for b in dst_bands])
+    dst_hi = jnp.asarray([b.high_nm for b in dst_bands])
     frac = _overlap_fractions(src_lo, src_hi, dst_lo, dst_hi)
     out = jnp.moveaxis(
         jnp.tensordot(frac, jnp.moveaxis(data, axis, 0), axes=1), 0, axis
@@ -218,7 +218,7 @@ class Transmission:
     @classmethod
     def from_band(cls, band: Band) -> "Transmission":
         """Unit response between the two supplied wavelength edges [nm]."""
-        return cls([band.lo_nm, band.hi_nm], [1.0, 1.0])
+        return cls([band.low_nm, band.high_nm], [1.0, 1.0])
 
     def __call__(self, wavelength_nm):
         """Evaluate at scalar or array wavelengths [nm], with zero extrapolation."""
@@ -514,10 +514,10 @@ class Quadrature(eqx.Module):
         for band in bands:
             if band.width_nm == 0:
                 raise ValueError("use Quadrature.monochromatic for a zero-width band")
-            start = np.searchsorted(breaks, band.lo_nm, side="right")
-            stop = np.searchsorted(breaks, band.hi_nm, side="left")
+            start = np.searchsorted(breaks, band.low_nm, side="right")
+            stop = np.searchsorted(breaks, band.high_nm, side="left")
             band_edges.append(
-                np.concatenate(([band.lo_nm], breaks[start:stop], [band.hi_nm]))
+                np.concatenate(([band.low_nm], breaks[start:stop], [band.high_nm]))
             )
 
         weighted = response is not None or bool(spectra)
@@ -623,7 +623,7 @@ class Quadrature(eqx.Module):
     def monochromatic(cls, wavelength_nm: float) -> Self:
         """Select an already integrated rate at one wavelength, with unit weight."""
         band = Band(wavelength_nm, wavelength_nm)
-        return cls((band,), [[band.lo_nm]], [[1.0]])
+        return cls((band,), [[band.low_nm]], [[1.0]])
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -652,7 +652,7 @@ class Quadrature(eqx.Module):
         """
         state = hashlib.sha256()
         for band in self.bands:
-            state.update(np.array([band.lo_nm, band.hi_nm]).tobytes())
+            state.update(np.array([band.low_nm, band.high_nm]).tobytes())
         state.update(np.asarray(self.nodes_nm, dtype=float).tobytes())
         for name, table in self.weight_table.items():
             state.update(name.encode())

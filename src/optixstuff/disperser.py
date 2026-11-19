@@ -36,7 +36,7 @@ class AbstractDisperser(eqx.Module):
         """Detector pixels per resolution element."""
 
     @abc.abstractmethod
-    def n_pix_spread(self, wavelength_min_nm, wavelength_max_nm):
+    def n_pix_spread(self, low_nm, high_nm):
         """Detector pixels a single spaxel spectrum spans across a band."""
 
     @abc.abstractmethod
@@ -117,12 +117,9 @@ class LensletDisperser(AbstractDisperser):
         """Detector pixels per resolution element."""
         return self.pix_per_reselt
 
-    def n_pix_spread(self, wavelength_min_nm, wavelength_max_nm):
+    def n_pix_spread(self, low_nm, high_nm):
         """Spectral trace length [px] across a band, plus a PSFlet-width margin."""
-        span = jnp.abs(
-            self.dispersion_px(wavelength_max_nm)
-            - self.dispersion_px(wavelength_min_nm)
-        )
+        span = jnp.abs(self.dispersion_px(high_nm) - self.dispersion_px(low_nm))
         return span + self.psflet_params[0]
 
     def throughput(self, wavelength_nm):
