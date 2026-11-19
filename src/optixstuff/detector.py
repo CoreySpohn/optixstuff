@@ -46,7 +46,9 @@ class AbstractDetector(eqx.Module):
     Noise parameters are per pixel, QE and survival are fractions, and
     ``excess_noise_factor_sq`` is a variance multiplier, at least one.
     Pixel scale, shape and read overlap are static PyTree geometry fields;
-    ``grid`` is the PixelGrid they define.
+    ``grid`` is the PixelGrid they define. ``photon_counting`` is a static flag
+    that selects the Poisson form of ``log_prob``; it requires read noise 0 and
+    excess factor 1.
     Subclasses supply QE; statistics and sampling share the electron contract.
     """
 
@@ -61,6 +63,7 @@ class AbstractDetector(eqx.Module):
     excess_noise_factor_sq: Array = eqx.field(default=1.0, converter=jnp.asarray)
     read_time_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
     overlaps_read: bool = eqx.field(default=False, static=True)
+    photon_counting: bool = eqx.field(default=False, static=True)
 
     def __check_init__(self):
         """Validate host geometry, survival and per-pixel hardware parameters."""
@@ -75,6 +78,11 @@ class AbstractDetector(eqx.Module):
         ):
             _check_range(name, getattr(self, name), 0.0)
         _check_range("excess_noise_factor_sq", self.excess_noise_factor_sq, 1.0)
+        if self.photon_counting:
+            _check_range("read_noise_e_rms", self.read_noise_e_rms, 0.0, 0.0)
+            _check_range(
+                "excess_noise_factor_sq", self.excess_noise_factor_sq, 1.0, 1.0
+            )
 
     @property
     def grid(self) -> PixelGrid:
@@ -167,61 +175,49 @@ class AbstractDetector(eqx.Module):
             return jnp.sum(mean, axis=0), jnp.sum(variance, axis=0)
         return mean, variance
 
-    def log_prob(
-        self,
-        observed: ArrayLike,
-        rates: Rates,
-        plan: FramePlan,
-        *,
-        mask: ArrayLike | None = None,
-    ) -> Array:
-        """Return the log density of an observed frame given expected electron rates.
+    def log_prob(self, observed: ArrayLike, rates: Rates, plan: FramePlan) -> Array:
+        """Return the elementwise log density of an observed frame given electron rates.
 
-        ``observed`` is in electrons with shape ``(*batch, W, *spatial)``, the
-        shape of ``mean_and_variance(rates, plan)`` behind optional leading
-        batch axes. The result sums the per-pixel log densities over the
-        trailing axes of that shape and keeps ``*batch``. ``mask`` (True
-        uses the pixel) broadcasts against the mean. To batch over rates or
-        a detector, ``vmap`` the call. Pixels and bands are independent, as in
-        ``mean_and_variance``, and every term is normalized, constants included.
+        ``observed`` is in electrons and broadcasts against the mean of
+        ``mean_and_variance(rates, plan)``; the result has the broadcast shape.
+        Nothing is masked or summed: the caller masks the pixels it uses and
+        sums them, in the precision it needs. Pixels and bands are independent,
+        as in ``mean_and_variance``, and every term is normalized, constants
+        included. The form is a static fact of the detector, ``photon_counting``,
+        so one form is traced and the density is continuous in every traced
+        hardware parameter.
 
-        Two forms, chosen from the hardware parameters:
-
-        * No read noise and unit excess factor (the photon-counting case, always
-          for ``IdealDetector``): the Poisson pmf of the mean ``lambda`` from
-          ``mean_and_variance``, ``y log(lambda) - lambda - log(y!)``, with
-          ``y`` the count. This is the observation density at low counts and
-          sums to one over ``y = 0, 1, 2, ...``.
-        * Otherwise: the Gaussian density with the mean and variance of
-          ``mean_and_variance``, ``-(y - m)^2 / (2 v) - log(2 pi v) / 2``. This is
-          the moment-matched approximation of the Poisson plus gain plus
-          read-noise draw (the first two moments of ``draw`` are exact); it is
-          the same normalized Gaussian as a per-pixel Gaussian with
-          ``sigma = sqrt(v)``. It is not exact at low counts. The exact
-          Poisson-Gaussian convolution is not summed here.
+        * ``photon_counting`` true (always for ``IdealDetector``): the Poisson
+          pmf of the mean ``lambda``, ``y log(lambda) - lambda - log(y!)``. The
+          observation must be integer counts; a non-integer value is outside the
+          contract and is scored through ``gammaln`` without notice. A zero
+          mean gives 0 for ``y = 0`` and ``-inf`` otherwise.
+        * Otherwise, for every read noise including zero: the Gaussian density
+          with the mean and variance of ``mean_and_variance``,
+          ``-(y - m)^2 / (2 v) - log(2 pi v) / 2``. This is the moment-matched
+          approximation of the Poisson plus gain plus read-noise draw (the first
+          two moments of ``draw`` are exact) and is not exact at low counts.
+          A zero variance gives 0 where ``y`` equals the mean and ``-inf``
+          elsewhere.
         """
         mean, variance = self.mean_and_variance(rates, plan)
         observed = jnp.asarray(observed, dtype=mean.dtype)
-        poisson = (self.read_noise_e_rms == 0) & (self.excess_noise_factor_sq == 1)
-        # The branch not taken is evaluated on safe values so gradients stay finite.
-        safe_variance = jnp.where(poisson | (variance <= 0), 1.0, variance)
+        if self.photon_counting:
+            # Safe values keep the gradient finite where the mean is zero.
+            positive = mean > 0
+            log_mean = jnp.log(jnp.where(positive, mean, 1.0))
+            count_term = jnp.where(
+                positive,
+                observed * log_mean,
+                jnp.where(observed == 0, 0.0, -jnp.inf),
+            )
+            return count_term - mean - jsp.gammaln(observed + 1.0)
+        positive = variance > 0
+        safe_variance = jnp.where(positive, variance, 1.0)
         gauss = -0.5 * (observed - mean) ** 2 / safe_variance - 0.5 * jnp.log(
             2.0 * jnp.pi * safe_variance
         )
-        safe_mean = jnp.where(poisson, mean, 1.0)
-        safe_obs = jnp.where(poisson, observed, 0.0)
-        positive = safe_mean > 0
-        log_mean = jnp.log(jnp.where(positive, safe_mean, 1.0))
-        count_term = jnp.where(
-            positive,
-            safe_obs * log_mean,
-            jnp.where(safe_obs == 0, 0.0, -jnp.inf),
-        )
-        pmf = count_term - safe_mean - jsp.gammaln(safe_obs + 1.0)
-        terms = jnp.where(poisson, pmf, gauss)
-        if mask is not None:
-            terms = jnp.where(jnp.broadcast_to(mask, terms.shape), terms, 0.0)
-        return jnp.sum(terms, axis=tuple(range(-mean.ndim, 0)))
+        return jnp.where(positive, gauss, jnp.where(observed == mean, 0.0, -jnp.inf))
 
     def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Sample independent pixels/bands, shape ``(W, *spatial)``, n_pix=1.
@@ -292,6 +288,7 @@ class IdealDetector(AbstractDetector):
             survival_fraction=survival_fraction,
             read_time_s=read_time_s,
             overlaps_read=overlaps_read,
+            photon_counting=True,
         )
 
     def spectral_breaks_nm(self) -> np.ndarray:
@@ -338,6 +335,7 @@ class Detector(AbstractDetector):
         excess_noise_factor_sq: ArrayLike = 1.0,
         read_time_s: ArrayLike = 0.0,
         overlaps_read: bool = False,
+        photon_counting: bool = False,
     ):
         """Create hardware with constant ``qe`` or a measured ``qe_curve``.
 
@@ -360,6 +358,7 @@ class Detector(AbstractDetector):
             excess_noise_factor_sq=excess_noise_factor_sq,
             read_time_s=read_time_s,
             overlaps_read=overlaps_read,
+            photon_counting=photon_counting,
         )
 
     def __check_init__(self):
