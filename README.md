@@ -63,6 +63,10 @@ Primaries expose `diameter("circumscribed")`, `diameter("inscribed")`, and
 `collecting_area_m2`. Build a lambda/D frame with `primary.frame(500.0)`.
 `SimplePrimary` takes both diameters and collecting area as keyword arguments;
 `SegmentedPrimary` derives them from segment size, gap, and ring count.
+`OpticalPath` raises `ValueError` when its primary's diameter differs from the
+diameter of the coronagraph's lambda/D frame, so the tables and the collecting
+area describe one telescope. A yippy `Coronagraph` carries the matching
+`primary`.
 
 Coronagraph images use `hwoutils.grids.Image` and an explicit target `PixelGrid`.
 Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
@@ -158,7 +162,3 @@ flowchart TB
 ```bash
 pip install optixstuff
 ```
-
-## Status
-
-This package is in early development (pre-v0.1.0).
