@@ -9,6 +9,8 @@ from jaxtyping import Array
 
 
 class _Rates(eqx.Module):
+    """Six additive source contributions held as named array fields."""
+
     planet: Array = eqx.field(kw_only=True, default=0.0, converter=jnp.asarray)
     star_leakage: Array = eqx.field(kw_only=True, default=0.0, converter=jnp.asarray)
     local_zodi: Array = eqx.field(kw_only=True, default=0.0, converter=jnp.asarray)
@@ -29,6 +31,8 @@ class _Rates(eqx.Module):
 
 
 class _BandRates(_Rates):
+    """Source contributions with one leading entry per band."""
+
     bands: tuple[Band, ...] = eqx.field(static=True, converter=tuple)
 
     def __check_init__(self):
@@ -89,7 +93,7 @@ class PhotonRates(_Rates):
     def zeros(
         cls, quadrature: Quadrature, spatial_shape: tuple[int, ...] = (), *, dtype=None
     ) -> "PhotonRates":
-        """Create six zero integrands with full shape (W, Q, *spatial_shape)."""
+        """Create six zero integrands with full shape ``(W, Q, *spatial_shape)``."""
         shape = (*quadrature.nodes_nm.shape, *spatial_shape)
         return cls(
             quadrature,

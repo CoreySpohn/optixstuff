@@ -194,20 +194,21 @@ class LinearSpeckleField(AbstractSpeckleField):
 
     @abc.abstractmethod
     def coefficients(self, time_d: ArrayLike) -> Array:
-        """Return eps, shape (*time_shape, n_modes), at absolute scene days.
+        """Return eps, shape ``(*time_shape, n_modes)``, at absolute scene days.
 
         The implementation forms elapsed time time_d - epoch_d. Coefficient
         units are those used to define G (for example nm of wavefront error).
         """
 
     def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
-        """Evaluate [2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy.
+        """Evaluate ``[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy``.
 
         Positive wavelength_nm may be scalar or an array, including (W, Q)
-        quadrature nodes. Output shape is (*wavelength_shape, *time_shape,
-        ny, nx): wavelength and time arrays form an outer product. Leading
-        axes are ('band', 'quadrature') for (W, Q), ('wavelength',) for a
-        vector, otherwise wavelength_0, ...; times use time_0, ... .
+        quadrature nodes. Output shape is
+        ``(*wavelength_shape, *time_shape, ny, nx)``: wavelength and time
+        arrays form an outer product. Leading axes are ('band', 'quadrature')
+        for (W, Q), ('wavelength',) for a vector, otherwise wavelength_0, ...;
+        times use time_0, ... .
         The cross-term form avoids cancellation of nearly equal intensities.
         """
         wavelengths = jnp.asarray(wavelength_nm)
@@ -241,7 +242,7 @@ class LinearSpeckleField(AbstractSpeckleField):
 
         Quadrature.weights_nm sum to the represented band width in nm.
         Dividing by that nonzero sum gives a uniform-wavelength band mean,
-        in per-pixel stellar flux fractions, shape (W, *time_shape, ny, nx).
+        in per-pixel stellar flux fractions, shape ``(W, *time_shape, ny, nx)``.
         Every node is evaluated; a quadratic law at one band-center
         wavelength cannot replace this integral.
 
