@@ -29,7 +29,7 @@ from optixstuff.grids import (
 )
 from optixstuff.radial import radial_profile
 
-from .apertures import Circular, HalfMaximum, RecordRule
+from .apertures import ApertureRule, Circular, HalfMaximum
 
 CORE_OVERSAMPLE = 10
 PEAK_SEARCH_RADIUS_LOD = 1.0
@@ -1146,7 +1146,7 @@ class PerformanceCurves(eqx.Module):
 
     ``separation_lod``: nonnegative increasing sample offsets, shape (S,).
     ``frame``: wavelength and circumscribed/inscribed diameter defining lambda/D.
-    ``rule``: the static, hashable aperture or matched weighting rule.
+    ``rule``: the static, hashable aperture rule.
     ``throughput``: weighted fraction of unocculted planet flux, tau.
     ``throughput_variance``: planet flux fraction integrated with squared weights.
     ``core_area_lod2``: pixel area times the sum of weights, A.
@@ -1162,7 +1162,7 @@ class PerformanceCurves(eqx.Module):
     exists, the first positive-throughput separation (NaN for an all-zero curve).
     ``data_extent_lod``: minimum array half-width, not an outer working angle.
     ``leakage_rule``: aperture_mean or azimuthal_ring_mean, identifying the density.
-    ``stellar_diameter``: optional provenance, a diameter in the stellar lod frame.
+    ``stellar_diameter_lod``: optional provenance, a diameter in the stellar lod frame.
     ``interpolation``: immutable quantity-to-space mapping. PCHIP within the
     sampled interval and linear end-segment tails in that same space. Exact
     zeros use a 1e-300 floor for log interpolation and remain zero at their knots.
@@ -1179,7 +1179,7 @@ class PerformanceCurves(eqx.Module):
 
     separation_lod: np.ndarray
     frame: Frame = eqx.field(static=True)
-    rule: RecordRule = eqx.field(static=True)
+    rule: ApertureRule = eqx.field(static=True)
     throughput: np.ndarray
     throughput_variance: np.ndarray
     core_area_lod2: np.ndarray
@@ -1192,7 +1192,7 @@ class PerformanceCurves(eqx.Module):
     iwa_lod: float
     data_extent_lod: float = eqx.field(static=True)
     leakage_rule: str = eqx.field(static=True)
-    stellar_diameter: float | None = eqx.field(static=True)
+    stellar_diameter_lod: float | None = eqx.field(static=True)
     _fits: dict
 
     interpolation: ClassVar = MappingProxyType(
@@ -1222,7 +1222,7 @@ class PerformanceCurves(eqx.Module):
         iwa_lod,
         data_extent_lod,
         leakage_rule="aperture_mean",
-        stellar_diameter=None,
+        stellar_diameter_lod=None,
         *,
         throughput_variance,
         core_area_variance_lod2,
@@ -1239,7 +1239,10 @@ class PerformanceCurves(eqx.Module):
         self.separation_lod = x
         self.frame, self.rule = frame, rule
         self.iwa_lod, self.data_extent_lod = float(iwa_lod), float(data_extent_lod)
-        self.leakage_rule, self.stellar_diameter = leakage_rule, stellar_diameter
+        self.leakage_rule, self.stellar_diameter_lod = (
+            leakage_rule,
+            stellar_diameter_lod,
+        )
         values = dict(
             throughput=throughput,
             throughput_variance=throughput_variance,
@@ -1301,7 +1304,7 @@ def performance_curves(
     separations_lod=None,
     source_positions_lod=None,
     leakage_rule="aperture_mean",
-    stellar_diameter=None,
+    stellar_diameter_lod=None,
 ) -> PerformanceCurves:
     """Tabulate one aperture rule on one axis.
 
@@ -1317,7 +1320,7 @@ def performance_curves(
     Circular's ``centre`` chooses the supplied source position (default) or
     its refined local peak; every field, including IWA, uses that same rule.
 
-    ``stellar_diameter`` records the provenance of the already evaluated map;
+    ``stellar_diameter_lod`` records the provenance of the already evaluated map;
     it does not broaden or reevaluate that map. Geometric rules resolve
     coverage at CORE_OVERSAMPLE subpixels per side.
     """
@@ -1328,7 +1331,7 @@ def performance_curves(
         separations_lod=separations_lod,
         source_positions_lod=source_positions_lod,
         leakage_rule=leakage_rule,
-        stellar_diameter=stellar_diameter,
+        stellar_diameter_lod=stellar_diameter_lod,
     )
 
 
@@ -1340,7 +1343,7 @@ def _performance_curves(
     separations_lod=None,
     source_positions_lod=None,
     leakage_rule="aperture_mean",
-    stellar_diameter=None,
+    stellar_diameter_lod=None,
     oversample=CORE_OVERSAMPLE,
 ):
 
@@ -1419,7 +1422,7 @@ def _performance_curves(
         _iwa(separations, tau),
         min(grid.shape) * grid.step / 2,
         leakage_rule,
-        stellar_diameter,
+        stellar_diameter_lod,
         throughput_variance=tau,
         core_area_variance_lod2=area,
         leakage_fraction_variance=leakage,

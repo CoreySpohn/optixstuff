@@ -63,4 +63,4 @@ class HalfMaximum:
         return _rule_weights(self, psf, source_position, oversample)
 
 
-RecordRule = Circular | HalfMaximum
+ApertureRule = Circular | HalfMaximum

@@ -166,3 +166,13 @@ def test_exposure_is_a_record_of_one_observation():
         is_leaf=lambda x: x is None,
     )
     assert float(planned.plan.n_frames) == 6.0
+
+
+def test_documented_host_surface_is_exported():
+    """The performance-record builder and the grid helper are public."""
+    from optixstuff.coronagraph import on_grid
+    from optixstuff.performance import performance_curves
+
+    assert "performance_curves" in ox.__all__
+    assert ox.performance_curves is performance_curves
+    assert callable(on_grid)

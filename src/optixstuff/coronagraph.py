@@ -1,4 +1,4 @@
-"""Coronagraph performance records and images on explicit shared grids."""
+"""The coronagraph slot and its image products on explicit shared grids."""
 
 import abc
 from dataclasses import replace
@@ -22,8 +22,10 @@ from optixstuff.grids import (
 from optixstuff.spectral import Band, spectral_breaks
 
 
-def _on_grid(image: Image, grid: PixelGrid) -> Image:
-    """Resample using the product's frame; reconcile different lod frames via sky.
+def on_grid(image: Image, grid: PixelGrid) -> Image:
+    """Put a native product on a requested grid.
+
+    Resample using the product's frame; reconcile different lod frames via sky.
 
     Measured cell integrals with piecewise-constant reconstruction collect by
     footprint. Optical point samples integrate their declared reconstruction,
@@ -107,38 +109,6 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
     def at_wavelength(self, wavelength_nm) -> ProductGrids:
         """Return the native product grids without rendering images."""
 
-    def point_energy_fraction(self, x_lod, y_lod):
-        """Sum the native PSF of each point source, returning NaN outside support."""
-        x, y = jnp.broadcast_arrays(jnp.asarray(x_lod), jnp.asarray(y_lod))
-        psfs = self.source_psfs(
-            self.frame.reference_wavelength_nm, x.ravel(), y.ravel()
-        )
-        energy = jnp.sum(psfs.image.integrated().data, axis=(-2, -1))
-        return jnp.where(psfs.valid, energy, jnp.nan).reshape(x.shape)
-
-    def aperture_samples(self, wavelength_nm, separations_lod):
-        """Native PSFs and positions used to calibrate the aperture record."""
-        psfs = self.source_psfs(
-            wavelength_nm, separations_lod, jnp.zeros_like(separations_lod)
-        )
-        return tuple(
-            (
-                replace(
-                    psfs.image, data=jnp.where(valid, data, jnp.nan), leading_axes=()
-                ),
-                (sep, 0.0),
-            )
-            for data, valid, sep in zip(
-                psfs.image.data, psfs.valid, separations_lod, strict=True
-            )
-        )
-
-    def separation_map(self):
-        """Native off-axis pixel radii in lambda/D, including the full grid basis."""
-        return self.at_wavelength(
-            self.frame.reference_wavelength_nm
-        ).source_grid.radius()
-
     def on_axis_psf(self, wavelength_nm, grid: PixelGrid) -> Image:
         """Point-star cell-integrated stellar flux fraction on grid, shape (ny,nx)."""
         return self.stellar_map(wavelength_nm, 0.0, grid=grid)
@@ -154,13 +124,9 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
             leading_axes=(),
         )
 
-    def stellar_frame(self, wavelength_nm) -> Frame:
-        """Native stellar-diameter frame from the selected product metadata."""
-        return self.at_wavelength(wavelength_nm).stellar_grid.frame
-
     @abc.abstractmethod
     def stellar_map(
-        self, wavelength_nm, stellar_diam_lod, *, grid: PixelGrid | None = None
+        self, wavelength_nm, stellar_diameter_lod, *, grid: PixelGrid | None = None
     ) -> Image:
         """Finite-star flux fractions; table grid=None retains native samples."""
 
@@ -194,7 +160,7 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
     reconstruction needed for aperture measurements and avoids integrating
     twice when a consumer subsequently samples onto detector pixels.
 
-    Tables with a separate stellar grid expose its frame via stellar_frame.
+    Tables with a separate stellar grid declare it in at_wavelength.
     """
 
     sky_trans: AbstractVar[Image]
@@ -215,17 +181,17 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
         return self.grid.shape
 
     @abc.abstractmethod
-    def _native_stellar_map(self, stellar_diam_lod) -> Image:
+    def _native_stellar_map(self, stellar_diameter_lod) -> Image:
         """Supply native stellar samples with their stellar product grid."""
 
     @abc.abstractmethod
     def _native_source_psfs(self, x_lod, y_lod) -> SourcePSFs:
         """Supply native PSFs with their source admission mask."""
 
-    def stellar_map(self, wavelength_nm, stellar_diam_lod, *, grid=None):
+    def stellar_map(self, wavelength_nm, stellar_diameter_lod, *, grid=None):
         """Per-pixel stellar fraction on grid, using the stellar product's frame."""
-        image = self._native_stellar_map(stellar_diam_lod)
-        return image if grid is None else _on_grid(image, grid)
+        image = self._native_stellar_map(stellar_diameter_lod)
+        return image if grid is None else on_grid(image, grid)
 
     def source_psfs(self, wavelength_nm, x_lod, y_lod, *, grid=None):
         """Per-pixel source fractions on grid; x indexes columns, y indexes rows."""
@@ -233,12 +199,12 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
         return (
             result
             if grid is None
-            else SourcePSFs(_on_grid(result.image, grid), result.valid)
+            else SourcePSFs(on_grid(result.image, grid), result.valid)
         )
 
     def uniform_sky_map(self, wavelength_nm, *, grid):
         """Sample dimensionless transmission without multiplying by pixel area."""
-        return _on_grid(self.sky_trans, grid)
+        return on_grid(self.sky_trans, grid)
 
 
 class MultiBandCoronagraph(AbstractCoronagraph):

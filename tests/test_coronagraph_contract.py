@@ -63,9 +63,6 @@ def test_image_contract(table):
             assert actual.measure == expected.measure
             assert actual.quantity == expected.quantity
             np.testing.assert_array_equal(actual.data, expected.data)
-    np.testing.assert_allclose(
-        table.point_energy_fraction(1.0, 0.5), native.image.data.sum(), rtol=1e-6
-    )
 
 
 @pytest.mark.parametrize("ratio", [0.5, 1.7])
@@ -120,12 +117,6 @@ def test_slot_is_the_image_capability(coro):
         assert not hasattr(coro, name)
 
 
-def test_separation_map(table):
-    """The native separation map is the radius of every pixel centre."""
-    radius = jnp.hypot(*table.grid.coordinates())
-    np.testing.assert_array_equal(table.separation_map(), radius)
-
-
 def test_rule_records_and_bands(table):
     """Exact band bounds and record identity.
 
@@ -161,7 +152,7 @@ def test_capability_selection(table):
     assert model.band(565.0) is performance
     assert model.band(800.0).frame == performance.frame
     assert (
-        model.band(500.0).stellar_frame(500.0)
+        model.band(500.0).at_wavelength(500.0).stellar_grid.frame
         == table.at_wavelength(500.0).stellar_grid.frame
     )
     assert isinstance(table, ox.AbstractImagingCoronagraph)

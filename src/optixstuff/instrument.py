@@ -26,14 +26,14 @@ class Instrument(eqx.Module):
 
     Bundles a primary mirror, ordered chain of attenuating elements,
     a coronagraph, and a detector into a single configuration object.
-    This is the interface passed to simulators (coronagraphoto),
-    exposure time calculators (jaxEDITH), and IFS instruments (coronachrome).
+    This is the interface passed to simulators (coronagraphoto) and IFS
+    instruments (coronachrome).
 
     Args:
         primary: Primary mirror description.
         attenuating_elements: Ordered tuple of throughput elements
             between the primary and coronagraph (mirrors, filters, etc.).
-        coronagraph: Coronagraph performance model.
+        coronagraph: Coronagraph slot (the image capability).
         detector: Focal-plane detector model.
         disperser: Optional IFS disperser descriptor; None for imaging mode.
         n_channels: Number of parallel identical optical-path copies

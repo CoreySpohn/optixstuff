@@ -31,7 +31,11 @@ from optixstuff.optical_elements import (
     ConstantThroughput,
     TransmissiveElement,
 )
-from optixstuff.performance import PerformanceCurves, SampledProfile
+from optixstuff.performance import (
+    PerformanceCurves,
+    SampledProfile,
+    performance_curves,
+)
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.psflet_pack import PsfletPack, load_psflet_pack, save_psflet_pack
 from optixstuff.rates import Rates
@@ -80,5 +84,6 @@ __all__ = [
     "__version__",
     "frames_for_time",
     "load_psflet_pack",
+    "performance_curves",
     "save_psflet_pack",
 ]

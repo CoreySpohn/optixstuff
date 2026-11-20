@@ -200,8 +200,7 @@ Select a band with `band(wavelength_nm)`. An imaging band's
 frames. The target grid defines the output units, frame and pixel centres.
 
 `source_psfs` returns an image and a validity flag for each source.
-`stellar_map` returns the finite-star image. `point_energy_fraction(x_lod, y_lod)`
-sums admitted native point-source flux, while `uniform_sky_map` describes
+`stellar_map` returns the finite-star image, and `uniform_sky_map` describes
 extended illumination.
 A scene-capable band provides `render_scene(scene, wavelength_nm, grid=target)`.
 The result includes a validity flag covering every illuminated position.
@@ -224,7 +223,6 @@ read. `leakage_density_lod2` is already per square lambda/D; no pixel-area
 correction belongs in consumers. Post-processing may divide that density, or raw
 contrast, by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the
 residual. No noise floor is a coronagraph property.
-`separation_map` is a shared projection on each imaging band's native source grid.
 For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
 return native samples and product metadata. An explicit grid requests pixel
 integration, including at native pitch.

@@ -113,9 +113,9 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
                 return record
         raise ValueError("No prepared record for this rule and leakage_rule")
 
-    def _native_stellar_map(self, stellar_diam_lod):
+    def _native_stellar_map(self, stellar_diameter_lod):
         return Image(
-            jnp.full(self.grid.shape, 1e-8) * (1 + stellar_diam_lod**2),
+            jnp.full(self.grid.shape, 1e-8) * (1 + stellar_diameter_lod**2),
             self.grid,
             (),
             Measure.integral(),
