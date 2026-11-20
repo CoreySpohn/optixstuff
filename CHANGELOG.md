@@ -1,5 +1,17 @@
 # Changelog
 
+## [6.1.0](https://github.com/CoreySpohn/optixstuff/compare/v6.0.0...v6.1.0) (2026-11-20)
+
+
+### Features
+
+* **instrument:** keep OpticalPath as a deprecated alias of Instrument ([3966497](https://github.com/CoreySpohn/optixstuff/commit/3966497038ec8483c4fdb7f041c5b50a2a67bc29))
+
+
+### Miscellaneous Chores
+
+* release 6.1.0 ([9875570](https://github.com/CoreySpohn/optixstuff/commit/9875570bcffad65a04eb0caed8f082d7450320ac))
+
 ## [6.0.0](https://github.com/CoreySpohn/optixstuff/compare/v5.0.0...v6.0.0) (2026-11-19)
 
 
