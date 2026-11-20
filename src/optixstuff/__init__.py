@@ -32,7 +32,7 @@ from optixstuff.detector import (
 )
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
 from optixstuff.exposure import Exposure, FramePlan, frames_for_time
-from optixstuff.instrument import Instrument
+from optixstuff.instrument import Instrument, OpticalPath
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -73,6 +73,7 @@ __all__ = [
     "Matched",
     "MatchedStamps",
     "MultiBandCoronagraph",
+    "OpticalPath",
     "PerformanceCurves",
     "PhotonRates",
     "PreparedAperture",
