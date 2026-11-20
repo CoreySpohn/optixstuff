@@ -124,7 +124,3 @@ class Instrument(eqx.Module):
         if self.speckle is not None:
             lines.append(indent("speckle: " + repr(self.speckle)))
         return "\n".join(lines)
-
-
-OpticalPath = Instrument
-"""Deprecated alias of `Instrument`, kept for code written against the old name."""
