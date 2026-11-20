@@ -51,7 +51,7 @@ class TestConstantThroughputElement:
         assert jnp.allclose(result, 0.8 * jnp.ones((10, 10)))
 
 
-class TestOpticalPath:
+class TestInstrument:
     def test_transmission_elements_compose(self, simple_primary, simple_detector):
         """Fails if held responses lose knots, attenuation or parameter gradients.
 
@@ -60,7 +60,7 @@ class TestOpticalPath:
         """
         with jax.enable_x64():
             element = ox.TransmissiveElement(Transmission([500, 600], [0.2, 0.8]))
-            path = ox.OpticalPath(
+            path = ox.Instrument(
                 primary=simple_primary,
                 attenuating_elements=(element, ox.ConstantThroughput(0.4)),
                 coronagraph=None,
@@ -92,7 +92,7 @@ class TestOpticalPath:
 
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,
@@ -103,7 +103,7 @@ class TestOpticalPath:
     def test_system_throughput_two_elements(self, simple_primary, simple_detector):
         el1 = ox.ConstantThroughput(throughput=0.8)
         el2 = ox.ConstantThroughput(throughput=0.9)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el1, el2),
             coronagraph=None,
@@ -115,7 +115,7 @@ class TestOpticalPath:
         self, simple_primary, simple_detector
     ):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,
@@ -128,7 +128,7 @@ class TestOpticalPath:
         self, simple_primary, simple_detector
     ):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(el,),
             coronagraph=None,
@@ -138,3 +138,33 @@ class TestOpticalPath:
         )
         assert path.n_channels == 2.0
         assert path.npix_multiplier == 3.0
+
+
+def test_exposure_is_a_record_of_one_observation():
+    """Fails if Exposure loses a field, its ecliptic defaults, or its traced roll.
+
+    The record is a pytree whose roll is an array leaf that vmap can map, and
+    the plan may be absent.
+    """
+    from hwoutils.spectral import Band, Quadrature
+
+    quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
+    exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)
+    assert exposure.plan is None
+    assert exposure.roll_deg == 15.0
+    assert (exposure.ecliptic_latitude_deg, exposure.solar_longitude_deg) == (
+        0.0,
+        135.0,
+    )
+    assert exposure.roll_deg in jax.tree.leaves(exposure)
+    rolled = jax.vmap(
+        lambda r: eqx.tree_at(lambda e: e.roll_deg, exposure, r).roll_deg * 2.0
+    )(jnp.array([1.0, 2.0]))
+    assert rolled.tolist() == [2.0, 4.0]
+    planned = eqx.tree_at(
+        lambda e: e.plan,
+        exposure,
+        ox.frames_for_time(60.0, 10.0),
+        is_leaf=lambda x: x is None,
+    )
+    assert float(planned.plan.n_frames) == 6.0

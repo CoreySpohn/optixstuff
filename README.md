@@ -23,7 +23,7 @@ truth for the hardware configuration that downstream tools consume.
 (2D image simulation), [coronachrome](https://github.com/CoreySpohn/coronachrome)
 (lenslet-IFS dispersion + spectral extraction), and
 [jaxEDITH](https://github.com/CoreySpohn/jaxedith)
-(exposure-time and yield calculations) import the same `OpticalPath` class and
+(exposure-time and yield calculations) import the same `Instrument` class and
 the same detector / throughput / primary / disperser types from optixstuff.
 Change a value here and every downstream tool picks it up on the next import.
 
@@ -36,7 +36,7 @@ Change a value here and every downstream tool picks it up on the next import.
 - **Not a scene model.** Stars, planets, disks, and zodi live in
   [skyscapes](https://github.com/CoreySpohn/skyscapes).
 - **Not a simulator.** Downstream tools (coronagraphoto, coronachrome, jaxEDITH)
-  consume an `OpticalPath` to produce images, dispersed IFS frames, or count rates.
+  consume an `Instrument` to produce images, dispersed IFS frames, or count rates.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Built on [JAX](https://github.com/google/jax) and
   hex segment geometry for a diffraction backend), `ConstantThroughput`,
   `IdealDetector`, `Detector` (with optional wavelength-dependent QE),
   `LensletDisperser`
-- **Container** - `OpticalPath`, a composable hardware configuration passed to all
+- **Container** - `Instrument`, a composable hardware configuration passed to all
   simulators
 
 Optical elements and coronagraphs accept fidelity axes - **wavelength**, **position**, and
@@ -145,7 +145,7 @@ for noise parameters, gain statistics, and readout overlap.
 flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / OpticalPath<br/>Throughput chains / QE / Noise rates"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
     coronachrome["<b>coronachrome</b><br/>Lenslet-IFS dispersion<br/>Spectral extraction"]

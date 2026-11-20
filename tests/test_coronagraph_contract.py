@@ -233,7 +233,7 @@ def test_prepare_fixed_angle_preserves_centre_and_reference():
     """The exact radii at 480, 600 and 720 nm keep the requested peak centre."""
     rules = tuple(Circular(radius, centre="peak") for radius in (0.75, 0.6, 0.5))
     coro = synthetic_coronagraph(n=8, rules=rules)
-    path = ox.OpticalPath.from_default_setup(coro, detector_shape=(4, 4))
+    path = ox.Instrument.from_default_setup(coro, detector_shape=(4, 4))
     band = Band(450.0, 750.0)
     q = Quadrature((band,), jnp.array([[480.0, 600.0, 720.0]]), jnp.ones((1, 3)))
 
@@ -249,7 +249,7 @@ def test_prepare_fixed_angle_preserves_centre_and_reference():
 @pytest.mark.parametrize("rule", [ox.HalfMaximum(), ox.Matched()])
 def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
     """A shifted reference requires template dilation only for table models."""
-    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
     band = Band(499.0, 501.0)
     q = Quadrature((band,), jnp.array([[500.0]]), jnp.ones((1, 1)))
     with pytest.raises(NotImplementedError, match="frozen reference"):
@@ -259,7 +259,7 @@ def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
         # A calibration/primary mismatch within the admitted tolerance still
         # uses the primary's physical plate scale in both solid angles.
         diameter = table.grid.frame.diameter_m * (1 + 5e-7)
-        matched_path = ox.OpticalPath.from_default_setup(
+        matched_path = ox.Instrument.from_default_setup(
             table, circumscribed_diameter_m=diameter, detector_shape=(4, 4)
         )
         (reference,) = ox.prepare_aperture(matched_path, q, rule=rule).references
@@ -323,7 +323,7 @@ def test_jit_and_gradient(table):
     # to (1 + diameter**2). With 2 uniform counts/s the entire inverse
     # variance profile, including its interpolated throughput, scales as
     # 1/(3 + diameter**2).
-    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
     band = Band(499.5, 500.5)
     aperture = ox.prepare_aperture(
         path, Quadrature.build((band,), path, order=1), rule=ox.Matched()
@@ -380,7 +380,7 @@ def test_scalar_sky_and_leakage_are_annular_means():
     differs by about 10 percent, so this checks the reduction, not the grid.
     """
     table = _CosineFieldTable()
-    path = ox.OpticalPath.from_default_setup(table, detector_shape=(4, 4))
+    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
     q = Quadrature.build((Band(499.5, 500.5),), path, order=1)
     aperture = ox.prepare_aperture(path, q, rule=Circular(0.7))
     node = aperture.references[0].nodes[0]

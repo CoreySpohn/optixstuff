@@ -31,14 +31,14 @@ from optixstuff.detector import (
     IdealDetector,
 )
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
-from optixstuff.exposure import FramePlan, frames_for_time
+from optixstuff.exposure import Exposure, FramePlan, frames_for_time
+from optixstuff.instrument import Instrument
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
     ConstantThroughput,
     TransmissiveElement,
 )
-from optixstuff.optical_path import OpticalPath
 from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.rates import ElectronRates, IntegratedPhotonRates, PhotonRates
@@ -61,17 +61,18 @@ __all__ = [
     "ConstantThroughput",
     "Detector",
     "ElectronRates",
+    "Exposure",
     "FocalResponse",
     "FramePlan",
     "HalfMaximum",
     "IdealDetector",
+    "Instrument",
     "IntegratedPhotonRates",
     "LensletDisperser",
     "LinearSpeckleField",
     "Matched",
     "MatchedStamps",
     "MultiBandCoronagraph",
-    "OpticalPath",
     "PerformanceCurves",
     "PhotonRates",
     "PreparedAperture",

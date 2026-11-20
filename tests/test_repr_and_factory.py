@@ -1,4 +1,4 @@
-"""Tests for ``__repr__`` methods and ``OpticalPath.from_default_setup``."""
+"""Tests for ``__repr__`` methods and ``Instrument.from_default_setup``."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class TestReprs:
         assert "throughput=0.8" in s
 
     def test_optical_path_is_tree_shaped(self, simple_primary, simple_detector):
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(
                 ox.ConstantThroughput(throughput=0.9, name="m1"),
@@ -58,7 +58,7 @@ class TestReprs:
         )
         s = repr(path)
         lines = s.split("\n")
-        assert lines[0].startswith("OpticalPath(")
+        assert lines[0].startswith("Instrument(")
         # Each child indented.
         assert any(line.startswith("  primary:") for line in lines)
         assert any(line.startswith("  attenuating_elements:") for line in lines)
@@ -70,7 +70,7 @@ class TestReprs:
     def test_optical_path_empty_attenuating_chain(
         self, simple_primary, simple_detector
     ):
-        path = ox.OpticalPath(
+        path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(),
             coronagraph=scalar_coronagraph(),
@@ -81,11 +81,11 @@ class TestReprs:
 
 
 class TestFromDefaultSetup:
-    """Verify the convenience factory builds a usable OpticalPath."""
+    """Verify the convenience factory builds a usable Instrument."""
 
     def test_returns_optical_path_with_defaults(self):
-        path = ox.OpticalPath.from_default_setup(scalar_coronagraph())
-        assert isinstance(path, ox.OpticalPath)
+        path = ox.Instrument.from_default_setup(scalar_coronagraph())
+        assert isinstance(path, ox.Instrument)
         assert isinstance(path.primary, ox.SimplePrimary)
         assert isinstance(path.detector, ox.Detector)
         assert len(path.attenuating_elements) == 1
@@ -100,16 +100,16 @@ class TestFromDefaultSetup:
     def test_kwargs_override(self):
         # A primary that disagrees with the coronagraph's lambda/D frame raises.
         with pytest.raises(ValueError, match="frame"):
-            ox.OpticalPath.from_default_setup(
+            ox.Instrument.from_default_setup(
                 scalar_coronagraph(), circumscribed_diameter_m=8.0
             )
         assert (
-            ox.OpticalPath.from_default_setup(scalar_coronagraph()).primary.diameter(
+            ox.Instrument.from_default_setup(scalar_coronagraph()).primary.diameter(
                 "circumscribed"
             )
             == 6.0
         )
-        path = ox.OpticalPath.from_default_setup(
+        path = ox.Instrument.from_default_setup(
             scalar_coronagraph(8.0),
             circumscribed_diameter_m=8.0,
             obscuration=0.1,
@@ -136,12 +136,12 @@ class TestFromDefaultSetup:
 
     def test_accepts_coronagraph_instance(self):
         coro = scalar_coronagraph()
-        path = ox.OpticalPath.from_default_setup(coro)
+        path = ox.Instrument.from_default_setup(coro)
         # Same object reused, no copy/wrap.
         assert path.coronagraph is coro
 
     def test_path_is_a_pytree(self):
-        path = ox.OpticalPath.from_default_setup(scalar_coronagraph())
+        path = ox.Instrument.from_default_setup(scalar_coronagraph())
         # eqx.tree_at can walk it (sanity check that nothing is non-pytree).
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None

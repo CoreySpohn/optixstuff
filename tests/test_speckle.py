@@ -344,8 +344,8 @@ def test_construction_and_optical_path(linear_speckle):
     with pytest.raises(ValueError, match="epoch_d"):
         replace(field, epoch_d=np.inf)
     assert isinstance(field, SinusoidalSpeckle)
-    path = ox.OpticalPath.from_default_setup(scalar_coronagraph(), speckle=field)
+    path = ox.Instrument.from_default_setup(scalar_coronagraph(), speckle=field)
     assert path.speckle is field
     assert any(line.startswith("  speckle:") for line in repr(path).splitlines())
-    default = ox.OpticalPath.from_default_setup(scalar_coronagraph())
+    default = ox.Instrument.from_default_setup(scalar_coronagraph())
     assert default.speckle is None and "speckle:" not in repr(default)

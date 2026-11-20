@@ -20,7 +20,7 @@ from optixstuff.coronagraph import (
     AbstractCoronagraph,
     AbstractImagingCoronagraph,
 )
-from optixstuff.optical_path import OpticalPath
+from optixstuff.instrument import Instrument
 from optixstuff.performance import (
     PerformanceCurves,
     SampledProfile,
@@ -388,7 +388,7 @@ class PreparedAperture(eqx.Module):
 
 
 def prepare_aperture(
-    optical_path: OpticalPath,
+    instrument: Instrument,
     quadrature: Quadrature,
     *,
     rule: ApertureRule = DEFAULT_APERTURE_RULE,
@@ -406,8 +406,8 @@ def prepare_aperture(
     require dilation of the frozen reference aperture or template.
     """
     waves = np.asarray(quadrature.nodes_nm)
-    coro = optical_path.coronagraph
-    primary = optical_path.primary
+    coro = instrument.coronagraph
+    primary = instrument.primary
     references = []
     for band, row, node_waves in zip(
         quadrature.bands, waves, quadrature.nodes_nm, strict=True
