@@ -1,18 +1,10 @@
 """optixstuff -- Hardware abstractions for the HWO simulation suite."""
 
 from optixstuff._version import __version__
-from optixstuff.aperture_binding import (
-    MatchedStamps,
-    PreparedAperture,
-    matched_moments,
-    prepare_aperture,
-)
 from optixstuff.apertures import (
     DEFAULT_APERTURE_RULE,
-    ApertureRule,
     Circular,
     HalfMaximum,
-    Matched,
 )
 from optixstuff.coronagraph import (
     AbstractCoronagraph,
@@ -21,7 +13,6 @@ from optixstuff.coronagraph import (
     AbstractTableCoronagraph,
     MultiBandCoronagraph,
     ProductGrids,
-    ScalarCoronagraph,
     SceneRender,
     SourcePSFs,
 )
@@ -59,7 +50,6 @@ __all__ = [
     "AbstractSpeckleField",
     "AbstractTableCoronagraph",
     "AbstractUniformElement",
-    "ApertureRule",
     "Band",
     "Circular",
     "ConstantThroughput",
@@ -73,19 +63,15 @@ __all__ = [
     "Instrument",
     "LensletDisperser",
     "LinearSpeckleField",
-    "Matched",
-    "MatchedStamps",
     "Measure",
     "MultiBandCoronagraph",
     "PerformanceCurves",
     "PixelGrid",
-    "PreparedAperture",
     "ProductGrids",
     "PsfletPack",
     "Quadrature",
     "Rates",
     "SampledProfile",
-    "ScalarCoronagraph",
     "SceneRender",
     "SegmentedPrimary",
     "SimplePrimary",
@@ -94,7 +80,5 @@ __all__ = [
     "__version__",
     "frames_for_time",
     "load_psflet_pack",
-    "matched_moments",
-    "prepare_aperture",
     "save_psflet_pack",
 ]

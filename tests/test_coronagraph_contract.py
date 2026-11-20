@@ -10,12 +10,11 @@ from conftest import (
     concrete_subclasses,
     synthetic_coronagraph,
 )
-from scipy.special import j0, j1
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
-from optixstuff.grids import Image, Measure, PixelGrid, resample
-from optixstuff.spectral import Band, Quadrature
+from optixstuff.grids import PixelGrid, resample
+from optixstuff.spectral import Band
 
 
 @pytest.fixture(scope="module")
@@ -23,14 +22,8 @@ def table():
     return synthetic_coronagraph(rules=(Circular(0.7), Circular(1.0)))
 
 
-def scalar(grid, *, bandpass=None):
-    return ox.ScalarCoronagraph(
-        grid=grid,
-        bandpass=bandpass,
-        throughput_fraction=0.4,
-        aperture_area_lod2=1.5,
-        stellar_leakage_density_lod2=2e-9,
-    )
+def second_band():
+    return GaussianTableCoronagraph(bandpass=Band(750.0, 850.0))
 
 
 @pytest.fixture(params=concrete_subclasses(ox.AbstractCoronagraph))
@@ -38,10 +31,8 @@ def coro(request, table):
     cls = request.param
     if cls is GaussianTableCoronagraph:
         return table
-    if cls is ox.ScalarCoronagraph:
-        return scalar(table.grid)
     if cls is ox.MultiBandCoronagraph:
-        return cls([table, scalar(table.grid, bandpass=Band(750.0, 850.0))])
+        return cls([table, second_band()])
     pytest.fail(f"Add a synthetic fixture for {cls.__name__}")
 
 
@@ -89,57 +80,31 @@ def test_flux_resampling(table, ratio):
     )
 
 
-def test_curve_contract(coro):
-    """Exact delegation; ratio identity uses 16 eps and floor arithmetic uses 4 eps."""
-
-    class UnitBearingSeparation:
-        unit = "lod"
-
-    for name in (
-        "throughput",
-        "core_area",
-        "leakage_fraction",
-        "leakage_density_lod2",
-        "raw_contrast",
-        "uniform_sky_response",
+def test_slot_is_the_image_capability(coro):
+    """The slot carries a frame and a bandpass; no curve query is part of it."""
+    assert isinstance(coro.frame, ox.grids.Frame)
+    for cls in (
+        ox.AbstractCoronagraph,
+        ox.AbstractImagingCoronagraph,
+        ox.AbstractSceneCoronagraph,
+        ox.AbstractTableCoronagraph,
+        ox.MultiBandCoronagraph,
     ):
-        with pytest.raises(TypeError, match="dimensionless"):
-            getattr(coro, name)(UnitBearingSeparation())
-    rule = Circular(0.7)
-    record = coro.curves(rule)
-    model, prepared_record = coro.prepared(rule)
-    assert model is (
-        coro.band(500.0) if isinstance(coro, ox.MultiBandCoronagraph) else coro
-    )
-    assert prepared_record is record
-    s = jnp.asarray(record.separation_lod)
-    np.testing.assert_array_equal(
-        coro.throughput(s, stellar_diam_lod=0.1), record.evaluate("throughput", s)
-    )
-    np.testing.assert_array_equal(
-        coro.core_area(s, stellar_diam_lod=0.1), record.evaluate("core_area_lod2", s)
-    )
-    for accessor, field in (
-        (coro.throughput, "throughput_variance"),
-        (coro.core_area, "core_area_variance_lod2"),
-        (coro.leakage_fraction, "leakage_fraction_variance"),
-        (coro.leakage_density_lod2, "leakage_density_variance_lod2"),
-    ):
-        np.testing.assert_array_equal(
-            accessor(s, variance=True), record.evaluate(field, s)
-        )
-    expected = coro.leakage_density_lod2(s) * coro.core_area(s) / coro.throughput(s)
-    np.testing.assert_allclose(
-        expected, coro.raw_contrast(s), rtol=16 * np.finfo(np.float32).eps
-    )
-    # Post-processing uses max(abs(raw contrast), engineering floor) / ppf.
-    floor, ppf = 1e-7, 25.0
-    expected_noise = np.maximum(np.abs(np.asarray(record.raw_contrast)), floor) / ppf
-    np.testing.assert_allclose(
-        jnp.maximum(jnp.abs(coro.raw_contrast(s)), floor) / ppf,
-        expected_noise,
-        rtol=4 * np.finfo(np.float32).eps,
-    )
+        for name in (
+            "curves",
+            "prepared",
+            "throughput",
+            "core_area",
+            "leakage_fraction",
+            "leakage_density_lod2",
+            "raw_contrast",
+            "uniform_sky_response",
+            "outer_working_angle_lod",
+            "throughput_map",
+            "core_area_map",
+            "leakage_density_map",
+        ):
+            assert not hasattr(cls, name)
     for name in (
         "core_mean_intensity",
         "stellar_intens",
@@ -155,32 +120,14 @@ def test_curve_contract(coro):
         assert not hasattr(coro, name)
 
 
-def test_native_performance_maps(table):
-    rule = Circular(0.7)
-    record = table.curves(rule)
-    # Maps are inherited once and project the same contract records on the grid.
+def test_separation_map(table):
+    """The native separation map is the radius of every pixel centre."""
     radius = jnp.hypot(*table.grid.coordinates())
     np.testing.assert_array_equal(table.separation_map(), radius)
-    for method, field, variance_field in [
-        (table.throughput_map, "throughput", "throughput_variance"),
-        (table.core_area_map, "core_area_lod2", "core_area_variance_lod2"),
-        (
-            table.leakage_density_map,
-            "leakage_density_lod2",
-            "leakage_density_variance_lod2",
-        ),
-    ]:
-        for variance, name in ((False, field), (True, variance_field)):
-            expected_map = record.evaluate(name, radius)
-            np.testing.assert_array_equal(method(variance=variance), expected_map)
-            np.testing.assert_array_equal(
-                method([rule, rule], variance=variance),
-                jnp.stack([expected_map, expected_map], axis=-1),
-            )
 
 
-def test_rule_records_and_constants(table):
-    """Exact band bounds/record identity; constants allow two float64 rounding eps.
+def test_rule_records_and_bands(table):
+    """Exact band bounds and record identity.
 
     Fails if multiband coverage clips a child edge or invents unknown coverage.
     """
@@ -191,30 +138,25 @@ def test_rule_records_and_constants(table):
     prepared = synthetic_coronagraph(rules=(Circular(0.9),))
     extra = prepared.curves(Circular(0.9))
     assert extra is prepared.curves(Circular(0.9))
-    assert float(prepared.throughput(2.0, rule=Circular(0.9))) > float(
-        table.throughput(2.0)
+    assert float(extra.evaluate("throughput", 2.0)) > float(
+        a.evaluate("throughput", 2.0)
     )
     with pytest.raises(ValueError, match="prepared"):
         table.curves(Circular(0.9))
-    c = scalar(table.grid, bandpass=Band(750.0, 850.0))
-    np.testing.assert_array_equal(c.curves().throughput, [0.4])
-    np.testing.assert_array_equal(c.curves().core_area_lod2, [1.5])
-    np.testing.assert_allclose(
-        c.curves().leakage_fraction, [3e-9], rtol=2 * np.finfo(float).eps
-    )
+    c = second_band()
     mb = ox.MultiBandCoronagraph([table, c])
-    assert mb.curves() is a
+    assert mb.band(None) is table
     assert mb.bandpass == Band(450.0, 850.0)
     np.testing.assert_array_equal(mb.spectral_breaks_nm(), [450, 550, 750, 850])
+    assert mb.band(800.0) is c
     with pytest.raises(ValueError, match="declare its bandpass"):
-        ox.MultiBandCoronagraph([table, scalar(table.grid)])
+        ox.MultiBandCoronagraph([table, GaussianTableCoronagraph(bandpass=None)])
     with pytest.raises(ValueError, match="covers"):
         mb.band(650)
-    np.testing.assert_array_equal(mb.throughput(2.0, 800.0), c.throughput(2.0))
 
 
 def test_capability_selection(table):
-    performance = scalar(table.grid, bandpass=Band(550, 850))
+    performance = GaussianTableCoronagraph(bandpass=Band(550, 850))
     model = ox.MultiBandCoronagraph((table, performance))
     assert model.band(565.0) is performance
     assert model.band(800.0).frame == performance.frame
@@ -223,76 +165,9 @@ def test_capability_selection(table):
         == table.at_wavelength(500.0).stellar_grid.frame
     )
     assert isinstance(table, ox.AbstractImagingCoronagraph)
-    for item in (performance, model):
-        assert not isinstance(item, ox.AbstractImagingCoronagraph)
-        assert not hasattr(item, "source_psfs")
+    assert not isinstance(model, ox.AbstractImagingCoronagraph)
+    assert not hasattr(model, "source_psfs")
     assert not hasattr(model, "grid")
-
-
-def test_prepare_fixed_angle_preserves_centre_and_reference():
-    """The exact radii at 480, 600 and 720 nm keep the requested peak centre."""
-    rules = tuple(Circular(radius, centre="peak") for radius in (0.75, 0.6, 0.5))
-    coro = synthetic_coronagraph(n=8, rules=rules)
-    path = ox.Instrument.from_default_setup(coro, detector_shape=(4, 4))
-    band = Band(450.0, 750.0)
-    q = Quadrature((band,), jnp.array([[480.0, 600.0, 720.0]]), jnp.ones((1, 3)))
-
-    aperture = ox.prepare_aperture(path, q, rule=rules[1])
-    (reference,) = aperture.references
-    assert aperture.quadrature is q
-    assert reference.wavelength_nm == 600.0
-    assert reference.record is coro.curves(rules[1])
-    assert tuple(node.record.rule for node in reference.nodes) == rules
-    assert reference.nodes[1].record is reference.record
-
-
-@pytest.mark.parametrize("rule", [ox.HalfMaximum(), ox.Matched()])
-def test_polychromatic_preparation_requires_dilation_for_tables(table, rule):
-    """A shifted reference requires template dilation only for table models."""
-    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
-    band = Band(499.0, 501.0)
-    q = Quadrature((band,), jnp.array([[500.0]]), jnp.ones((1, 1)))
-    with pytest.raises(NotImplementedError, match="frozen reference"):
-        ox.prepare_aperture(path, q, rule=rule, reference_wavelength_nm=490.0)
-
-    if isinstance(rule, ox.Matched):
-        # A calibration/primary mismatch within the admitted tolerance still
-        # uses the primary's physical plate scale in both solid angles.
-        diameter = table.grid.frame.diameter_m * (1 + 5e-7)
-        matched_path = ox.Instrument.from_default_setup(
-            table, circumscribed_diameter_m=diameter, detector_shape=(4, 4)
-        )
-        (reference,) = ox.prepare_aperture(matched_path, q, rule=rule).references
-        expected = (500e-9 / diameter) ** 2
-        np.testing.assert_allclose(
-            reference.solid_angle_sr(2.0), 2 * expected, rtol=1e-14
-        )
-        np.testing.assert_allclose(
-            reference.stamps.pixel_solid_angle_sr,
-            expected * table.grid.step**2,
-            rtol=1e-14,
-        )
-        with pytest.raises(ValueError, match=r"native.*images"):
-            ox.prepare_aperture(
-                eqx.tree_at(lambda p: p.coronagraph, path, scalar(table.grid)),
-                q,
-                rule=rule,
-            )
-        return
-
-    coro = ox.ScalarCoronagraph(
-        grid=table.grid,
-        throughput_fraction=0.4,
-        aperture_area_lod2=1.5,
-        stellar_leakage_density_lod2=2e-9,
-        rule=rule,
-    )
-    path = eqx.tree_at(lambda p: p.coronagraph, path, coro)
-    aperture = ox.prepare_aperture(path, q, rule=rule, reference_wavelength_nm=490.0)
-    (reference,) = aperture.references
-    (node,) = reference.nodes
-    assert reference.wavelength_nm == 490.0
-    assert node.record.rule == reference.record.rule == rule
 
 
 def test_jit_and_gradient(table):
@@ -311,90 +186,10 @@ def test_jit_and_gradient(table):
     )
 
     def f(s):
-        return table.throughput(s)
+        return table.curves(Circular(0.7)).evaluate("throughput", s)
 
     s, h = jnp.array(1.4), 0.002
     np.testing.assert_allclose(jax.jit(f)(s), f(s), rtol=8 * np.finfo(np.float32).eps)
     derivative = jax.grad(f)(s)
     assert np.isfinite(derivative)
     np.testing.assert_allclose(derivative, (f(s + h) - f(s - h)) / (2 * h), rtol=0.002)
-
-    # In this table the stellar map is spatially uniform and proportional
-    # to (1 + diameter**2). With 2 uniform counts/s the entire inverse
-    # variance profile, including its interpolated throughput, scales as
-    # 1/(3 + diameter**2).
-    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
-    band = Band(499.5, 500.5)
-    aperture = ox.prepare_aperture(
-        path, Quadrature.build((band,), path, order=1), rule=ox.Matched()
-    )
-    reference = aperture.references[0]
-
-    def tau(diameter):
-        return aperture.response(reference, s, 0.0, diameter, A=1e8, B=0.0, D=2.0).tau1[
-            0
-        ]
-
-    value, slope = jax.jit(jax.value_and_grad(tau))(0.5)
-    np.testing.assert_allclose(slope, -value / 3.25, rtol=2e-5)
-    np.testing.assert_allclose(value, tau(0.0) * 3.0 / 3.25, rtol=2e-5)
-
-
-class _CosineFieldTable(GaussianTableCoronagraph):
-    """Stellar fractions and sky transmission varying as 1 + 0.5 cos(2 pi x / 12)."""
-
-    def __init__(self):
-        super().__init__(24, rules=(Circular(0.7),))
-        x, _ = self.grid.coordinates()
-        self.sky_trans = Image(
-            1 + 0.5 * jnp.cos(2 * jnp.pi * x / 12),
-            self.grid,
-            (),
-            Measure.intensive(),
-            "transmission",
-        )
-
-    def _native_stellar_map(self, stellar_diam_lod):
-        x, _ = self.grid.coordinates()
-        return Image(
-            1e-8 * (1 + 0.5 * jnp.cos(2 * jnp.pi * x / 12)),
-            self.grid,
-            (),
-            Measure.integral(),
-            "stellar_flux_fraction",
-            reconstruction="band_limited",
-            outside="reflect",
-        )
-
-
-def test_scalar_sky_and_leakage_are_annular_means():
-    """Ring mean of a cosine field integrated over a circle, in closed form.
-
-    The 24 by 24 grid of 0.5 lambda/D pixels spans one period (12 lambda/D) of
-    the field, so the band-limited reconstruction is exact. Integrating
-    cos(kx) over a circle of radius r at (s cos t, s sin t) gives
-    cos(k s cos t) 2 pi r J1(kr) / k, and its mean over t has J0(ks) in place of
-    the cosine. The sky fraction is the ring-mean area over pi r^2 (rtol 2e-3,
-    pixel midpoint error of the transmission map); the leakage is the same
-    bracket times 1e-8 per pixel area of 0.25 (rtol 1e-4). The value at +x
-    differs by about 10 percent, so this checks the reduction, not the grid.
-    """
-    table = _CosineFieldTable()
-    path = ox.Instrument.from_default_setup(table, detector_shape=(4, 4))
-    q = Quadrature.build((Band(499.5, 500.5),), path, order=1)
-    aperture = ox.prepare_aperture(path, q, rule=Circular(0.7))
-    node = aperture.references[0].nodes[0]
-    separation, radius, depth = 2.0, 0.7, 0.5
-    k = 2 * np.pi / 12
-    shape = 2 * j1(k * radius) / (k * radius)
-    ring = 1 + depth * j0(k * separation) * shape
-    along_x = 1 + depth * np.cos(k * separation) * shape
-    assert abs(ring / along_x - 1) > 0.09
-    _, leak, sky, _, leak_variance, sky_variance = aperture.response(
-        node, separation, 0.0, 0.0
-    )
-    np.testing.assert_allclose(sky, ring, rtol=2e-3)
-    np.testing.assert_allclose(sky_variance, ring, rtol=2e-3)
-    expected = 1e-8 / 0.25 * np.pi * radius**2 * ring
-    np.testing.assert_allclose(leak, expected, rtol=1e-4)
-    np.testing.assert_allclose(leak_variance, expected, rtol=1e-4)

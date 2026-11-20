@@ -40,7 +40,6 @@ flowchart TB
     AC[AbstractCoronagraph]
     IMG[AbstractImagingCoronagraph]
     SCENE[AbstractSceneCoronagraph]
-    SC[ScalarCoronagraph]
     AD[AbstractDetector]
     ID[IdealDetector]
     D[Detector]
@@ -50,7 +49,6 @@ flowchart TB
     AUE --> CT
     AUE --> ST
     AP --> SP
-    AC --> SC
     AC --> IMG
     IMG --> SCENE
     AD --> ID
@@ -59,7 +57,7 @@ flowchart TB
     SP -.-> OP
     CT -.-> OP
     ST -.-> OP
-    SC -.-> OP
+    AC -.-> OP
     ID -.-> OP
     D -.-> OP
 ```
@@ -71,7 +69,7 @@ into a single `Instrument`:
 |---|---|---|
 | Primary aperture | `AbstractPrimary` | `SimplePrimary` |
 | Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `TransmissiveElement` |
-| Coronagraph backend | `AbstractCoronagraph` | `ScalarCoronagraph`, `MultiBandCoronagraph` |
+| Coronagraph backend | `AbstractCoronagraph` | `AbstractTableCoronagraph` providers, `MultiBandCoronagraph` |
 | Detector | `AbstractDetector` | `IdealDetector`, `Detector` |
 | Composition container | (none) | `Instrument` |
 
@@ -204,7 +202,7 @@ frames. The target grid defines the output units, frame and pixel centres.
 `source_psfs` returns an image and a validity flag for each source.
 `stellar_map` returns the finite-star image. `point_energy_fraction(x_lod, y_lod)`
 sums admitted native point-source flux, while `uniform_sky_map` describes
-extended illumination. Its annular mean is `uniform_sky_response`.
+extended illumination.
 A scene-capable band provides `render_scene(scene, wavelength_nm, grid=target)`.
 The result includes a validity flag covering every illuminated position.
 
@@ -218,26 +216,25 @@ Transmission is dimensionless. A native PSF table retains the sampling declared
 by its producer. A requested grid receives the fraction of unocculted source
 flux collected by each pixel.
 
-`curves(rule=Circular(0.7), *, leakage_rule="aperture_mean")` selects a prepared
-`PerformanceCurves` record. The five scalar convenience methods call its `evaluate` method.
-`leakage_density_lod2` is already per square lambda/D; no pixel-area correction
-belongs in consumers. Post-processing may divide that density, or raw contrast,
-by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the residual.
-No noise floor is a coronagraph property.
-`separation_map`, `throughput_map`, and `core_area_map` are shared contract
-projections on each imaging band's native source grid.
+`PerformanceCurves` is the coronagraph characterization: a record of profiles
+on one lambda/D axis for one aperture rule, built by `performance_curves`.
+No simulation reads it from the coronagraph slot; a provider that stores records
+hands them out as data, and `record.evaluate(name, separation_lod)` is the one
+read. `leakage_density_lod2` is already per square lambda/D; no pixel-area
+correction belongs in consumers. Post-processing may divide that density, or raw
+contrast, by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the
+residual. No noise floor is a coronagraph property.
+`separation_map` is a shared projection on each imaging band's native source grid.
 For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
 return native samples and product metadata. An explicit grid requests pixel
 integration, including at native pitch.
-The record's contrast identity holds at measured knots; `PerformanceCurves` interpolates the
-five fields in their declared spaces independently between knots.
-Additional rules and leakage conventions must be prepared during construction.
-Finite stellar diameter remains an image capability; scalar records retain the
-diameter of the stellar image used to prepare them. `band(wavelength_nm).curves()`
-selects a multiband record; `curves()` alone uses the reference band.
+The record's contrast identity holds at measured knots; `PerformanceCurves`
+interpolates the five fields in their declared spaces independently between knots.
+Finite stellar diameter is an image capability (`stellar_map`); a record keeps the
+diameter of the stellar image used to prepare it.
 `bandpass` is a `optixstuff.spectral.Band` or `None` for unknown coverage;
 each child of a multiband model must declare its interval. The first child
-covering the requested wavelength supplies the record, including at a shared
+covering the requested wavelength supplies the model, including at a shared
 edge. A wavelength outside all calibrated intervals raises `ValueError`.
 
 ## Speckle excess

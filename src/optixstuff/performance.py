@@ -991,74 +991,6 @@ def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     return jnp.where(inside, jnp.real(by @ spectrum @ bx.T) * ratio**2, 0)
 
 
-def aperture_operator(rule, psf, position, image_grid):
-    """Linear operator from a native image on ``image_grid`` to its aperture integral.
-
-    The aperture is ``rule`` placed at ``position`` on the planet image ``psf``.
-    The result has the shape of ``image_grid`` and carries the flux-fraction
-    weights, so contracting it with per-pixel fractions gives the aperture sum.
-    """
-    with jax.enable_x64():
-        _, weights, sy, sx, factor = _rule_samples(rule, psf, position, CORE_OVERSAMPLE)
-        sample = functools.partial(
-            _stellar_samples,
-            sg=image_grid,
-            planet_grid=psf.grid,
-            sy=sy,
-            sx=sx,
-            shape=weights.shape,
-            factor=factor,
-        )
-        transpose = jax.linear_transpose(sample, jnp.zeros(image_grid.shape))
-        (mean,) = transpose(weights / factor**2)
-        return mean
-
-
-def leakage_weights(offaxis, stellar, record, *, samples=None):
-    """Prepare linear native-image operators for a performance record.
-
-    Returns mean and variance aperture operators and, for ring averaging,
-    a density operator, each with shape (separation, stellar_y, stellar_x).
-    Aperture construction and coordinate transforms precede runtime queries.
-    Optional samples are (Image, (x_lod, y_lod)) pairs on the record axis.
-    Otherwise the offaxis callable is sampled at (separation, 0).
-    """
-    with jax.enable_x64():
-        aperture = []
-        for index, separation in enumerate(np.asarray(record.separation_lod)):
-            psf, position = (
-                (offaxis(float(separation)), (float(separation), 0.0))
-                if samples is None
-                else samples[index]
-            )
-            aperture.append(aperture_operator(record.rule, psf, position, stellar.grid))
-        aperture = jnp.stack(aperture)
-        ring = None
-        if record.leakage_rule == "azimuthal_ring_mean":
-            sg, pf = stellar.grid, record.frame
-            ratio = pf.lod_to_arcsec(
-                pf.reference_wavelength_nm
-            ) / sg.frame.lod_to_arcsec(sg.frame.reference_wavelength_nm)
-            radii = jnp.asarray(record.separation_lod) * ratio / sg.step
-
-            def profile(data):
-                return (
-                    azimuthal_mean_profile(data, (sg.center_y, sg.center_x), radii)
-                    / sg.pixel_area
-                    * ratio**2
-                )
-
-            ring = jax.jacrev(profile)(jnp.zeros(sg.shape))
-    # Built in float64; stored in the active default precision.
-    dtype = jnp.result_type(float)
-    aperture = jnp.asarray(np.asarray(aperture), dtype=dtype)
-    return (
-        aperture,
-        aperture,
-        None if ring is None else jnp.asarray(np.asarray(ring), dtype=dtype),
-    )
-
-
 def _separation_axis(separation_lod):
     if isinstance(separation_lod, (jax.Array, jax.core.Tracer)):
         x = jnp.asarray(separation_lod, dtype=jnp.result_type(separation_lod, 1.0))
@@ -1328,19 +1260,6 @@ class PerformanceCurves(eqx.Module):
             a.flags.writeable = False
             setattr(self, name, a)
             self._fits[name] = _profile_fit(x, a, self.interpolation[name])
-
-    def evaluate_samples(self, name, separation_lod, values):
-        """Evaluate new knot values, which can depend on traced stellar diameter."""
-        axis, samples = jnp.asarray(self.separation_lod), jnp.asarray(values)
-        space = self.interpolation[name]
-        return _evaluate_profile(
-            axis,
-            samples,
-            _profile_fit(axis, samples, space),
-            space,
-            jnp.asarray(separation_lod),
-            exact_knots=False,
-        )
 
     def evaluate(self, name, separation_lod):
         """Evaluate one named quantity using its declared interpolation space."""

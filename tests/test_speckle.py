@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from conftest import SinusoidalSpeckle, scalar_coronagraph
+from conftest import SinusoidalSpeckle, make_instrument, table_coronagraph
 from hwoutils.constants import s2d
 
 import optixstuff as ox
@@ -344,8 +344,8 @@ def test_construction_and_optical_path(linear_speckle):
     with pytest.raises(ValueError, match="epoch_d"):
         replace(field, epoch_d=np.inf)
     assert isinstance(field, SinusoidalSpeckle)
-    path = ox.Instrument.from_default_setup(scalar_coronagraph(), speckle=field)
+    path = make_instrument(table_coronagraph(), speckle=field)
     assert path.speckle is field
     assert any(line.startswith("  speckle:") for line in repr(path).splitlines())
-    default = ox.Instrument.from_default_setup(scalar_coronagraph())
+    default = make_instrument(table_coronagraph())
     assert default.speckle is None and "speckle:" not in repr(default)

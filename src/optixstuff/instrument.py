@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import math
-from math import pi
 
 import equinox as eqx
 import jax
@@ -12,13 +11,12 @@ import numpy as np
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
-from optixstuff.detector import AbstractDetector, Detector
+from optixstuff.detector import AbstractDetector
 from optixstuff.disperser import AbstractDisperser
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
-    ConstantThroughput,
 )
-from optixstuff.primary import AbstractPrimary, SimplePrimary
+from optixstuff.primary import AbstractPrimary
 from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.spectral import spectral_breaks
 
@@ -81,88 +79,6 @@ class Instrument(eqx.Module):
                     f"({frame.diameter_m} m); build the primary with the "
                     "coronagraph's diameters"
                 )
-
-    @classmethod
-    def from_default_setup(
-        cls,
-        coronagraph: AbstractCoronagraph,
-        *,
-        circumscribed_diameter_m: float | None = None,
-        obscuration: float = 0.0,
-        inscribed_diameter_m: float | None = None,
-        attenuating_throughput: float = 1.0,
-        detector_shape: tuple[int, int] = (512, 512),
-        pixel_scale_arcsec: float = 0.01,
-        qe: float = 0.9,
-        dark_current_e_per_pixel_s: float = 0.0,
-        n_channels: float = 1.0,
-        npix_multiplier: float = 1.0,
-        speckle: AbstractSpeckleField | None = None,
-    ) -> Instrument:
-        """Build an Instrument with reasonable HWO-like defaults.
-
-        Convenience for notebook / dev-script work: spin up a working
-        ``Instrument`` by specifying only the coronagraph. All other
-        parameters get sensible defaults that can be overridden.
-
-        Args:
-            coronagraph: An AbstractCoronagraph instance.
-            circumscribed_diameter_m: Primary mirror diameter [m]. Default: the
-                coronagraph frame's diameter (when that frame is circumscribed),
-                so the tables and the primary describe one telescope.
-            inscribed_diameter_m: Explicit inscribed diameter; defaults to the
-                circular outer diameter.
-            obscuration: Linear central-obscuration fraction. Default 0.
-            attenuating_throughput: Combined throughput of the optical
-                chain (one :class:`ConstantThroughput`). Default
-                ``1.0`` -- a perfect path; override for realistic studies.
-            detector_shape: Detector ``(ny, nx)`` in pixels. Default
-                ``(512, 512)``.
-            pixel_scale_arcsec: Detector plate scale [arcsec/px]. Default
-                ``0.01``.
-            qe: Default ``0.9``.
-            dark_current_e_per_pixel_s: Default ``0.0`` e-/s/px (perfect detector;
-                callers add realistic noise when needed).
-            n_channels: AYO parallel-path multiplier. Default ``1.0``.
-            npix_multiplier: IFS signal-spread multiplier. Default ``1.0``.
-            speckle: Optional speckle field attached to the path. Default
-                ``None`` -- a perfect-wavefront path.
-
-        Returns:
-            A ready-to-use :class:`Instrument`.
-        """
-        coro = coronagraph
-
-        if circumscribed_diameter_m is None:
-            frame = coro.frame
-            if frame.diameter_convention != "circumscribed":
-                raise ValueError(
-                    "the coronagraph frame is inscribed: pass circumscribed_diameter_m"
-                )
-            circumscribed_diameter_m = frame.diameter_m
-        return cls(
-            primary=SimplePrimary(
-                circumscribed_diameter_m=circumscribed_diameter_m,
-                inscribed_diameter_m=inscribed_diameter_m,
-                collecting_area_m2=pi
-                * circumscribed_diameter_m**2
-                / 4
-                * (1 - obscuration**2),
-            ),
-            attenuating_elements=(
-                ConstantThroughput(throughput=attenuating_throughput, name="optics"),
-            ),
-            coronagraph=coro,
-            detector=Detector(
-                pixel_scale_arcsec=pixel_scale_arcsec,
-                shape=detector_shape,
-                qe=qe,
-                dark_current_e_per_pixel_s=dark_current_e_per_pixel_s,
-            ),
-            n_channels=n_channels,
-            npix_multiplier=npix_multiplier,
-            speckle=speckle,
-        )
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Combine the breaks of the optical train and detector yield."""

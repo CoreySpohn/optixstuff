@@ -63,15 +63,4 @@ class HalfMaximum:
         return _rule_weights(self, psf, source_position, oversample)
 
 
-@dataclass(frozen=True)
-class Matched:
-    """Inverse-variance planet photometry evaluated with the exposure's rates.
-
-    One set of native-pixel weights per band divides the planet profile by
-    the background variance rate. The planet contributes its own shot noise
-    to the measured variance after weighting (Kasdin & Braems 2006).
-    """
-
-
 RecordRule = Circular | HalfMaximum
-ApertureRule = RecordRule | Matched

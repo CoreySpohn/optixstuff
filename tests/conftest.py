@@ -10,7 +10,7 @@ import pytest
 from hypothesis import settings
 
 import optixstuff as ox
-from optixstuff import ScalarCoronagraph, SimplePrimary
+from optixstuff import SimplePrimary
 from optixstuff.apertures import DEFAULT_APERTURE_RULE
 from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.performance import PerformanceCurves
@@ -53,17 +53,23 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
     sky_trans: Image
     uniform_sky_profile: ox.SampledProfile
     _records: tuple
-    outer_working_angle_lod: float | None = None
 
-    def __init__(self, n=24, *, rules=()):
+    def __init__(
+        self,
+        n=24,
+        *,
+        rules=(),
+        diameter_m=6.0,
+        bandpass=Band(450.0, 550.0),  # noqa: B008
+    ):
         self.grid = PixelGrid.focal(
             n,
             0.5,
-            SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0).frame(
-                500.0
-            ),
+            SimplePrimary(
+                circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
+            ).frame(500.0),
         )
-        self.bandpass = Band(450.0, 550.0)
+        self.bandpass = bandpass
         x, y = self.grid.coordinates()
         self.sky_trans = Image(
             1 - jnp.exp(-(x * x + y * y) / 4),
@@ -148,17 +154,22 @@ def synthetic_coronagraph(n=24, *, rules=()):
     return GaussianTableCoronagraph(n, rules=rules)
 
 
-# Constant coronagraph shared by hardware-container tests.
-def scalar_coronagraph(diameter_m=6.0):
-    frame = SimplePrimary(
-        circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
-    ).frame(500.0)
-    return ScalarCoronagraph(
-        grid=PixelGrid.focal(24, 0.5, frame),
-        throughput_fraction=0.5,
-        aperture_area_lod2=1.0,
-        stellar_leakage_density_lod2=1e-10,
-        outer_working_angle_lod=30.0,
+# Hardware-container tests need a coronagraph whose frame matches the primary.
+def table_coronagraph(diameter_m=6.0):
+    return GaussianTableCoronagraph(diameter_m=diameter_m)
+
+
+def make_instrument(coronagraph, **kwargs):
+    """Hardware record around a coronagraph, with a primary of its diameter."""
+    diameter_m = coronagraph.frame.diameter_m
+    return ox.Instrument(
+        primary=SimplePrimary(
+            circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
+        ),
+        attenuating_elements=(ox.ConstantThroughput(throughput=1.0, name="optics"),),
+        coronagraph=coronagraph,
+        detector=ox.Detector(pixel_scale_arcsec=0.01, shape=(512, 512), qe=0.9),
+        **kwargs,
     )
 
 

@@ -49,7 +49,9 @@ flowchart TB
 
 ## Quick start
 
-This example declares constant performance for one calibrated aperture.
+This example builds the hardware record around a coronagraph. The coronagraph
+comes from a provider such as a yippy `Coronagraph`; its lambda/D frame must
+describe the same telescope as the primary.
 
 ```python notest
 from optixstuff import (
@@ -57,25 +59,16 @@ from optixstuff import (
     SimplePrimary,
     IdealDetector,
     ConstantThroughput,
-    TransmissiveElement,
 )
-from optixstuff.grids import PixelGrid
-from optixstuff import ScalarCoronagraph
 
 primary = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
 detector = IdealDetector(pixel_scale_arcsec=0.01, shape=(512, 512))
-coronagraph = ScalarCoronagraph(
-    grid=PixelGrid.focal(24, 0.5, primary.frame(500.0)),
-    throughput_fraction=0.4,
-    aperture_area_lod2=1.5,
-    stellar_leakage_density_lod2=1e-10,
-)
 throughput = ConstantThroughput(throughput=0.85)
 
 path = Instrument(
     primary=primary,
     attenuating_elements=(throughput,),
-    coronagraph=coronagraph,
+    coronagraph=coronagraph,  # any AbstractCoronagraph
     detector=detector,
 )
 
@@ -99,7 +92,7 @@ provides:
 - **Abstract interfaces** -- `AbstractPrimary`,
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
 - **Concrete implementations** -- `SimplePrimary`, `ConstantThroughput`,
-  `TransmissiveElement`, `IdealDetector`, `Detector`, `ScalarCoronagraph`
+  `TransmissiveElement`, `IdealDetector`, `Detector`, `MultiBandCoronagraph`
 - **Container** -- `Instrument`, a composable hardware configuration
   passed to all downstream simulators
 

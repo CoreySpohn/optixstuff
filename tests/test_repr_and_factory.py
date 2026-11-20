@@ -1,11 +1,10 @@
-"""Tests for ``__repr__`` methods and ``Instrument.from_default_setup``."""
+"""Tests for ``__repr__`` methods and the Instrument pytree."""
 
 from __future__ import annotations
 
 import equinox as eqx
-import jax.numpy as jnp
 import pytest
-from conftest import scalar_coronagraph
+from conftest import make_instrument, table_coronagraph
 
 import optixstuff as ox
 
@@ -53,7 +52,7 @@ class TestReprs:
                 ox.ConstantThroughput(throughput=0.9, name="m1"),
                 ox.ConstantThroughput(throughput=0.8, name="m2"),
             ),
-            coronagraph=scalar_coronagraph(),
+            coronagraph=table_coronagraph(),
             detector=simple_detector,
         )
         s = repr(path)
@@ -73,75 +72,31 @@ class TestReprs:
         path = ox.Instrument(
             primary=simple_primary,
             attenuating_elements=(),
-            coronagraph=scalar_coronagraph(),
+            coronagraph=table_coronagraph(),
             detector=simple_detector,
         )
         s = repr(path)
         assert "attenuating_elements: ()" in s
 
 
-class TestFromDefaultSetup:
-    """Verify the convenience factory builds a usable Instrument."""
-
-    def test_returns_optical_path_with_defaults(self):
-        path = ox.Instrument.from_default_setup(scalar_coronagraph())
-        assert isinstance(path, ox.Instrument)
-        assert isinstance(path.primary, ox.SimplePrimary)
-        assert isinstance(path.detector, ox.Detector)
-        assert len(path.attenuating_elements) == 1
-        # Defaults applied.
-        assert path.primary.diameter("circumscribed") == 6.0
-        assert path.detector.shape == (512, 512)
-        assert path.detector.pixel_scale_arcsec == 0.01
-        assert float(path.detector.quantum_efficiency(550.0)) == float(jnp.asarray(0.9))
-        assert path.n_channels == 1.0
-        assert path.npix_multiplier == 1.0
-
-    def test_kwargs_override(self):
-        # A primary that disagrees with the coronagraph's lambda/D frame raises.
-        with pytest.raises(ValueError, match="frame"):
-            ox.Instrument.from_default_setup(
-                scalar_coronagraph(), circumscribed_diameter_m=8.0
-            )
-        assert (
-            ox.Instrument.from_default_setup(scalar_coronagraph()).primary.diameter(
-                "circumscribed"
-            )
-            == 6.0
-        )
-        path = ox.Instrument.from_default_setup(
-            scalar_coronagraph(8.0),
-            circumscribed_diameter_m=8.0,
-            obscuration=0.1,
-            attenuating_throughput=0.5,
-            detector_shape=(256, 256),
-            pixel_scale_arcsec=0.02,
-            qe=0.95,
-            dark_current_e_per_pixel_s=1e-3,
-            n_channels=2.0,
-            npix_multiplier=3.0,
-        )
-        assert path.primary.diameter("circumscribed") == 8.0
-        assert path.primary.collecting_area_m2 == 3.141592653589793 * 16 * 0.99
-        assert path.detector.shape == (256, 256)
-        assert path.detector.pixel_scale_arcsec == 0.02
-        assert float(path.detector.quantum_efficiency(550.0)) == float(
-            jnp.asarray(0.95)
-        )
-        assert path.detector.dark_current_e_per_pixel_s == float(jnp.asarray(1e-3))
-        assert path.n_channels == 2.0
-        assert path.npix_multiplier == 3.0
-        # Single attenuating element built with the overridden throughput.
-        assert path.attenuating_elements[0].throughput == 0.5
-
-    def test_accepts_coronagraph_instance(self):
-        coro = scalar_coronagraph()
-        path = ox.Instrument.from_default_setup(coro)
-        # Same object reused, no copy/wrap.
-        assert path.coronagraph is coro
+class TestInstrument:
+    """Verify the hardware record is a usable pytree."""
 
     def test_path_is_a_pytree(self):
-        path = ox.Instrument.from_default_setup(scalar_coronagraph())
+        path = make_instrument(table_coronagraph())
         # eqx.tree_at can walk it (sanity check that nothing is non-pytree).
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None
+
+    def test_primary_must_match_the_coronagraph_frame(self):
+        coro = table_coronagraph()
+        with pytest.raises(ValueError, match="frame"):
+            ox.Instrument(
+                primary=ox.SimplePrimary(
+                    circumscribed_diameter_m=8.0, collecting_area_m2=28.0
+                ),
+                attenuating_elements=(),
+                coronagraph=coro,
+                detector=ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(8, 8)),
+            )
+        assert make_instrument(coro).coronagraph is coro

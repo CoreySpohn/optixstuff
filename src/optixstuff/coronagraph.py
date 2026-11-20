@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 
-from optixstuff.apertures import DEFAULT_APERTURE_RULE, RecordRule
 from optixstuff.grids import (
     Frame,
     Image,
@@ -20,7 +19,6 @@ from optixstuff.grids import (
     integrate_footprints,
     resample,
 )
-from optixstuff.performance import PerformanceCurves, SampledProfile
 from optixstuff.spectral import Band, spectral_breaks
 
 
@@ -79,34 +77,18 @@ class SceneRender(NamedTuple):
 
 
 class AbstractCoronagraph(eqx.Module):
-    """Performance in a declared wavelength/diameter frame.
+    """The coronagraph slot: a declared frame and calibrated wavelength interval.
 
-    Separations use the performance frame. Resolved diameters use the native
-    stellar frame of a model that supplies finite-star calibration.
-    Leakage queries accept stellar_diam_lod=0.0 for the stored point-source
-    record. Finite diameters use prepared image weights. Models without them
-    raise ValueError for concrete nonzero diameters and return NaN for traced
-    nonzero diameters.
-    Wavelength selects a band; monochromatic tables have no further chromatic
-    dependence. time_d is always days from the scene epoch.
+    The slot carries the image capability only (see AbstractImagingCoronagraph).
+    Summary curves are a characterization record, PerformanceCurves, read with
+    PerformanceCurves.evaluate; no simulation reads them from the slot.
+    Separations use the native lambda/D frame. Wavelength selects a band;
+    monochromatic tables have no further chromatic dependence.
     """
 
     frame: AbstractVar[Frame]
     bandpass: AbstractVar[Band | None]
     """Calibrated wavelength interval in nm, or None for unknown coverage."""
-    outer_working_angle_lod: AbstractVar[float | None]
-
-    @abc.abstractmethod
-    def curves(
-        self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"
-    ) -> PerformanceCurves:
-        """Return the prepared performance record for an explicit aperture rule."""
-
-    def prepared(
-        self, rule: RecordRule, *, leakage_rule="aperture_mean"
-    ) -> tuple["AbstractCoronagraph", PerformanceCurves]:
-        """Return a model and its usable record, preparing on the host if supported."""
-        return self, self.curves(rule, leakage_rule=leakage_rule)
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Return the edges of the calibrated interval, when declared."""
@@ -116,138 +98,6 @@ class AbstractCoronagraph(eqx.Module):
     def band(self, wavelength_nm):
         """Select the performance model at a concrete wavelength."""
         return self
-
-    def throughput(
-        self,
-        separation_lod,
-        wavelength_nm=None,
-        *,
-        time_d=0.0,
-        stellar_diam_lod=0.0,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-        variance=False,
-    ):
-        """Planet flux fraction using weights, or squared weights for variance."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return (
-            self.band(wavelength_nm)
-            .curves(rule, leakage_rule=leakage_rule)
-            .evaluate(
-                "throughput_variance" if variance else "throughput", separation_lod
-            )
-        )
-
-    def core_area(
-        self,
-        separation_lod,
-        wavelength_nm=None,
-        *,
-        time_d=0.0,
-        stellar_diam_lod=0.0,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-        variance=False,
-    ):
-        """Collecting area in (lambda/D)^2, using squared weights for variance."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return (
-            self.band(wavelength_nm)
-            .curves(rule, leakage_rule=leakage_rule)
-            .evaluate(
-                "core_area_variance_lod2" if variance else "core_area_lod2",
-                separation_lod,
-            )
-        )
-
-    def leakage_fraction(
-        self,
-        separation_lod,
-        wavelength_nm=None,
-        *,
-        time_d=0.0,
-        stellar_diam_lod=0.0,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-        variance=False,
-    ):
-        """Stellar flux fraction using weights, or squared weights for variance."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return self.band(wavelength_nm)._leakage_query(
-            "leakage_fraction_variance" if variance else "leakage_fraction",
-            separation_lod,
-            wavelength_nm,
-            stellar_diam_lod,
-            rule,
-            leakage_rule,
-        )
-
-    def leakage_density_lod2(
-        self,
-        separation_lod,
-        wavelength_nm=None,
-        *,
-        time_d=0.0,
-        stellar_diam_lod=0.0,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-        variance=False,
-    ):
-        """Stellar fraction per collecting or variance area in (lambda/D)^2."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return self.band(wavelength_nm)._leakage_query(
-            "leakage_density_variance_lod2" if variance else "leakage_density_lod2",
-            separation_lod,
-            wavelength_nm,
-            stellar_diam_lod,
-            rule,
-            leakage_rule,
-        )
-
-    def raw_contrast(
-        self,
-        separation_lod,
-        wavelength_nm=None,
-        *,
-        time_d=0.0,
-        stellar_diam_lod=0.0,
-        rule=DEFAULT_APERTURE_RULE,
-        leakage_rule="aperture_mean",
-    ):
-        """Rule-defined stellar intensity divided by planet intensity."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return self.band(wavelength_nm)._leakage_query(
-            "raw_contrast",
-            separation_lod,
-            wavelength_nm,
-            stellar_diam_lod,
-            rule,
-            leakage_rule,
-        )
-
-    def _leakage_query(
-        self, name, separation, wavelength, diameter, rule, leakage_rule
-    ):
-        """Point-source fallback; models without prepared images reject finite stars.
-
-        A concrete nonzero diameter raises ValueError. A traced nonzero value
-        returns NaN, so jit/vmap cannot silently substitute a point source.
-        """
-        if not isinstance(diameter, jax.core.Tracer) and float(diameter) != 0:
-            raise ValueError("finite stellar diameter requires a prepared stellar map")
-        value = self.curves(rule, leakage_rule=leakage_rule).evaluate(name, separation)
-        if not isinstance(diameter, jax.core.Tracer):
-            return value
-        return jnp.where(jnp.asarray(diameter) == 0, value, jnp.nan)
-
-    @abc.abstractmethod
-    def uniform_sky_response(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
-        """Annular mean of the uniform-sky map in the performance frame."""
 
 
 class AbstractImagingCoronagraph(AbstractCoronagraph):
@@ -283,64 +133,11 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
             )
         )
 
-    def leakage_density_map(
-        self,
-        rules=None,
-        *,
-        stellar_diam_lod=0.0,
-        leakage_rule="aperture_mean",
-        variance=False,
-    ):
-        """Project density per (lambda/D)^2 on the native separation map.
-
-        Explicit prepared rules are stacked on the last axis. Diameter uses
-        the stellar product's native lambda/D, as in stellar_map.
-        """
-        radius = self.separation_map()
-        if rules is None:
-            return self.leakage_density_lod2(
-                radius,
-                stellar_diam_lod=stellar_diam_lod,
-                leakage_rule=leakage_rule,
-                variance=variance,
-            )
-        return jnp.stack(
-            [
-                self.leakage_density_lod2(
-                    radius,
-                    rule=r,
-                    variance=variance,
-                    stellar_diam_lod=stellar_diam_lod,
-                    leakage_rule=leakage_rule,
-                )
-                for r in rules
-            ],
-            axis=-1,
-        )
-
     def separation_map(self):
         """Native off-axis pixel radii in lambda/D, including the full grid basis."""
         return self.at_wavelength(
             self.frame.reference_wavelength_nm
         ).source_grid.radius()
-
-    def throughput_map(self, rules=None, *, variance=False):
-        """Project throughput, stacking explicitly prepared rules on the last axis."""
-        radius = self.separation_map()
-        if rules is None:
-            return self.throughput(radius, variance=variance)
-        return jnp.stack(
-            [self.throughput(radius, rule=r, variance=variance) for r in rules], axis=-1
-        )
-
-    def core_area_map(self, rules=None, *, variance=False):
-        """Project aperture area, stacking prepared rules on the last axis."""
-        radius = self.separation_map()
-        if rules is None:
-            return self.core_area(radius, variance=variance)
-        return jnp.stack(
-            [self.core_area(radius, rule=r, variance=variance) for r in rules], axis=-1
-        )
 
     def on_axis_psf(self, wavelength_nm, grid: PixelGrid) -> Image:
         """Point-star cell-integrated stellar flux fraction on grid, shape (ny,nx)."""
@@ -397,13 +194,9 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
     reconstruction needed for aperture measurements and avoids integrating
     twice when a consumer subsequently samples onto detector pixels.
 
-    Finite-star leakage uses _prepared_leakage_weights, built at construction
-    with aperture operators for each supported record. Tables
-    without prepared stellar-image weights retain the point-source contract.
     Tables with a separate stellar grid expose its frame via stellar_frame.
     """
 
-    uniform_sky_profile: AbstractVar[SampledProfile]
     sky_trans: AbstractVar[Image]
     grid: AbstractVar[PixelGrid]
 
@@ -415,74 +208,6 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
     def at_wavelength(self, wavelength_nm):
         """Tables with separate stellar sampling override the stellar grid."""
         return ProductGrids(self.grid, self.grid, self.sky_trans.grid)
-
-    def uniform_sky_response(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
-        """Read dimensionless transmission from this band's radial sky profile."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        profile = self.uniform_sky_profile
-        frame = self.frame
-        if frame != profile.frame:
-            # A single angular separation spans different native lambda/D counts.
-            ratio = frame.lod_to_arcsec(
-                frame.reference_wavelength_nm
-            ) / profile.frame.lod_to_arcsec(profile.frame.reference_wavelength_nm)
-            separation_lod = jnp.asarray(separation_lod) * ratio
-        return profile.evaluate(separation_lod)
-
-    def _prepared_leakage_weights(self, rule, leakage_rule):
-        """Return native-image weights, or None for a table without stellar maps."""
-        return None
-
-    def _leakage_query(
-        self, name, separation, wavelength, diameter, rule, leakage_rule
-    ):
-        record = self.curves(rule, leakage_rule=leakage_rule)
-        point = record.evaluate(name, separation)
-        if not isinstance(diameter, jax.core.Tracer) and float(diameter) == 0:
-            return point
-        operators = self._prepared_leakage_weights(rule, leakage_rule)
-        if operators is None:
-            return super()._leakage_query(
-                name, separation, wavelength, diameter, rule, leakage_rule
-            )
-
-        def finite(d):
-            image = self.stellar_map(wavelength, d, grid=None).integrated().data
-            aperture, aperture_variance, ring = operators
-            is_variance = name in (
-                "leakage_fraction_variance",
-                "leakage_density_variance_lod2",
-            )
-            operator = aperture_variance if is_variance else aperture
-            leakage = jnp.einsum("syx,yx->s", operator, image)
-            if name in ("leakage_fraction", "leakage_fraction_variance"):
-                samples = leakage
-            else:
-                area = jnp.asarray(
-                    record.core_area_variance_lod2
-                    if is_variance
-                    else record.core_area_lod2
-                )
-                samples = (
-                    jnp.einsum("syx,yx->s", ring, image)
-                    if ring is not None
-                    else jnp.where(area > 0, leakage / jnp.where(area > 0, area, 1), 0)
-                )
-                if name == "raw_contrast":
-                    tau = jnp.asarray(record.throughput)
-                    samples = jnp.where(
-                        tau > 0, samples * area / jnp.where(tau > 0, tau, 1), 1e20
-                    )
-            return record.evaluate_samples(name, separation, samples).astype(
-                jnp.asarray(point).dtype
-            )
-
-        if not isinstance(diameter, jax.core.Tracer):
-            return finite(diameter)
-        return jax.lax.cond(
-            jnp.asarray(diameter) == 0, lambda d: jnp.asarray(point), finite, diameter
-        )
 
     @property
     def psf_shape(self):
@@ -516,79 +241,12 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
         return _on_grid(self.sky_trans, grid)
 
 
-class ScalarCoronagraph(AbstractCoronagraph):
-    """Constant performance calibrated for a declared aperture rule."""
-
-    frame: Frame = eqx.field(static=True)
-    bandpass: Band | None
-    _records: tuple
-    sky_transmission: float
-    outer_working_angle_lod: float | None
-
-    def __init__(
-        self,
-        *,
-        grid,
-        throughput_fraction,
-        aperture_area_lod2,
-        stellar_leakage_density_lod2,
-        sky_transmission=1.0,
-        bandpass=None,
-        rule=DEFAULT_APERTURE_RULE,
-        outer_working_angle_lod=None,
-    ):
-        """Calibrate one constant record over the radial extent of the supplied grid."""
-        if grid.unit != "lod":
-            raise ValueError("native grid must use lod")
-        self.frame = grid.frame
-        self.bandpass = bandpass
-        self.sky_transmission = sky_transmission
-        self.outer_working_angle_lod = outer_working_angle_lod
-        tau, area, density = (
-            throughput_fraction,
-            aperture_area_lod2,
-            stellar_leakage_density_lod2,
-        )
-        self._records = (
-            PerformanceCurves(
-                [0.0],
-                grid.frame,
-                rule,
-                [tau],
-                [area],
-                [density * area],
-                [density],
-                [density * area / tau if tau > 0 else 1e20],
-                0.0 if tau > 0 else float("nan"),
-                min(grid.shape) * grid.step / 2,
-                throughput_variance=[tau],
-                core_area_variance_lod2=[area],
-                leakage_fraction_variance=[density * area],
-                leakage_density_variance_lod2=[density],
-            ),
-        )
-
-    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
-        """Read an eagerly prepared constant record; never build inside tracing."""
-        for record in self._records:
-            if record.rule == rule and record.leakage_rule == leakage_rule:
-                return record
-        raise ValueError("No prepared record for this rule and leakage_rule")
-
-    def uniform_sky_response(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
-        """Constant dimensionless sky transmission."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return jnp.full_like(jnp.asarray(separation_lod) * 1.0, self.sky_transmission)
-
-
 class MultiBandCoronagraph(AbstractCoronagraph):
     """Dispatch by declared bandpass, in input order at shared wavelengths.
 
-    curves() and frame use the reference band; band(wavelength_nm).curves(rule)
-    selects another record. Convenience curves keep their optional wavelength
-    argument and dispatch to that band's record. Monochromatic tables retain
-    their existing lack of additional wavelength dependence.
+    frame uses the reference band; band(wavelength_nm) selects the model that
+    covers a wavelength. Monochromatic tables retain their existing lack of
+    additional wavelength dependence.
     """
 
     bands: tuple
@@ -636,28 +294,3 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     def frame(self):
         """Native frame for the reference performance record."""
         return self.band(None).frame
-
-    @property
-    def outer_working_angle_lod(self):
-        """Reference band's design outer working angle, or None when unknown."""
-        return self.band(self.reference_wavelength_nm).outer_working_angle_lod
-
-    def curves(self, rule=DEFAULT_APERTURE_RULE, *, leakage_rule="aperture_mean"):
-        """Reference band's cached performance record."""
-        return self.band(self.reference_wavelength_nm).curves(
-            rule, leakage_rule=leakage_rule
-        )
-
-    def prepared(
-        self, rule: RecordRule, *, leakage_rule="aperture_mean"
-    ) -> tuple[AbstractCoronagraph, PerformanceCurves]:
-        """Return the reference band's prepared model and record."""
-        return self.band(None).prepared(rule, leakage_rule=leakage_rule)
-
-    def uniform_sky_response(self, separation_lod, wavelength_nm=None, *, time_d=0.0):
-        """Selected band's sky transmission."""
-        if hasattr(separation_lod, "unit"):
-            raise TypeError("separation_lod must be dimensionless numeric values")
-        return self.band(wavelength_nm).uniform_sky_response(
-            separation_lod, wavelength_nm, time_d=time_d
-        )

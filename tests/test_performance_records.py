@@ -237,53 +237,6 @@ def test_exact_binary_moments():
             )
 
 
-def test_matched_band_moments():
-    """Check uniform-noise SNR and shared spectral weights against pixel sums."""
-    from optixstuff.aperture_binding import MatchedStamps, matched_moments
-
-    with jax.enable_x64():
-        p = jnp.array([[[[0.1, 0.2]]], [[[0.3, 0.1]]]])
-        s = jnp.array([[[0.03, 0.01]], [[0.02, 0.04]]])
-        k = jnp.array([[[0.6, 0.9]], [[0.4, 0.8]]])
-        a = 0.25
-        stamps = MatchedStamps(p, s, k, a)
-        spectrum = jnp.array([1.0, 3.0])
-        A, B, D = jnp.array([2.0, 4.0]), jnp.array([5.0, 1.0]), 0.3
-        m = matched_moments(stamps, A, B, D, planet_spectrum=spectrum)
-        v = np.einsum("q,qyx->yx", A, s) + a * np.einsum("q,qyx->yx", B, k) + D
-        profile = np.average(np.asarray(p)[:, 0], axis=0, weights=spectrum)
-        w = profile / v
-        for weight, tau, leak, omega, npix in (
-            (w, m.tau1, m.L1, m.Omega1, m.n_pix1),
-            (w**2, m.tau2, m.L2, m.Omega2, m.n_pix2),
-        ):
-            for samples, result in ((p[:, 0], tau), (s, leak), (k * a, omega)):
-                np.testing.assert_allclose(
-                    result[:, 0], (samples * weight).sum((-2, -1))
-                )
-            np.testing.assert_allclose(npix, weight.sum())
-
-        def signal(A, B, D):
-            moments = matched_moments(stamps, A, B, D, planet_spectrum=spectrum)
-            return jnp.average(moments.tau1[:, 0], weights=spectrum)
-
-        gradients = jax.jit(jax.grad(signal, (0, 1, 2)))(A, B, D)
-        for actual, dv in zip(gradients, (s, k * a, 1), strict=True):
-            np.testing.assert_allclose(actual, -np.sum(w**2 * dv, axis=(-2, -1)))
-
-        uniform = MatchedStamps(p, s, jnp.ones_like(k), a)
-        m = matched_moments(uniform, A * 0, B, 0.0, planet_spectrum=spectrum)
-        t, flux = 120.0, 0.6
-        snr2 = (
-            t
-            * (flux * np.average(m.tau1[:, 0], weights=spectrum)) ** 2
-            / (B @ m.Omega2[:, 0])
-        )
-        np.testing.assert_allclose(
-            snr2, t * flux**2 * np.sum(profile**2) / (a * B.sum()), rtol=2e-14
-        )
-
-
 def _gaussian_source():
     """Small analytic source; the nearest border is over eight sigma away."""
     grid = PixelGrid.focal(49, 0.25, Frame(500, 6, "circumscribed"))

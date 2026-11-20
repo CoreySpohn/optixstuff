@@ -77,13 +77,13 @@ Select the imaging model with `band = coro.band(500.0)`. Its
 Scene models return an image and a validity flag from
 `render_scene(scene_image, 500.0, grid=target)`.
 
-`coro.curves(Circular(0.7))` is the single performance record for that aperture.
-Import `Circular` from `optixstuff`; prepare every required rule before JIT
-when constructing an image provider.
-Records contain throughput, core area, stellar leakage fraction, leakage density,
-raw contrast, `iwa_lod`, and `data_extent_lod`. A known design limit is separately
-named `outer_working_angle_lod`. `ScalarCoronagraph` stores calibrated constants
-for one declared aperture.
+The coronagraph slot is the image capability only: a frame, a bandpass and the
+image methods above. Summary curves are a separate characterization record,
+`PerformanceCurves`: throughput, core area, stellar leakage fraction, leakage
+density, raw contrast, `iwa_lod` and `data_extent_lod`. A provider that stores a
+record hands it out as data, and `record.evaluate("throughput", separation_lod)`
+is the one read. `HalfMaximum` and `Circular` are the aperture rules a record is
+built for; import them from `optixstuff`.
 `MultiBandCoronagraph` selects the first declared bandpass covering the wavelength.
 Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
 exposure durations remain seconds.
