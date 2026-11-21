@@ -153,12 +153,18 @@ class Instrument(eqx.Module):
     attenuating_elements: tuple[AbstractOpticalElement, ...]
     coronagraph: AbstractCoronagraph
     detector: AbstractDetector
+    flux_scale: Array = 1.0  # dimensionless flux calibration
 ```
 
-The path exposes three quantities used by the readers.
+The path exposes four quantities used by the readers.
 
 - `system_throughput(wavelength_nm)` -- product of all element
   throughputs at a wavelength
+- `effective_area_m2(wavelength_nm)` -- collecting area times that
+  throughput times `flux_scale`, the one place the three are combined; a
+  simulator multiplies a source's photon flux density by it. `flux_scale` is
+  the dimensionless absolute flux calibration, one by default, linear in every
+  rate
 - `detector.quantum_efficiency(wavelength_nm)` -- detector QE at that wavelength
 - `spectral_breaks_nm()` -- union of the element, coronagraph, detector, disperser
   and speckle breaks for host quadrature construction

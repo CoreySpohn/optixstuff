@@ -7,7 +7,9 @@ import math
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import numpy as np
+from jaxtyping import Array
 
 from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
@@ -66,6 +68,11 @@ class Instrument(eqx.Module):
         speckle: Optional time-varying speckle field (the stochastic
             wavefront-error residual on top of the deterministic
             coronagraph leakage floor); None for a perfect-wavefront path.
+        flux_scale: Dimensionless factor on every photon rate the instrument
+            collects, default one: the absolute flux calibration. It acts in
+            :meth:`effective_area_m2`, the one place the collecting area and
+            throughput are combined. It is linear, so a fit that frees it
+            scales a rate record and need not rebuild one.
     """
 
     primary: AbstractPrimary
@@ -74,6 +81,7 @@ class Instrument(eqx.Module):
     detector: AbstractDetector
     disperser: AbstractDisperser | None = None
     speckle: AbstractSpeckleField | None = None
+    flux_scale: Array = eqx.field(default=1.0, converter=jnp.asarray)
 
     def __check_init__(self):
         """Reject a primary whose diameter disagrees with the coronagraph's frame.
@@ -83,7 +91,14 @@ class Instrument(eqx.Module):
         would take the angular scale from one telescope and the collecting area
         from another. Rescaling a coronagraph to a new telescope is a modelling
         choice the caller makes explicitly, not a silent default.
+
+        The flux scale must be finite and positive when concrete.
         """
+        scale = self.flux_scale
+        if not isinstance(scale, jax.core.Tracer) and not bool(
+            jnp.all(jnp.isfinite(scale) & (scale > 0))
+        ):
+            raise ValueError("flux_scale must be finite and positive")
         if self.coronagraph is None:
             return
         coronagraphs = getattr(self.coronagraph, "bands", None) or (self.coronagraph,)
@@ -114,6 +129,25 @@ class Instrument(eqx.Module):
             1.0,
         )
 
+    def effective_area_m2(self, wavelength_nm: float) -> float:
+        """Collecting area times system throughput times the flux scale.
+
+        The photon rate collected from a source of unit flux density is this
+        area times that flux density. Image and aperture rates both take it
+        from here, so the flux scale is applied once.
+
+        Args:
+            wavelength_nm: Wavelength in nanometers, scalar or an array.
+
+        Returns:
+            Effective area in square meters, shaped like ``wavelength_nm``.
+        """
+        return (
+            self.primary.collecting_area_m2
+            * self.system_throughput(wavelength_nm)
+            * self.flux_scale
+        )
+
     def __repr__(self) -> str:
         """Tree-shaped summary of every component."""
         lines = [
@@ -130,4 +164,8 @@ class Instrument(eqx.Module):
         lines.append(indent("detector: " + repr(self.detector)))
         if self.speckle is not None:
             lines.append(indent("speckle: " + repr(self.speckle)))
+        if not isinstance(self.flux_scale, jax.core.Tracer) and bool(
+            jnp.any(self.flux_scale != 1.0)
+        ):
+            lines.append(indent(f"flux_scale: {self.flux_scale}"))
         return "\n".join(lines)

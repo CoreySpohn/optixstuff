@@ -90,6 +90,40 @@ class TestInstrument:
             assert path.system_throughput(499.0) == 0
             assert path.system_throughput(601.0) == 0
 
+    def test_flux_scale_multiplies_the_effective_area(
+        self, simple_primary, simple_detector
+    ):
+        """Fails if the scale misses the effective area or defaults to anything but one.
+
+        Basis: exact products of the area, the 0.4 throughput and the scale,
+        compared at 0 ULP (a product by exactly one changes no bit); invalid
+        scales must raise.
+        """
+        with jax.enable_x64():
+            kwargs = dict(
+                primary=simple_primary,
+                attenuating_elements=(ox.ConstantThroughput(0.4),),
+                coronagraph=None,
+                detector=simple_detector,
+            )
+            plain = ox.Instrument(**kwargs)
+            assert float(plain.flux_scale) == 1.0
+            area = simple_primary.collecting_area_m2
+            np.testing.assert_array_equal(
+                plain.effective_area_m2(550.0), area * plain.system_throughput(550.0)
+            )
+            scaled = ox.Instrument(**kwargs, flux_scale=1.25)
+            np.testing.assert_allclose(
+                scaled.effective_area_m2(jnp.array([500.0, 600.0])),
+                1.25 * area * 0.4 * jnp.ones(2),
+                rtol=1e-6,
+            )
+            for bad in (0.0, -1.0, np.nan, np.inf):
+                with pytest.raises(ValueError, match="flux_scale"):
+                    ox.Instrument(**kwargs, flux_scale=bad)
+            grad = eqx.filter_grad(lambda i: i.effective_area_m2(550.0))(plain)
+            np.testing.assert_allclose(grad.flux_scale, area * 0.4, rtol=1e-6)
+
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
         path = ox.Instrument(
