@@ -35,13 +35,17 @@ class PostProcessing(eqx.Module):
     ``background_variance_factor`` ``m >= 1`` multiplies the variance rate of
     every source except the planet's own shot noise (star leakage, zodi,
     exozodi, thermal, companions, dark current, CIC and read noise), the
-    variance the subtraction of a noisy background adds. One counts each
-    background once; two is the convention of Stark et al. (2014) and pyEDITH.
+    variance the subtraction of a noisy background adds. It is required and
+    keyword-only: the caller states whether a reference image is subtracted.
+    Two is differential imaging, where the reference image carries the same
+    background variance as the science image (the convention of Stark et al.
+    2014, AYO and pyEDITH); one is no reference subtraction, each background
+    counted once.
     """
 
     speckle_residual_fraction: Array = eqx.field(default=0.0, converter=jnp.asarray)
     exozodi_residual_fraction: Array = eqx.field(default=0.0, converter=jnp.asarray)
-    background_variance_factor: Array = eqx.field(default=1.0, converter=jnp.asarray)
+    background_variance_factor: Array = eqx.field(kw_only=True, converter=jnp.asarray)
 
     def __check_init__(self):
         """Reject concrete nonfinite or out-of-range values."""

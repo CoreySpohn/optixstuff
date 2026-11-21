@@ -198,8 +198,12 @@ frame per live second `b` and the squared residual rate `f2`,
 `PostProcessing` holds the assumptions of the subtraction. The two residual
 fractions in [0, 1] set `f2` from the star-leakage and exozodi rates, and
 `background_variance_factor` `m >= 1` multiplies the variance of every source
-except the planet's own shot noise. `m = 1` counts each background once; the
-AYO and pyEDITH convention is `PostProcessing(1 / ppf, 1 / ez_ppf, 2.0)`. An
+except the planet's own shot noise. It has no default: the caller states
+whether a reference image is subtracted. `m = 2` is differential imaging, the
+reference image carrying the same background variance as the science image;
+the AYO and pyEDITH convention is
+`PostProcessing(1 / ppf, 1 / ez_ppf, background_variance_factor=2.0)`. `m = 1`
+counts each background once, with no reference subtraction. An
 unreachable target has `valid` False and a time of zero; round a reachable
 time with `frames_for_time`.
 

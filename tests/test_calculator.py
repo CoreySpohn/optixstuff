@@ -73,7 +73,7 @@ def test_snr_is_detector_statistics_plus_residual_squares():
             detector,
             3600.0,
             frame_time_s=100.0,
-            post_processing=ox.PostProcessing(f, g),
+            post_processing=ox.PostProcessing(f, g, background_variance_factor=1.0),
         )
         expected = base + (f * e.star_leakage * 3600) ** 2 + (g * e.exozodi * 3600) ** 2
         np.testing.assert_allclose(
@@ -94,9 +94,9 @@ def test_snr_is_detector_statistics_plus_residual_squares():
     np.testing.assert_array_equal(ox.snr(rates, detector, 0.0, **kwargs), [0.0])
     for bad in (-0.01, 1.01, np.nan):
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            ox.PostProcessing(bad, 0)
+            ox.PostProcessing(bad, 0, background_variance_factor=1.0)
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            ox.PostProcessing(0, bad)
+            ox.PostProcessing(0, bad, background_variance_factor=1.0)
 
 
 def test_exposure_time_inverts_snr_and_flags_unreachable_targets():
@@ -107,7 +107,7 @@ def test_exposure_time_inverts_snr_and_flags_unreachable_targets():
     O(h^2) truncation allows 1e-7 relative.
     """
     rates, detector = _rates(), _detector()
-    pp = ox.PostProcessing(0.1, 0.2)
+    pp = ox.PostProcessing(0.1, 0.2, background_variance_factor=1.0)
     kwargs = dict(frame_time_s=100.0, post_processing=pp)
     times = jnp.array([100.0, 723.4, 3600.0, 1e5])
     targets = jax.vmap(lambda t: ox.snr(rates, detector, t, **kwargs)[0])(times)
@@ -164,7 +164,7 @@ def test_per_band_targets_and_frame_times():
     """
     bands = (Band(500.0, 550.0), Band(550.0, 600.0))
     rates, detector = _rates(bands), _detector()
-    pp = ox.PostProcessing(0.05, 0.1)
+    pp = ox.PostProcessing(0.05, 0.1, background_variance_factor=1.0)
     target, frame, time = jnp.array([4.0, 6.0]), jnp.array([50.0, 200.0]), 5000.0
     both = ox.exposure_time(
         rates, detector, target, frame_time_s=frame, post_processing=pp
@@ -195,23 +195,17 @@ def test_background_variance_factor_one_is_the_unscaled_result():
     rates, detector = _rates(), _detector()
     e = detector.electrons(rates)
     _, one_frame = detector.mean_and_variance(e, FramePlan(100.0, 1))
-    pp = ox.PostProcessing(0.1, 0.2)
-    assert float(pp.background_variance_factor) == 1.0
+    pp = ox.PostProcessing(0.1, 0.2, background_variance_factor=1.0)
     floor = (0.1 * e.star_leakage) ** 2 + (0.2 * e.exozodi) ** 2
     variance = (one_frame / 100.0) * 3600.0 + floor * 3600.0**2
     np.testing.assert_array_equal(
         ox.snr(rates, detector, 3600.0, frame_time_s=100.0, post_processing=pp),
         e.planet * 3600.0 / jnp.sqrt(variance),
     )
-    explicit = ox.PostProcessing(0.1, 0.2, 1.0)
-    np.testing.assert_array_equal(
-        ox.exposure_time(
-            rates, detector, 5.0, frame_time_s=100.0, post_processing=pp
-        ).time_s,
-        ox.exposure_time(
-            rates, detector, 5.0, frame_time_s=100.0, post_processing=explicit
-        ).time_s,
-    )
+    with pytest.raises(TypeError, match="background_variance_factor"):
+        ox.PostProcessing(0.1, 0.2)
+    with pytest.raises(TypeError):
+        ox.PostProcessing(0.1, 0.2, 1.0)
 
 
 def test_background_variance_factor_scales_everything_but_the_planet():
@@ -233,7 +227,7 @@ def test_background_variance_factor_scales_everything_but_the_planet():
             detector,
             target,
             frame_time_s=100.0,
-            post_processing=ox.PostProcessing(f, g, factor),
+            post_processing=ox.PostProcessing(f, g, background_variance_factor=factor),
         )
         expected = (
             target**2
@@ -246,7 +240,7 @@ def test_background_variance_factor_scales_everything_but_the_planet():
         np.testing.assert_allclose(solved.time_s, expected, rtol=1e-12)
     for bad in (0.99, -1.0, np.nan, np.inf):
         with pytest.raises(ValueError, match="background_variance_factor"):
-            ox.PostProcessing(0, 0, bad)
+            ox.PostProcessing(0, 0, background_variance_factor=bad)
 
 
 def test_ayo_science_time_from_dumped_rates():
@@ -283,7 +277,7 @@ def test_ayo_science_time_from_dumped_rates():
         exozodi=jnp.array([exozodi]),
         n_pix=jnp.array([n_pix]),
     )
-    floor = ox.PostProcessing(nf / leak, 0.0, 2.0)
+    floor = ox.PostProcessing(nf / leak, 0.0, background_variance_factor=2.0)
     time = ox.exposure_time(
         rates, detector, snr_target, frame_time_s=1.0, post_processing=floor
     )
@@ -294,7 +288,9 @@ def test_ayo_science_time_from_dumped_rates():
         detector,
         snr_target,
         frame_time_s=1.0,
-        post_processing=ox.PostProcessing(nf / leak, 0.0),
+        post_processing=ox.PostProcessing(
+            nf / leak, 0.0, background_variance_factor=1.0
+        ),
     )
     np.testing.assert_allclose(once.time_s, [215336.1], rtol=1e-6)
 
@@ -308,7 +304,7 @@ def test_trailing_batch_axes_broadcast_against_the_band_axis():
     """
     bands = (Band(500.0, 550.0), Band(550.0, 600.0))
     detector = _detector()
-    pp = ox.PostProcessing(0.05, 0.1, 2.0)
+    pp = ox.PostProcessing(0.05, 0.1, background_variance_factor=2.0)
     scales = jnp.array([0.5, 1.0, 3.0])
     base = _rates(bands)
 
