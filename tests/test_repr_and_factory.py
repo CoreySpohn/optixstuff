@@ -100,3 +100,11 @@ class TestInstrument:
                 detector=ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(8, 8)),
             )
         assert make_instrument(coro).coronagraph is coro
+
+    def test_public_check_names_the_source(self):
+        coro = table_coronagraph()
+        primary = ox.SimplePrimary(
+            circumscribed_diameter_m=8.0, collecting_area_m2=28.0
+        )
+        with pytest.raises(ValueError, match="differs from the curves"):
+            ox.check_primary_matches_frame(primary, coro.frame, source="curves")

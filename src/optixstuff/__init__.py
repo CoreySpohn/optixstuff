@@ -25,7 +25,7 @@ from optixstuff.detector import (
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
 from optixstuff.exposure import Exposure, FramePlan, frames_for_time
 from optixstuff.grids import Image, Measure, PixelGrid
-from optixstuff.instrument import Instrument
+from optixstuff.instrument import Instrument, check_primary_matches_frame
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -85,6 +85,7 @@ __all__ = [
     "SourcePSFs",
     "TransmissiveElement",
     "__version__",
+    "check_primary_matches_frame",
     "exposure_time",
     "frames_for_time",
     "load_psflet_pack",

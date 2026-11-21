@@ -21,6 +21,33 @@ from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.spectral import spectral_breaks
 
 
+def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
+    """Raise when a lambda/D frame was measured for another telescope diameter.
+
+    The frame carries the diameter its angular scale was computed for, in the
+    convention it names; a primary of another diameter would take the angular
+    scale from one telescope and the collecting area from another. Traced
+    diameters are skipped.
+
+    Args:
+        primary: The primary whose diameter is checked.
+        frame: The ``Frame`` of the coronagraph tables or curves.
+        source: What carries the frame, for the error message.
+
+    Raises:
+        ValueError: If the primary diameter differs from ``frame.diameter_m``.
+    """
+    supplied = primary.diameter(frame.diameter_convention)
+    if isinstance(supplied, jax.core.Tracer):
+        return
+    if not math.isclose(float(supplied), frame.diameter_m, rel_tol=1e-6):
+        raise ValueError(
+            f"primary {frame.diameter_convention} diameter {float(supplied)} m "
+            f"differs from the {source}'s lambda/D frame ({frame.diameter_m} m); "
+            f"build the primary with the {source}'s diameters"
+        )
+
+
 class Instrument(eqx.Module):
     """Universal hardware container for a coronagraphic telescope.
 
@@ -61,17 +88,7 @@ class Instrument(eqx.Module):
             return
         coronagraphs = getattr(self.coronagraph, "bands", None) or (self.coronagraph,)
         for coronagraph in coronagraphs:
-            frame = coronagraph.frame
-            supplied = self.primary.diameter(frame.diameter_convention)
-            if isinstance(supplied, jax.core.Tracer):
-                continue
-            if not math.isclose(float(supplied), frame.diameter_m, rel_tol=1e-6):
-                raise ValueError(
-                    f"primary {frame.diameter_convention} diameter {float(supplied)} m "
-                    f"differs from the coronagraph's lambda/D frame "
-                    f"({frame.diameter_m} m); build the primary with the "
-                    "coronagraph's diameters"
-                )
+            check_primary_matches_frame(self.primary, coronagraph.frame)
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Combine the breaks of the optical train and detector yield."""
