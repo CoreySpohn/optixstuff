@@ -98,7 +98,8 @@ provides:
 - **Concrete implementations**: `SimplePrimary`, `ConstantThroughput`,
   `TransmissiveElement`, `IdealDetector`, `Detector`, `MultiBandCoronagraph`
 - **Container**: `Instrument`, a composable hardware configuration
-  passed to all downstream simulators
+  passed to all downstream simulators, with an optional `WarmEmission`
+  for the warm telescope's thermal emission
 
 Optical elements and coronagraphs accept fidelity axes (**wavelength**,
 **position**, and **time**) with defaults so simple implementations

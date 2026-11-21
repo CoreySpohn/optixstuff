@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.planck import planck_photon_radiance
 from jaxtyping import Array
 
 from optixstuff._repr import indent
@@ -50,6 +51,54 @@ def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
         )
 
 
+class WarmEmission(eqx.Module):
+    """Thermal emission of the warm telescope, one lumped blackbody.
+
+    The warm surfaces (primary, secondary and any other optics at telescope
+    temperature) radiate as one blackbody at ``temperature_K`` with an
+    effective emissivity; the cold optics behind them transmit that light
+    to the focal plane. This is the lumped description the analytic
+    exposure-time calculators use, so ``effective_emissivity`` is the
+    emissivity of the warm surfaces times the transmission of the cold
+    optics behind them, not a property of any single element.
+
+    Args:
+        temperature_K: Temperature of the warm telescope [K], finite and
+            positive.
+        effective_emissivity: Warm emissivity times cold transmission,
+            dimensionless in [0, 1].
+    """
+
+    temperature_K: Array = eqx.field(converter=jnp.asarray)
+    effective_emissivity: Array = eqx.field(converter=jnp.asarray)
+
+    def __check_init__(self):
+        """Reject a non-positive temperature or an emissivity outside [0, 1]."""
+        temperature, emissivity = self.temperature_K, self.effective_emissivity
+        if isinstance(temperature, jax.core.Tracer) or isinstance(
+            emissivity, jax.core.Tracer
+        ):
+            return
+        if not bool(jnp.all(jnp.isfinite(temperature) & (temperature > 0))):
+            raise ValueError("temperature_K must be finite and positive")
+        if not bool(jnp.all((emissivity >= 0) & (emissivity <= 1))):
+            raise ValueError("effective_emissivity must lie in [0, 1]")
+
+    def photon_radiance(self, wavelength_nm):
+        """Return the emitted radiance in photons/s/m^2/nm/sr, emissivity applied.
+
+        Args:
+            wavelength_nm: Wavelength in nanometers, scalar or an array.
+
+        Returns:
+            Planck photon radiance at ``temperature_K`` times
+            ``effective_emissivity``, shaped like ``wavelength_nm``.
+        """
+        return self.effective_emissivity * planck_photon_radiance(
+            wavelength_nm, self.temperature_K
+        )
+
+
 class Instrument(eqx.Module):
     """Universal hardware container for a coronagraphic telescope.
 
@@ -73,6 +122,11 @@ class Instrument(eqx.Module):
             :meth:`effective_area_m2`, the one place the collecting area and
             throughput are combined. It is linear, so a fit that frees it
             scales a rate record and need not rebuild one.
+        warm_emission: Optional :class:`WarmEmission` of the warm telescope,
+            owned here because it describes the assembled warm optical train
+            and not the primary or any one element (swap the primary and the
+            same train still radiates). None, the default, is no thermal
+            emission.
     """
 
     primary: AbstractPrimary
@@ -82,6 +136,7 @@ class Instrument(eqx.Module):
     disperser: AbstractDisperser | None = None
     speckle: AbstractSpeckleField | None = None
     flux_scale: Array = eqx.field(default=1.0, converter=jnp.asarray)
+    warm_emission: WarmEmission | None = None
 
     def __check_init__(self):
         """Reject a primary whose diameter disagrees with the coronagraph's frame.
@@ -150,6 +205,29 @@ class Instrument(eqx.Module):
             * self.flux_scale
         )
 
+    def thermal_photon_rate_per_sr(self, wavelength_nm: float) -> float:
+        """Photon rate of the warm telescope's own emission per steradian.
+
+        The radiance of :class:`WarmEmission` times the geometric collecting
+        area of the primary, in photons/s/nm/sr. It does not carry the system
+        throughput, because the effective emissivity already includes the
+        cold transmission, nor the flux scale, which calibrates sky photons.
+        Multiply by the aperture solid angle for the rate in an aperture. Zero
+        when ``warm_emission`` is None.
+
+        Args:
+            wavelength_nm: Wavelength in nanometers, scalar or an array.
+
+        Returns:
+            Photons/s/nm/sr, shaped like ``wavelength_nm``.
+        """
+        if self.warm_emission is None:
+            return jnp.zeros_like(jnp.asarray(wavelength_nm, dtype=float))
+        return (
+            self.warm_emission.photon_radiance(wavelength_nm)
+            * self.primary.collecting_area_m2
+        )
+
     def __repr__(self) -> str:
         """Tree-shaped summary of every component."""
         lines = [
@@ -166,6 +244,8 @@ class Instrument(eqx.Module):
         lines.append(indent("detector: " + repr(self.detector)))
         if self.speckle is not None:
             lines.append(indent("speckle: " + repr(self.speckle)))
+        if self.warm_emission is not None:
+            lines.append(indent("warm_emission: " + repr(self.warm_emission)))
         if not isinstance(self.flux_scale, jax.core.Tracer) and bool(
             jnp.any(self.flux_scale != 1.0)
         ):

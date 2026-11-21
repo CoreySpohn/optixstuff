@@ -124,6 +124,46 @@ class TestInstrument:
             grad = eqx.filter_grad(lambda i: i.effective_area_m2(550.0))(plain)
             np.testing.assert_allclose(grad.flux_scale, area * 0.4, rtol=1e-6)
 
+    def test_warm_emission_is_planck_times_emissivity_times_area(
+        self, simple_primary, simple_detector
+    ):
+        """Fails if the thermal rate drops a factor or is on by default.
+
+        Basis: the closed-form photon radiance 2 c / lambda^4 / expm1(h c /
+        (lambda k T)) written from the constants, times emissivity and the
+        geometric area, in float64; rtol 1e-12 for the exp and one product
+        chain. The default and a zero emissivity give exact zeros.
+        """
+        from hwoutils.constants import c, h, k_B
+
+        with jax.enable_x64():
+            kwargs = dict(
+                primary=simple_primary,
+                attenuating_elements=(ox.ConstantThroughput(0.4),),
+                coronagraph=None,
+                detector=simple_detector,
+            )
+            wavelength = np.array([500.0, 1000.0, 2000.0])
+            assert not np.any(
+                ox.Instrument(**kwargs).thermal_photon_rate_per_sr(wavelength)
+            )
+            warm = ox.WarmEmission(temperature_K=290.0, effective_emissivity=0.638)
+            instrument = ox.Instrument(**kwargs, warm_emission=warm, flux_scale=1.7)
+            lam_m = wavelength * 1e-9
+            radiance = 2 * c / lam_m**4 / np.expm1(h * c / (lam_m * k_B * 290.0)) * 1e-9
+            np.testing.assert_allclose(
+                instrument.thermal_photon_rate_per_sr(wavelength),
+                radiance * 0.638 * simple_primary.collecting_area_m2,
+                rtol=1e-12,
+            )
+            off = ox.Instrument(
+                **kwargs, warm_emission=ox.WarmEmission(290.0, 0.0)
+            ).thermal_photon_rate_per_sr(wavelength)
+            assert not np.any(off)
+            for bad in ((0.0, 0.5), (np.nan, 0.5), (290.0, 1.2), (290.0, -0.1)):
+                with pytest.raises(ValueError):
+                    ox.WarmEmission(*bad)
+
     def test_system_throughput_single_element(self, simple_primary, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
         path = ox.Instrument(

@@ -6,6 +6,9 @@ Two libraries in the suite answer "how long until this planet reaches a signal-t
 
 A `Rates` record holds six named source rates for one aperture, here in photons per second per nanometre at the nodes of a wavelength quadrature: `planet`, `star_leakage`, `local_zodi`, `exozodi`, `thermal` and `stellar_companions`. It also holds the aperture's pixel count `n_pix` and a second record, `variance`, summed with the squared aperture weights.
 
+
+The `thermal` field is the warm telescope's own emission. An `Instrument` built with a `WarmEmission` (the telescope temperature and an effective emissivity, warm emissivity times cold transmission) gives it through `Instrument.thermal_photon_rate_per_sr`, the Planck photon radiance times the emissivity times the collecting area, in photons per second per nanometre per steradian; a producer multiplies by the aperture solid angle. The default `warm_emission=None` is no emission. `jaxedith.rates` fills `thermal` this way. `coronagraphoto` does not render thermal emission in its images or aperture rates and leaves the field zero.
+
 ```mermaid
 flowchart TB
     subgraph image["Image path: coronagraphoto"]
