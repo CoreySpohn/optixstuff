@@ -1,6 +1,6 @@
 # optixstuff
 
-Shared hardware objects -- with standard values -- for the HWO
+Shared hardware objects, with standard values, for the HWO
 direct-imaging simulation suite.
 
 `optixstuff` is a **thin shared dependency** that defines the
@@ -18,7 +18,8 @@ reads coronagraph performance as {class}`~optixstuff.PerformanceCurves`
 data. Change a value here and both downstream tools pick it up on the
 next import. Both end at an {class}`~optixstuff.Rates` record, which
 {func}`optixstuff.snr` and {func}`optixstuff.exposure_time` reduce to
-S/N or exposure time.
+S/N or exposure time; [how an exposure time is computed](explanation/exposure_time.md)
+follows both roads.
 
 ## What optixstuff is NOT
 
@@ -92,15 +93,15 @@ Built on [JAX](https://github.com/google/jax) and
 [Equinox](https://github.com/patrick-kidger/equinox), optixstuff
 provides:
 
-- **Abstract interfaces** -- `AbstractPrimary`,
+- **Abstract interfaces**: `AbstractPrimary`,
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
-- **Concrete implementations** -- `SimplePrimary`, `ConstantThroughput`,
+- **Concrete implementations**: `SimplePrimary`, `ConstantThroughput`,
   `TransmissiveElement`, `IdealDetector`, `Detector`, `MultiBandCoronagraph`
-- **Container** -- `Instrument`, a composable hardware configuration
+- **Container**: `Instrument`, a composable hardware configuration
   passed to all downstream simulators
 
-Optical elements and coronagraphs accept fidelity axes -- **wavelength**,
-**position**, and **time** -- with defaults so simple implementations
+Optical elements and coronagraphs accept fidelity axes (**wavelength**,
+**position**, and **time**) with defaults so simple implementations
 can ignore unused axes while future high-fidelity models
 (wavelength-dependent coatings, position-dependent vignetting,
 time-dependent detector degradation) can use them without breaking
@@ -108,7 +109,9 @@ the interface.
 
 See [architecture](explanation/architecture) for the full abstraction
 hierarchy, and [detector models](explanation/detector_models) for an
-overview of photon rates, electron statistics, and detector draws.
+overview of photon rates, electron statistics, and detector draws, and
+[how an exposure time is computed](explanation/exposure_time.md) for the path from
+a `Rates` record to S/N and time.
 
 ```{toctree}
 :maxdepth: 1
@@ -116,6 +119,7 @@ overview of photon rates, electron statistics, and detector draws.
 :hidden:
 
 explanation/architecture
+explanation/exposure_time
 explanation/detector_models
 explanation/grids_and_spectra
 ```

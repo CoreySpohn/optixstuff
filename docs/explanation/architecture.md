@@ -6,8 +6,8 @@ provides and the three-axis design (wavelength / position / time).
 
 ## The role of optixstuff
 
-`optixstuff` provides **composable hardware objects** -- primary,
-throughput elements, coronagraph backend, detector -- and a container
+`optixstuff` provides **composable hardware objects** (primary,
+throughput elements, coronagraph backend, detector) and a container
 (`Instrument`) that bundles them. The hardware objects hold attributes
 like quantum efficiency curves, throughput, dark-current
 rates, and pixel scales; downstream tools query those attributes to
@@ -84,11 +84,11 @@ represents a unit bandpass; constant optical losses use a scalar
 | Concrete element | Represents |
 |---|---|
 | `ConstantThroughput` | Flat-reflectivity mirror coating, broadband neutral-density filter, fold mirror with achromatic reflectivity |
-| `TransmissiveElement` | An element holding a `Transmission` -- mirror reflectivity curves, bandpass filters, dichroics, other filters |
+| `TransmissiveElement` | An element holding a `Transmission`: mirror reflectivity curves, bandpass filters, dichroics, other filters |
 
-A real instrument has many individual physical components -- primary
+A real instrument has many individual physical components (primary
 mirror, secondary, deformable mirror, fold mirrors, polarisers,
-bandpass filters, dichroics, lenses -- each with its own throughput
+bandpass filters, dichroics, lenses), each with its own throughput
 curve. In optixstuff they all enter the radiometric model the same
 way: "a wavelength-dependent fraction that scales the incoming flux."
 The `Instrument` holds a `tuple[AbstractOpticalElement, ...]` whose
@@ -122,7 +122,7 @@ The abstraction lets you swap real-instrument throughput curves in
 and out without changing how downstream tools consume the result.
 Higher-fidelity elements (e.g. one with a position-varying vignetting
 profile) can subclass `AbstractOpticalElement` directly to use the
-position axis -- see the next section.
+position axis, as the next section describes.
 
 ## The three-axis design
 
@@ -140,7 +140,10 @@ hardware configuration:
 
 ```python
 import equinox as eqx
+from jaxtyping import Array
 from optixstuff import (
+    AbstractDisperser,
+    AbstractSpeckleField,
     AbstractPrimary,
     AbstractOpticalElement,
     AbstractCoronagraph,
@@ -151,28 +154,34 @@ from optixstuff import (
 class Instrument(eqx.Module):
     primary: AbstractPrimary
     attenuating_elements: tuple[AbstractOpticalElement, ...]
-    coronagraph: AbstractCoronagraph
+    coronagraph: AbstractCoronagraph | None
     detector: AbstractDetector
+    disperser: AbstractDisperser | None = None
+    speckle: AbstractSpeckleField | None = None
     flux_scale: Array = 1.0  # dimensionless flux calibration
 ```
 
-The path exposes four quantities used by the readers.
+The disperser and speckle slots are optional: a disperser marks an IFS
+configuration and a speckle field adds time-varying leakage on top of the
+coronagraph's deterministic floor. The container exposes four quantities used
+by the readers.
 
-- `system_throughput(wavelength_nm)` -- product of all element
+- `system_throughput(wavelength_nm)`: product of all element
   throughputs at a wavelength
-- `effective_area_m2(wavelength_nm)` -- collecting area times that
+- `effective_area_m2(wavelength_nm)`: collecting area times that
   throughput times `flux_scale`, the one place the three are combined; a
   simulator multiplies a source's photon flux density by it. `flux_scale` is
   the dimensionless absolute flux calibration, one by default, linear in every
   rate
-- `detector.quantum_efficiency(wavelength_nm)` -- detector QE at that wavelength
-- `spectral_breaks_nm()` -- union of the element, coronagraph, detector, disperser
+- `detector.quantum_efficiency(wavelength_nm)`: detector QE at that wavelength
+- `spectral_breaks_nm()`: union of the element, coronagraph, detector, disperser
   and speckle breaks for host quadrature construction
 
 That's it. The container does not own simulation logic; it just holds
 hardware. Simulators (coronagraphoto, jaxEDITH) consume the container,
 query its throughput and QE, and produce rates. `snr` and `exposure_time`
-reduce those rates to science-level outputs.
+reduce those rates to science-level outputs. [How an exposure time is
+computed](exposure_time.md) follows both producers to that reduction.
 
 ## Photon rates, electrons, and detector noise
 

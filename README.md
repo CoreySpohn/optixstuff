@@ -29,7 +29,9 @@ optixstuff; jaxEDITH reads coronagraph performance as `PerformanceCurves`
 data, not from the coronagraph slot. Change a value here and every downstream
 tool picks it up on the next import. The S/N and exposure-time reduction of a
 `Rates` record, `optixstuff.snr` and `optixstuff.exposure_time` with
-`optixstuff.PostProcessing`, lives here because both producers end at it.
+`optixstuff.PostProcessing`, lives here because both producers end at it; [how an exposure time is
+computed](https://optixstuff.readthedocs.io/en/latest/explanation/exposure_time.html)
+follows both.
 
 ## What optixstuff is *not*
 
