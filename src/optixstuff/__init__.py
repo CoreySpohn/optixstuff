@@ -6,6 +6,7 @@ from optixstuff.apertures import (
     Circular,
     HalfMaximum,
 )
+from optixstuff.calculator import ExposureTime, PostProcessing, exposure_time, snr
 from optixstuff.coronagraph import (
     AbstractCoronagraph,
     AbstractImagingCoronagraph,
@@ -59,6 +60,7 @@ __all__ = [
     "ConstantThroughput",
     "Detector",
     "Exposure",
+    "ExposureTime",
     "FocalResponse",
     "FramePlan",
     "HalfMaximum",
@@ -71,6 +73,7 @@ __all__ = [
     "MultiBandCoronagraph",
     "PerformanceCurves",
     "PixelGrid",
+    "PostProcessing",
     "ProductGrids",
     "PsfletPack",
     "Quadrature",
@@ -82,8 +85,10 @@ __all__ = [
     "SourcePSFs",
     "TransmissiveElement",
     "__version__",
+    "exposure_time",
     "frames_for_time",
     "load_psflet_pack",
     "performance_curves",
     "save_psflet_pack",
+    "snr",
 ]

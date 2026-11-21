@@ -26,6 +26,15 @@ def _check_range(name, value, low, high=float("inf")):
         raise ValueError(f"{name} must be finite and in [{low}, {high}]")
 
 
+def _per_band_pixels(n_pix, ndim):
+    """Align a scalar or (W,) pixel count with ndim-dimensional rates, band first."""
+    if n_pix is None:
+        return 1.0
+    return (
+        n_pix.reshape(n_pix.shape + (1,) * (ndim - n_pix.ndim)) if n_pix.ndim else n_pix
+    )
+
+
 def _check_electrons(rates):
     """Require band-integrated electron rates, the detector statistics' input."""
     if rates.carrier != "electron" or rates.spectral:
@@ -158,16 +167,18 @@ class AbstractDetector(eqx.Module):
             )
             return counts, frames
 
-        n_pix = 1.0 if rates.n_pix is None else rates.n_pix
-        mean, frames = poisson_counts(rates.total(), n_pix)
+        total = rates.total()
+        n_pix = _per_band_pixels(rates.n_pix, total.ndim)
+        mean, frames = poisson_counts(total, n_pix)
         variance_pixels = n_pix
         shot_variance = mean
         if rates.variance is not None:
+            shot_total = rates.variance.total()
             if rates.variance.n_pix is not None:
-                variance_pixels = rates.variance.n_pix
-            shot_variance, frames = poisson_counts(
-                rates.variance.total(), variance_pixels
-            )
+                variance_pixels = _per_band_pixels(
+                    rates.variance.n_pix, shot_total.ndim
+                )
+            shot_variance, frames = poisson_counts(shot_total, variance_pixels)
         variance = self.excess_noise_factor_sq * shot_variance + (
             variance_pixels * self.read_noise_e_rms**2 * frames
         )
