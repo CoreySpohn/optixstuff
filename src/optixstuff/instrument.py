@@ -118,10 +118,11 @@ class Instrument(eqx.Module):
             wavefront-error residual on top of the deterministic
             coronagraph leakage floor); None for a perfect-wavefront path.
         flux_scale: Dimensionless factor on every photon rate the instrument
-            collects, default one: the absolute flux calibration. It acts in
-            :meth:`effective_area_m2`, the one place the collecting area and
-            throughput are combined. It is linear, so a fit that frees it
-            scales a rate record and need not rebuild one.
+            collects from the sky, default one: the absolute flux calibration.
+            It acts in :meth:`effective_area_m2`, the one place the collecting
+            area and throughput are combined. Thermal emission does not carry
+            it. It is linear, so a fit that frees it scales the sky fields of a
+            rate record and need not rebuild one.
         warm_emission: Optional :class:`WarmEmission` of the warm telescope,
             owned here because it describes the assembled warm optical train
             and not the primary or any one element (swap the primary and the

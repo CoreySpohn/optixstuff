@@ -6,7 +6,6 @@ Two libraries in the suite answer "how long until this planet reaches a signal-t
 
 A `Rates` record holds six named source rates for one aperture, here in photons per second per nanometre at the nodes of a wavelength quadrature: `planet`, `star_leakage`, `local_zodi`, `exozodi`, `thermal` and `stellar_companions`. It also holds the aperture's pixel count `n_pix` and a second record, `variance`, summed with the squared aperture weights.
 
-
 The `thermal` field is the warm telescope's own emission. An `Instrument` built with a `WarmEmission` (the telescope temperature and an effective emissivity, warm emissivity times cold transmission) gives it through `Instrument.thermal_photon_rate_per_sr`, the Planck photon radiance times the emissivity times the collecting area, in photons per second per nanometre per steradian; a producer multiplies by the aperture solid angle. The default `warm_emission=None` is no emission. `jaxedith.rates` fills `thermal` this way. `coronagraphoto` renders it as a uniform image and records it per pixel for its aperture reads, so both producers fill the field.
 
 ```mermaid
@@ -21,17 +20,19 @@ flowchart TB
     end
     subgraph analytic["Analytic path: jaxedith"]
         rates["rates<br/>curves, scene, instrument, position"]
+        sceneRates["scene_rates<br/>every planet and time of a scene"]
     end
     read --> R["optixstuff Rates<br/>photons/s/nm, n_pix, variance"]
     scene --> R
     rates --> R
+    sceneRates --> R
     R --> det["detector.electrons<br/>QE and survival, once"]
     det --> calc["optixstuff.snr and exposure_time<br/>with PostProcessing"]
 ```
 
 The image path pays once to learn what the coronagraph does to a point source and to the backgrounds. `coronagraphoto.aperture_response` places point sources on rings and records the planet throughput against separation. `coronagraphoto.aperture_record` renders the star leakage, a uniform sky and the disk once and sums each in the aperture at every half-pixel position. `coronagraphoto.aperture_rates` reads one planet from those tables, and `coronagraphoto.scene_aperture_rates` reads every planet of a scene at every time. The aperture sums come from the same images the simulator draws, so the record agrees with an aperture sum of `coronagraphoto.expected`.
 
-The analytic path skips the images. `jaxedith.rates` takes a `PerformanceCurves` record, the scene, the instrument and a planet position, reads the curves at the planet's separation in lambda/D, and multiplies each source by the collecting area, the system throughput and the aperture. It is the scalar arithmetic of AYO and pyEDITH, evaluated per spectral node, and it returns the same `Rates` type.
+The analytic path skips the images. `jaxedith.rates` takes a `PerformanceCurves` record, the scene, the instrument and a planet position, reads the curves at the planet's separation in lambda/D, and multiplies each source by the collecting area, the system throughput and the aperture. It is the scalar arithmetic of AYO and pyEDITH, evaluated per spectral node, and it returns the same `Rates` type. `jaxedith.scene_rates` is its counterpart of `coronagraphoto.scene_aperture_rates`: every planet of a scene at every time, with the same `(W, Q, K, T)` layout.
 
 Because the two records are the same type, everything after them is shared. Neither producer applies detector yield: the record is photons, and `detector.electrons(rates)` applies quantum efficiency and survival once, at the nodes, before integrating each band. The two roads can differ in their rates, since one measures the coronagraph on images and the other reads summary curves, but they cannot differ in how a rate becomes a time.
 

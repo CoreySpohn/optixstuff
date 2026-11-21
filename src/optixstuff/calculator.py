@@ -8,8 +8,8 @@ squared residual rate ``f2``, the count variance after ``t`` live seconds is
 ``b t + f2 t**2``, so ``S/N = p t / sqrt(b t + f2 t**2)`` and
 ``t = snr**2 b / (p**2 - snr**2 f2)``.
 
-Thermal and stray-light terms are whatever the record carries; the analytic
-producers leave them zero.
+A record carries what its producer fills: ``jaxedith.rates`` fills ``thermal``
+from ``Instrument.warm_emission``, and the stray-light companions are zero.
 """
 
 import equinox as eqx
