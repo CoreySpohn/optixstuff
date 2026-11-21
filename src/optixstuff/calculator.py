@@ -96,19 +96,18 @@ def _statistics(rates, detector, frame_time_s, post_processing):
     _, one_frame = detector.mean_and_variance(electrons, FramePlan(frame_time_s, 1))
     b = one_frame / _per_band(frame_time_s, one_frame.ndim)
     floor_sq = jnp.zeros_like(b)
-    if post_processing is not None:
-        speckle = _per_band(post_processing.speckle_residual_fraction, b.ndim)
-        exozodi = _per_band(post_processing.exozodi_residual_fraction, b.ndim)
-        floor_sq = (
-            floor_sq
-            + (speckle * _like(electrons.star_leakage, b.shape)) ** 2
-            + (exozodi * _like(electrons.exozodi, b.shape)) ** 2
-        )
-        shot = electrons if electrons.variance is None else electrons.variance
-        planet_variance = detector.excess_noise_factor_sq * _like(shot.planet, b.shape)
-        # m = 1 adds exactly zero, leaving the detector variance unchanged.
-        factor = _per_band(post_processing.background_variance_factor, b.ndim)
-        b = b + (factor - 1.0) * (b - planet_variance)
+    speckle = _per_band(post_processing.speckle_residual_fraction, b.ndim)
+    exozodi = _per_band(post_processing.exozodi_residual_fraction, b.ndim)
+    floor_sq = (
+        floor_sq
+        + (speckle * _like(electrons.star_leakage, b.shape)) ** 2
+        + (exozodi * _like(electrons.exozodi, b.shape)) ** 2
+    )
+    shot = electrons if electrons.variance is None else electrons.variance
+    planet_variance = detector.excess_noise_factor_sq * _like(shot.planet, b.shape)
+    # m = 1 adds exactly zero, leaving the detector variance unchanged.
+    factor = _per_band(post_processing.background_variance_factor, b.ndim)
+    b = b + (factor - 1.0) * (b - planet_variance)
     return _like(electrons.planet, b.shape), b, floor_sq
 
 
@@ -118,7 +117,7 @@ def snr(
     time_s: ArrayLike,
     *,
     frame_time_s: ArrayLike,
-    post_processing: PostProcessing | None = None,
+    post_processing: PostProcessing,
 ) -> Array:
     """Return S/N per band, shape (W,), after ``time_s`` live seconds.
 
@@ -129,7 +128,8 @@ def snr(
     induced charge and read noise over the aperture's pixels, with CIC and
     read noise accruing once per ``frame_time_s``. ``post_processing`` adds
     the squared residual speckle and exozodi counts and scales the background
-    variance; None means no residual and a factor of one.
+    variance; it is required, as no subtraction is not the same as perfect
+    subtraction.
 
     ``time_s`` and ``frame_time_s`` are scalar or shape (W,). The result
     equals ``detector.mean_and_variance`` at every whole number of frames and
@@ -150,7 +150,7 @@ def exposure_time(
     target_snr: ArrayLike,
     *,
     frame_time_s: ArrayLike,
-    post_processing: PostProcessing | None = None,
+    post_processing: PostProcessing,
 ) -> ExposureTime:
     """Return the continuous live time reaching each band's target S/N.
 

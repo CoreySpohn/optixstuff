@@ -32,6 +32,8 @@ def _detector():
 
 
 _BAND = (Band(500.0, 600.0),)
+# No residual and each background counted once: the detector variance as it is.
+reference = ox.PostProcessing(background_variance_factor=1.0)
 
 
 def _rates(bands=_BAND):
@@ -79,7 +81,7 @@ def test_snr_is_detector_statistics_plus_residual_squares():
         np.testing.assert_allclose(
             (e.planet * 3600 / actual) ** 2, expected, rtol=1e-12, atol=0
         )
-    kwargs = dict(frame_time_s=100.0)
+    kwargs = dict(frame_time_s=100.0, post_processing=reference)
     np.testing.assert_allclose(
         ox.snr(rates, detector, 3600.0, **kwargs),
         e.planet * 3600 / jnp.sqrt(base),
@@ -150,8 +152,14 @@ def test_unknown_rates_stay_unknown():
     # The signal comes from the mean record and the noise from its variance.
     for where in (lambda r: r.planet, lambda r: r.variance.local_zodi):
         unknown = eqx.tree_at(where, rates, nan)
-        assert jnp.isnan(ox.snr(unknown, detector, 3600.0, frame_time_s=100.0)).all()
-        solved = ox.exposure_time(unknown, detector, 5.0, frame_time_s=100.0)
+        assert jnp.isnan(
+            ox.snr(
+                unknown, detector, 3600.0, frame_time_s=100.0, post_processing=reference
+            )
+        ).all()
+        solved = ox.exposure_time(
+            unknown, detector, 5.0, frame_time_s=100.0, post_processing=reference
+        )
         assert not solved.valid.any()
         np.testing.assert_array_equal(solved.time_s, [0.0])
 
@@ -183,7 +191,13 @@ def test_per_band_targets_and_frame_times():
             rtol=1e-12,
         )
     with pytest.raises(ValueError, match="scalar or shape"):
-        ox.snr(rates, detector, jnp.ones((2, 2)), frame_time_s=100.0)
+        ox.snr(
+            rates,
+            detector,
+            jnp.ones((2, 2)),
+            frame_time_s=100.0,
+            post_processing=reference,
+        )
 
 
 def test_background_variance_factor_one_is_the_unscaled_result():

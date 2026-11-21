@@ -194,7 +194,8 @@ explicit excess-noise distribution.
 ## S/N and exposure time
 
 `snr(rates, detector, time_s, frame_time_s=..., post_processing=...)` and
-`exposure_time(rates, detector, target_snr, ...)` reduce one aperture's `Rates`
+`exposure_time(rates, detector, target_snr, ...)`, which take `frame_time_s` and
+`post_processing` as required keywords, reduce one aperture's `Rates`
 to S/N or to the continuous live time that reaches a target. They read
 `detector.mean_and_variance`, so the analytic reduction and a drawn image share
 one statistical model. With planet electrons `p`, the detector variance of one
@@ -204,8 +205,8 @@ frame per live second `b` and the squared residual rate `f2`,
 `PostProcessing` holds the assumptions of the subtraction. The two residual
 fractions in [0, 1] set `f2` from the star-leakage and exozodi rates, and
 `background_variance_factor` `m >= 1` multiplies the variance of every source
-except the planet's own shot noise. It has no default: the caller states
-whether a reference image is subtracted. `m = 2` is differential imaging, the
+except the planet's own shot noise. It has no default, and neither calculator accepts a
+missing `PostProcessing`: the caller states whether a reference image is subtracted. `m = 2` is differential imaging, the
 reference image carrying the same background variance as the science image;
 the AYO and pyEDITH convention is
 `PostProcessing(1 / ppf, 1 / ez_ppf, background_variance_factor=2.0)`. `m = 1`
