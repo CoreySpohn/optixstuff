@@ -101,7 +101,9 @@ class Instrument(eqx.Module):
             raise ValueError("flux_scale must be finite and positive")
         if self.coronagraph is None:
             return
-        coronagraphs = getattr(self.coronagraph, "bands", None) or (self.coronagraph,)
+        coronagraphs = getattr(self.coronagraph, "coronagraphs", None) or (
+            self.coronagraph,
+        )
         for coronagraph in coronagraphs:
             check_primary_matches_frame(self.primary, coronagraph.frame)
 

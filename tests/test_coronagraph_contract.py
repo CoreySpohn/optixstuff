@@ -137,6 +137,7 @@ def test_rule_records_and_bands(table):
     c = second_band()
     mb = ox.MultiBandCoronagraph([table, c])
     assert mb.band(None) is table
+    assert mb.coronagraphs == (table, c)
     assert mb.bandpass == Band(450.0, 850.0)
     np.testing.assert_array_equal(mb.spectral_breaks_nm(), [450, 550, 750, 850])
     assert mb.band(800.0) is c

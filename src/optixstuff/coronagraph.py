@@ -215,18 +215,18 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     additional wavelength dependence.
     """
 
-    bands: tuple
+    coronagraphs: tuple
     reference_wavelength_nm: float = eqx.field(static=True)
 
-    def __init__(self, bands, *, reference_wavelength_nm=None):
+    def __init__(self, coronagraphs, *, reference_wavelength_nm=None):
         """Store one model per band, selecting the first as reference by default."""
-        self.bands = tuple(bands)
-        if not self.bands:
+        self.coronagraphs = tuple(coronagraphs)
+        if not self.coronagraphs:
             raise ValueError("Need one or more coronagraph models")
-        if any(model.bandpass is None for model in self.bands):
+        if any(model.bandpass is None for model in self.coronagraphs):
             raise ValueError("Each dispatched coronagraph must declare its bandpass")
         self.reference_wavelength_nm = float(
-            self.bands[0].bandpass.center_nm
+            self.coronagraphs[0].bandpass.center_nm
             if reference_wavelength_nm is None
             else reference_wavelength_nm
         )
@@ -236,7 +236,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         if wavelength_nm is None:
             wavelength_nm = self.reference_wavelength_nm
         wave = float(wavelength_nm)
-        for model in self.bands:
+        for model in self.coronagraphs:
             if model.bandpass.low_nm <= wave <= model.bandpass.high_nm:
                 return model
         raise ValueError(f"No coronagraph bandpass covers {wave} nm")
@@ -245,16 +245,17 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     def bandpass(self):
         """Span all declared band edges."""
         return Band(
-            min(band.bandpass.low_nm for band in self.bands),
-            max(band.bandpass.high_nm for band in self.bands),
+            min(model.bandpass.low_nm for model in self.coronagraphs),
+            max(model.bandpass.high_nm for model in self.coronagraphs),
         )
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Union the child model breaks and every dispatch interval edge."""
         edges = [
-            (model.bandpass.low_nm, model.bandpass.high_nm) for model in self.bands
+            (model.bandpass.low_nm, model.bandpass.high_nm)
+            for model in self.coronagraphs
         ]
-        return np.union1d(edges, spectral_breaks(*self.bands))
+        return np.union1d(edges, spectral_breaks(*self.coronagraphs))
 
     @property
     def frame(self):
