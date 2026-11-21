@@ -75,9 +75,9 @@ area describe one telescope. A yippy `Coronagraph` carries the matching
 
 Coronagraph images use `optixstuff.grids.Image` and an explicit target `PixelGrid`.
 Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
-between pixels. For example, `band.off_axis_psf(500.0, 3.0, target)` returns
+between pixels. For example, `model.off_axis_psf(500.0, 3.0, target)` returns
 per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
-Select the imaging model with `band = coro.band(500.0)`. Its
+Select the imaging model with `model = coro.coronagraph_at(500.0)`. Its
 `at_wavelength(500.0)` gives the source, stellar and uniform-sky grids.
 Scene models return an image and a validity flag from
 `render_scene(scene_image, 500.0, grid=target)`.

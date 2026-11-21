@@ -136,24 +136,24 @@ def test_rule_records_and_bands(table):
         table.curves(Circular(0.9))
     c = second_band()
     mb = ox.MultiBandCoronagraph([table, c])
-    assert mb.band(None) is table
+    assert mb.coronagraph_at(None) is table
     assert mb.coronagraphs == (table, c)
     assert mb.bandpass == Band(450.0, 850.0)
     np.testing.assert_array_equal(mb.spectral_breaks_nm(), [450, 550, 750, 850])
-    assert mb.band(800.0) is c
+    assert mb.coronagraph_at(800.0) is c
     with pytest.raises(ValueError, match="declare its bandpass"):
         ox.MultiBandCoronagraph([table, GaussianTableCoronagraph(bandpass=None)])
     with pytest.raises(ValueError, match="covers"):
-        mb.band(650)
+        mb.coronagraph_at(650)
 
 
 def test_capability_selection(table):
     performance = GaussianTableCoronagraph(bandpass=Band(550, 850))
     model = ox.MultiBandCoronagraph((table, performance))
-    assert model.band(565.0) is performance
-    assert model.band(800.0).frame == performance.frame
+    assert model.coronagraph_at(565.0) is performance
+    assert model.coronagraph_at(800.0).frame == performance.frame
     assert (
-        model.band(500.0).at_wavelength(500.0).stellar_grid.frame
+        model.coronagraph_at(500.0).at_wavelength(500.0).stellar_grid.frame
         == table.at_wavelength(500.0).stellar_grid.frame
     )
     assert isinstance(table, ox.AbstractImagingCoronagraph)

@@ -97,7 +97,7 @@ class AbstractCoronagraph(eqx.Module):
         band = self.bandpass
         return np.empty(0) if band is None else np.array([band.low_nm, band.high_nm])
 
-    def band(self, wavelength_nm):
+    def coronagraph_at(self, wavelength_nm):
         """Select the performance model at a concrete wavelength."""
         return self
 
@@ -210,7 +210,7 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
 class MultiBandCoronagraph(AbstractCoronagraph):
     """Dispatch by declared bandpass, in input order at shared wavelengths.
 
-    frame uses the reference band; band(wavelength_nm) selects the model that
+    frame uses the reference band; coronagraph_at(wavelength_nm) selects the model that
     covers a wavelength. Monochromatic tables retain their existing lack of
     additional wavelength dependence.
     """
@@ -231,7 +231,7 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             else reference_wavelength_nm
         )
 
-    def band(self, wavelength_nm):
+    def coronagraph_at(self, wavelength_nm):
         """Return the first calibrated model covering the concrete wavelength."""
         if wavelength_nm is None:
             wavelength_nm = self.reference_wavelength_nm
@@ -260,4 +260,4 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     @property
     def frame(self):
         """Native frame for the reference performance record."""
-        return self.band(None).frame
+        return self.coronagraph_at(None).frame

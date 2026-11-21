@@ -223,7 +223,7 @@ For segmented apertures the inscribed circle follows the scalloped outer outline
 bridging perimeter gaps; the internal segment gaps reduce collecting area only
 through the declared segment sizes, and do not define the aperture diameter.
 
-Select a band with `band(wavelength_nm)`. An imaging band's
+Select the model for a wavelength with `coronagraph_at(wavelength_nm)`. An imaging model's
 `at_wavelength(wavelength_nm)` returns its `source_grid`, `stellar_grid` and
 `sky_grid`. Source offsets and stellar diameters use their respective native
 frames. The target grid defines the output units, frame and pixel centres.
