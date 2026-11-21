@@ -16,9 +16,9 @@ do their own work.
 It (generally) does **not** simulate. There is no "simulate this observation"
 entry point in optixstuff. Instead:
 
-1. **Scalar ETC calculations** (jaxEDITH) ask "given this hardware and
-   this target, what's the per-aperture count rate?" The hardware
-   attributes are inputs.
+1. **Analytic aperture rates** (jaxEDITH) ask "given this hardware,
+   these performance curves and this target, what's the per-aperture
+   count rate?" The hardware attributes are inputs.
 2. **2D image simulation** (coronagraphoto) asks "given this hardware
    and this scene, what does the detector see?" The same hardware
    attributes are inputs.
@@ -165,8 +165,8 @@ The path exposes three quantities used by the readers.
 
 That's it. The container does not own simulation logic; it just holds
 hardware. Simulators (coronagraphoto, jaxEDITH) consume the container,
-query its throughput / QE / coronagraph response, and produce
-science-level outputs.
+query its throughput and QE, and produce rates. `snr` and `exposure_time`
+reduce those rates to science-level outputs.
 
 ## Photon rates, electrons, and detector noise
 
@@ -184,6 +184,24 @@ Combine sources before drawing so detector noise is counted once.
 
 See [detector models](detector_models) for units, shapes, timing, and the
 explicit excess-noise distribution.
+
+## S/N and exposure time
+
+`snr(rates, detector, time_s, frame_time_s=..., post_processing=...)` and
+`exposure_time(rates, detector, target_snr, ...)` reduce one aperture's `Rates`
+to S/N or to the continuous live time that reaches a target. They read
+`detector.mean_and_variance`, so the analytic reduction and a drawn image share
+one statistical model. With planet electrons `p`, the detector variance of one
+frame per live second `b` and the squared residual rate `f2`,
+`S/N = p t / sqrt(b t + f2 t**2)` and `t = snr**2 b / (p**2 - snr**2 f2)`.
+
+`PostProcessing` holds the assumptions of the subtraction. The two residual
+fractions in [0, 1] set `f2` from the star-leakage and exozodi rates, and
+`background_variance_factor` `m >= 1` multiplies the variance of every source
+except the planet's own shot noise. `m = 1` counts each background once; the
+AYO and pyEDITH convention is `PostProcessing(1 / ppf, 1 / ez_ppf, 2.0)`. An
+unreachable target has `valid` False and a time of zero; round a reachable
+time with `frames_for_time`.
 
 ## Aperture frames, images, and performance records
 
@@ -221,7 +239,7 @@ No simulation reads it from the coronagraph slot; a provider that stores records
 hands them out as data, and `record.evaluate(name, separation_lod)` is the one
 read. `leakage_density_lod2` is already per square lambda/D; no pixel-area
 correction belongs in consumers. Post-processing may divide that density, or raw
-contrast, by `ppf`; `jaxedith.PostProcessing.speckle_residual_fraction` owns the
+contrast, by `ppf`; `optixstuff.PostProcessing.speckle_residual_fraction` owns the
 residual. No noise floor is a coronagraph property.
 For table images, `stellar_map(..., grid=None)` and `source_psfs(..., grid=None)`
 return native samples and product metadata. An explicit grid requests pixel

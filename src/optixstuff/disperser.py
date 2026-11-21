@@ -2,7 +2,7 @@
 
 optixstuff owns the descriptor: the interface plus a cheap closed-form
 scalar/ETC face. The heavy render logic (building the forward operator) lives
-in coronachrome. This mirrors the coronagraph split, so jaxedith and yield
+in coronachrome. This mirrors the coronagraph split, so analytic and yield
 tools can read IFS hardware info without importing the render engine.
 """
 

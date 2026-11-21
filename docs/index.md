@@ -11,11 +11,14 @@ is to be the single source of truth for the hardware configuration
 that downstream tools consume.
 
 Both {mod}`coronagraphoto` (2D image simulation) and
-[jaxEDITH](https://github.com/CoreySpohn/jaxedith) (exposure-time and
-yield calculations) import the same {class}`~optixstuff.Instrument`
-class and the same detector / throughput / primary types from
-optixstuff. Change a value here and both downstream tools pick it up
-on the next import.
+[jaxEDITH](https://github.com/CoreySpohn/jaxedith) (analytic aperture
+rates) import the same {class}`~optixstuff.Instrument` class and the
+same detector / throughput / primary types from optixstuff; jaxEDITH
+reads coronagraph performance as {class}`~optixstuff.PerformanceCurves`
+data. Change a value here and both downstream tools pick it up on the
+next import. Both end at an {class}`~optixstuff.Rates` record, which
+{func}`optixstuff.snr` and {func}`optixstuff.exposure_time` reduce to
+S/N or exposure time.
 
 ## What optixstuff is NOT
 
@@ -38,7 +41,7 @@ flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
     optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
-    jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
+    jaxedith["<b>jaxEDITH</b><br/>Analytic aperture rates"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
 
     physopt -- PSF tables --> provider

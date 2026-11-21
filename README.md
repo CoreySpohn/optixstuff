@@ -23,9 +23,13 @@ truth for the hardware configuration that downstream tools consume.
 (2D image simulation), [coronachrome](https://github.com/CoreySpohn/coronachrome)
 (lenslet-IFS dispersion + spectral extraction), and
 [jaxEDITH](https://github.com/CoreySpohn/jaxedith)
-(exposure-time and yield calculations) import the same `Instrument` class and
-the same detector / throughput / primary / disperser types from optixstuff.
-Change a value here and every downstream tool picks it up on the next import.
+(analytic aperture rates for exposure-time calculations) import the same
+`Instrument` class and the same detector / throughput / primary types from
+optixstuff; jaxEDITH reads coronagraph performance as `PerformanceCurves`
+data, not from the coronagraph slot. Change a value here and every downstream
+tool picks it up on the next import. The S/N and exposure-time reduction of a
+`Rates` record, `optixstuff.snr` and `optixstuff.exposure_time` with
+`optixstuff.PostProcessing`, lives here because both producers end at it.
 
 ## What optixstuff is *not*
 
@@ -37,6 +41,7 @@ Change a value here and every downstream tool picks it up on the next import.
   [skyscapes](https://github.com/CoreySpohn/skyscapes).
 - **Not a simulator.** Downstream tools (coronagraphoto, coronachrome, jaxEDITH)
   consume an `Instrument` to produce images, dispersed IFS frames, or count rates.
+  The calculator here only reduces rates they produce to S/N or time.
 
 ## Architecture
 
@@ -146,7 +151,7 @@ flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
     optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
-    jaxedith["<b>jaxEDITH</b><br/>Scalar count rates<br/>Exposure-time calculations"]
+    jaxedith["<b>jaxEDITH</b><br/>Analytic aperture rates"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
     coronachrome["<b>coronachrome</b><br/>Lenslet-IFS dispersion<br/>Spectral extraction"]
 
