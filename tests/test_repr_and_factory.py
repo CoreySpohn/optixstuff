@@ -57,7 +57,7 @@ class TestReprs:
         )
         s = repr(path)
         lines = s.split("\n")
-        assert lines[0].startswith("Instrument(")
+        assert lines[0] == "Instrument"
         # Each child indented.
         assert any(line.startswith("  primary:") for line in lines)
         assert any(line.startswith("  attenuating_elements:") for line in lines)

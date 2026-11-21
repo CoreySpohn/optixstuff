@@ -36,11 +36,6 @@ class Instrument(eqx.Module):
         coronagraph: Coronagraph slot (the image capability).
         detector: Focal-plane detector model.
         disperser: Optional IFS disperser descriptor; None for imaging mode.
-        n_channels: Number of parallel identical optical-path copies
-            (AYO shorthand, multiplicative factor on count rates;
-            not a spectral channel count). Default 1.0.
-        npix_multiplier: IFS signal-spread multiplier on detector pixel
-            counts. Default 1.0.
         speckle: Optional time-varying speckle field (the stochastic
             wavefront-error residual on top of the deterministic
             coronagraph leakage floor); None for a perfect-wavefront path.
@@ -51,8 +46,6 @@ class Instrument(eqx.Module):
     coronagraph: AbstractCoronagraph | None
     detector: AbstractDetector
     disperser: AbstractDisperser | None = None
-    n_channels: float = 1.0
-    npix_multiplier: float = 1.0
     speckle: AbstractSpeckleField | None = None
 
     def __check_init__(self):
@@ -107,10 +100,7 @@ class Instrument(eqx.Module):
     def __repr__(self) -> str:
         """Tree-shaped summary of every component."""
         lines = [
-            (
-                f"Instrument(n_channels={self.n_channels:.3g}, "
-                f"npix_multiplier={self.npix_multiplier:.3g})"
-            ),
+            "Instrument",
             indent("primary: " + repr(self.primary)),
         ]
         if self.attenuating_elements:
