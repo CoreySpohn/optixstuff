@@ -626,7 +626,12 @@ def reconstruction_margin(name: str) -> float:
 
     Within this distance of the source footprint the reconstruction mixes in
     the zero beyond the data: 0 for nearest, 0.5 for linear, 2 for the Keys
-    cubic and for band-limited interpolation.
+    cubic and for band-limited interpolation. For the first three it is the
+    kernel's support, so a reconstruction outside it is exact; the
+    band-limited kernel has no finite support, and an edge rings with an
+    algebraic tail (resampling a constant field is off by about 1e-2 eight
+    pixels in), so for it the margin marks the support boundary, not an
+    accuracy bound.
     """
     _validate_reconstruction(name)
     return _RECONSTRUCTION_MARGIN[name]
