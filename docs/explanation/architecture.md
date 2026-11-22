@@ -290,7 +290,7 @@ A `FocalResponse` stores the linear family's nominal amplitude density
 `G` by `reference_wavelength_nm / wavelength_nm`.
 
 `realize(wavelength_nm=..., time_d=...)` returns an `Image` on `self.grid`,
-with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `reflect`
+with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `zero`
 metadata. Wavelength and time arrays form an outer product; wavelength axes
 lead time axes, followed by `(y, x)`. A `(W, Q)` wavelength array has axes
 `("band", "quadrature")`. Native coordinates describe lambda/D at each node:

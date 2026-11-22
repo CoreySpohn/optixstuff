@@ -11,7 +11,7 @@ from conftest import SinusoidalSpeckle, make_instrument, table_coronagraph
 from hwoutils.constants import s2d
 
 import optixstuff as ox
-from optixstuff.grids import Frame, Image, Measure, PixelGrid
+from optixstuff.grids import Frame, Image, Measure, PixelGrid, resample
 from optixstuff.spectral import Band, Quadrature
 
 
@@ -208,7 +208,7 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
         Measure.integral(),
         "stellar_flux_fraction",
         "band_limited",
-        "reflect",
+        "zero",
     )
     for wavelength in [500.0, 1000.0]:
         angular_grid = image.grid.to_arcsec(wavelength)
@@ -218,6 +218,13 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
         )
         assert angular_grid.center_x == 1.5
         assert angular_grid.center_y == 1.0
+    # The field lives on its footprint: a target wholly outside it reads zero,
+    # not a reflected copy of the edge.
+    shifted = PixelGrid.regular(
+        field.grid.shape, 0.37, "lod", center=(40.0, 40.0), frame=field.grid.frame
+    )
+    far = resample(image, shifted)
+    np.testing.assert_array_equal(far.data, 0.0)
     compiled = eqx.filter_jit(field.realize)(wavelength_nm=nodes, time_d=jnp.array(0.2))
     np.testing.assert_allclose(compiled.data, image.data, rtol=32 * np.finfo(float).eps)
     assert compiled.grid == image.grid
@@ -287,7 +294,7 @@ def test_exposure_average(linear_speckle):
     np.testing.assert_allclose(average.data, expected, rtol=32 * np.finfo(float).eps)
     assert average.grid == field.grid
     assert average.leading_axes == ("band", "quadrature")
-    assert average.reconstruction == "band_limited" and average.outside == "reflect"
+    assert average.reconstruction == "band_limited" and average.outside == "zero"
     compiled = eqx.filter_jit(field.realize_average)(**keywords)
     np.testing.assert_allclose(compiled.data, expected, rtol=32 * np.finfo(float).eps)
     np.testing.assert_allclose(
