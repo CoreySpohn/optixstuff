@@ -65,14 +65,25 @@ class ProductGrids(NamedTuple):
 
 
 class SourcePSFs(NamedTuple):
-    """Point-source flux fractions and one admission decision per source."""
+    """Point-source flux fractions and one admission decision per source.
+
+    valid is False for a source outside the implementor's source domain (the
+    positions its data tabulate or its optical model supports), and only then.
+    The image of such a source is finite and exactly zero: the light beyond
+    the data is not modeled, so it contributes nothing, and it is flagged for
+    that source alone. The stamp of the native grid is not the source domain.
+    """
 
     image: Image
     valid: jax.Array
 
 
 class SceneRender(NamedTuple):
-    """Scene flux on the output grid and support for all illuminated positions."""
+    """Scene flux on the output grid and support for all illuminated positions.
+
+    image is always finite. valid is False only when lit flux lies outside
+    the union of the operators' domains, and that flux contributes zero.
+    """
 
     image: Image
     valid: jax.Array
@@ -103,7 +114,13 @@ class AbstractCoronagraph(eqx.Module):
 
 
 class AbstractImagingCoronagraph(AbstractCoronagraph):
-    """Point-source, stellar and uniform extended-illumination image products."""
+    """Point-source, stellar and uniform extended-illumination image products.
+
+    Every product renders only what the coronagraph data hold. A source outside
+    the source domain gives SourcePSFs.valid False with a finite all-zero image,
+    never NaN and never an extrapolated or reflected one. Reads are
+    gradient-safe, so a zero beyond the domain has an exact zero gradient.
+    """
 
     @abc.abstractmethod
     def at_wavelength(self, wavelength_nm) -> ProductGrids:
@@ -114,13 +131,16 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
         return self.stellar_map(wavelength_nm, 0.0, grid=grid)
 
     def off_axis_psf(self, wavelength_nm, separation_lod, grid: PixelGrid) -> Image:
-        """Cell-integrated stellar flux fractions on grid for a source along +x."""
+        """Cell-integrated stellar flux fractions on grid for a source along +x.
+
+        A separation outside the source domain gives zeros, not NaN.
+        """
         result = self.source_psfs(
             wavelength_nm, jnp.atleast_1d(separation_lod), jnp.zeros(1), grid=grid
         )
         return replace(
             result.image,
-            data=jnp.where(result.valid[0], result.image.data[0], jnp.nan),
+            data=jnp.where(result.valid[0], result.image.data[0], 0.0),
             leading_axes=(),
         )
 

@@ -3,6 +3,7 @@
 import importlib.util
 import inspect
 import os
+from dataclasses import replace
 
 import jax.numpy as jnp
 import numpy as np
@@ -147,7 +148,11 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             outside="zero",
         )
 
-        return ox.SourcePSFs(image, jnp.isfinite(dx) & jnp.isfinite(dy))
+        # The source domain is the disk inscribed in the native grid.
+        domain = min(self.grid.shape) * self.grid.step / 2
+        valid = jnp.isfinite(dx) & jnp.isfinite(dy) & (jnp.hypot(dx, dy) <= domain)
+        image = replace(image, data=jnp.where(valid[:, None, None], image.data, 0.0))
+        return ox.SourcePSFs(image, valid)
 
 
 def synthetic_coronagraph(n=24, *, rules=()):
