@@ -7,6 +7,8 @@ required. Host construction prepares geometry and interpolation coefficients.
 from __future__ import annotations
 
 import functools
+import warnings
+from dataclasses import replace
 from types import MappingProxyType
 from typing import ClassVar
 
@@ -35,6 +37,8 @@ CORE_OVERSAMPLE = 10
 PEAK_SEARCH_RADIUS_LOD = 1.0
 CORE_WINDOW_LOD = 3.0
 PROFILE_STEP_PIX = 0.25
+RING_RULE = "aperture_ring_mean"
+LEAKAGE_RULES = ("aperture_mean", RING_RULE, "azimuthal_ring_mean")
 _QUINTIC_PAD = 48
 
 
@@ -1141,6 +1145,56 @@ class SampledProfile(eqx.Module):
         )
 
 
+def ring_azimuth_samples(shape, center):
+    """Default position angles per ring: ``ceil(2 pi r_max)``.
+
+    A map carries harmonics up to half its circumference in pixels at its corner
+    radius, so this many equally spaced angles average every ring without
+    aliasing (1131 for a 256 by 256 map).
+    """
+    return int(np.ceil(2 * np.pi * np.max(profile_radii(shape, center))))
+
+
+def ring_symmetrized(image, grid=None, n_theta=None):
+    """Return ``image`` with every pixel replaced by the mean of its ring.
+
+    The angle average of an aperture sum at distance s from the axis equals the
+    aperture sum at +x of the azimuthally averaged map, so weighting this map
+    with ordinary aperture pixel weights at +x gives the ring-averaged aperture
+    leakage with the same circle and pixel weights.
+
+    The ring mean at radius r is the mean of the map at ``n_theta`` equally
+    spaced angles (in-image arcs only), evaluated at the radii of
+    :func:`profile_radii` and linear in r between them. ``n_theta`` defaults to
+    :func:`ring_azimuth_samples`.
+
+    ``grid`` is the pixel grid of the result, for example the PSF grid when it
+    differs from the image's: each pixel takes the ring mean at its own angular
+    radius, in flux fraction per pixel of ``grid``, and zero beyond the image
+    footprint. The default is the image's own grid.
+    """
+    image = image.integrated()
+    sg = image.grid
+    grid = sg if grid is None else grid
+    center = (sg.center_y, sg.center_x)
+    radii = profile_radii(sg.shape, center)
+    if n_theta is None:
+        n_theta = ring_azimuth_samples(sg.shape, center)
+    sf, pf = sg.frame, grid.frame
+    # Image pixels per pixel of the target grid, along a radius.
+    ratio = (grid.step * pf.lod_to_arcsec(pf.reference_wavelength_nm)) / (
+        sg.step * sf.lod_to_arcsec(sf.reference_wavelength_nm)
+    )
+    with jax.enable_x64():
+        data = jnp.asarray(image.data, dtype=jnp.float64)
+        profile = azimuthal_mean_profile(data, center, jnp.asarray(radii), n_theta)
+        rows, cols = jnp.indices(grid.shape)
+        stellar_radius = jnp.hypot(rows - grid.center_y, cols - grid.center_x) * ratio
+        symmetric = jnp.interp(stellar_radius, jnp.asarray(radii), profile)
+        symmetric = jnp.where(stellar_radius <= radii[-1], symmetric, 0.0) * ratio**2
+    return replace(image, data=symmetric, grid=grid)
+
+
 class PerformanceCurves(eqx.Module):
     """Frozen photometry on one separation axis; all fractions are absolute.
 
@@ -1153,19 +1207,38 @@ class PerformanceCurves(eqx.Module):
     ``core_area_variance_lod2``: pixel area times the sum of squared weights.
     ``leakage_fraction``: stellar per-pixel fractions integrated with the weights.
     ``leakage_fraction_variance``: stellar fractions integrated with squared weights.
-    ``leakage_density_lod2``: selected mean, ell/A for aperture_mean; the radial
-    azimuthal mean per unit area for azimuthal_ring_mean. These differ in general.
-    ``leakage_density_variance_lod2``: variance leakage per variance area for
-    aperture_mean, or the same azimuthal density for azimuthal_ring_mean.
+    ``leakage_density_lod2``: ``leakage_fraction / core_area_lod2`` for
+    aperture_mean and aperture_ring_mean; the radial azimuthal point-sample mean
+    per unit area for azimuthal_ring_mean. These differ in general.
+    ``leakage_density_variance_lod2``: variance leakage per variance area for the
+    aperture rules, or the same azimuthal density for azimuthal_ring_mean.
     ``raw_contrast``: leakage_density_lod2 * A / tau, with 1e20 when tau <= 0.
     ``iwa_lod``: first half-maximum-throughput crossing of PCHIP; if no crossing
     exists, the first positive-throughput separation (NaN for an all-zero curve).
     ``data_extent_lod``: minimum array half-width, not an outer working angle.
-    ``leakage_rule``: aperture_mean or azimuthal_ring_mean, identifying the density.
+    ``leakage_rule``: the rule that produced the leakage fields (see below).
     ``stellar_diameter_lod``: optional provenance, a diameter in the stellar lod frame.
     ``interpolation``: immutable quantity-to-space mapping. PCHIP within the
     sampled interval and linear end-segment tails in that same space. Exact
     zeros use a 1e-300 floor for log interpolation and remain zero at their knots.
+
+    Every field is a function of separation only. For a stellar map that is not
+    rotationally symmetric (a 2D product) the leakage is therefore a reduction
+    over position angle, not the leakage at a planet's own position angle. The
+    rules, by ``leakage_rule``:
+
+    - ``aperture_mean``: the exact-coverage aperture of ``rule`` read at (s, 0),
+      the +x axis. It is the same number at every angle for a rotationally
+      symmetric map; for a 2D map it is a single cut.
+    - ``aperture_ring_mean``: the same aperture averaged over position angle,
+      (1 / 2 pi) times the integral over phi of the aperture sum centred at
+      (s cos phi, s sin phi). It is computed as the aperture weights summed over
+      the azimuthally symmetrized stellar map (:func:`ring_symmetrized`), which
+      is the same quantity because the angle average of an aperture is
+      rotationally symmetric.
+    - ``azimuthal_ring_mean`` (deprecated): the point-sample ring mean times the
+      aperture area; it ignores the aperture extent and agrees with
+      ``aperture_ring_mean`` only as the aperture shrinks to a point.
 
     Circular and HalfMaximum describe an idealized aperture in the limit of
     infinitely fine detector pixels; detector pixelization is not modelled here.
@@ -1233,8 +1306,8 @@ class PerformanceCurves(eqx.Module):
         """Validate measured arrays and prepare one set of PCHIP coefficients."""
         if not isinstance(rule, (Circular, HalfMaximum)):
             raise TypeError("rule must be Circular or HalfMaximum")
-        if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
-            raise ValueError("unknown leakage_rule")
+        if leakage_rule not in LEAKAGE_RULES:
+            raise ValueError(f"unknown leakage_rule; expected one of {LEAKAGE_RULES}")
         x = _separation_axis(np.asarray(separation_lod))
         self.separation_lod = x
         self.frame, self.rule = frame, rule
@@ -1323,7 +1396,20 @@ def performance_curves(
     ``stellar_diameter_lod`` records the provenance of the already evaluated map;
     it does not broaden or reevaluate that map. Geometric rules resolve
     coverage at CORE_OVERSAMPLE subpixels per side.
+
+    ``leakage_rule`` is ``aperture_mean`` (the +x aperture), ``aperture_ring_mean``
+    (that aperture averaged over position angle, summed as native exact-coverage
+    pixel weights over the ring-symmetrized stellar map on the PSF grid) or the
+    deprecated ``azimuthal_ring_mean``; see :class:`PerformanceCurves`.
     """
+    if leakage_rule == "azimuthal_ring_mean":
+        warnings.warn(
+            "leakage_rule 'azimuthal_ring_mean' is deprecated: it multiplies a "
+            "point-sample ring mean by the aperture area and ignores the aperture "
+            "extent; use 'aperture_ring_mean'",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     return _performance_curves(
         offaxis,
         stellar,
@@ -1351,8 +1437,8 @@ def _performance_curves(
         raise TypeError("rule must be Circular or HalfMaximum")
     _validate_photometry_image(stellar)
     stellar = stellar.integrated()
-    if leakage_rule not in ("aperture_mean", "azimuthal_ring_mean"):
-        raise ValueError("unknown leakage_rule")
+    if leakage_rule not in LEAKAGE_RULES:
+        raise ValueError(f"unknown leakage_rule; expected one of {LEAKAGE_RULES}")
     if separations_lod is None:
         raise ValueError("separations_lod is required for a callable source")
     separations = np.asarray(separations_lod, dtype=float)
@@ -1377,6 +1463,9 @@ def _performance_curves(
     grid = images[0].grid
     tau, area, leakage = [], [], []
     with jax.enable_x64():
+        symmetric = (
+            ring_symmetrized(stellar, grid).data if leakage_rule == RING_RULE else None
+        )
         for psf, position in zip(images, locations, strict=True):
             if psf.grid != grid:
                 raise ValueError("off-axis Images must share one grid")
@@ -1388,7 +1477,13 @@ def _performance_curves(
             )
             tau.append(float(jnp.sum(fine * weights) / factor**2))
             area.append(float(jnp.sum(weights)) * grid.pixel_area / factor**2)
-            leakage.append(float(jnp.sum(star * weights) / factor**2))
+            if symmetric is None:
+                leakage.append(float(jnp.sum(star * weights) / factor**2))
+            else:
+                # Native exact-coverage weights on the symmetrized map; the
+                # band-limited samples ripple on its ring edges.
+                native = _rule_weights(rule, psf, position, oversample)
+                leakage.append(float(jnp.sum(native * symmetric)))
         tau, area, leakage = map(np.asarray, (tau, area, leakage))
         density = np.divide(leakage, area, out=np.zeros_like(leakage), where=area > 0)
         if leakage_rule == "azimuthal_ring_mean":

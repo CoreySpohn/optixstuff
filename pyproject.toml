@@ -91,6 +91,8 @@ filterwarnings = [
     "error",
     # tol_colors constructs colormaps with Matplotlib's pending-deprecated set_bad.
     'ignore:The set_bad function will be deprecated.*:PendingDeprecationWarning:tol_colors',
+    # azimuthal_ring_mean is deprecated but still supported; its tests exercise it.
+    "ignore:leakage_rule 'azimuthal_ring_mean' is deprecated:DeprecationWarning",
 ]
 markers = [
     "medium: tests with a 30-second default time budget",

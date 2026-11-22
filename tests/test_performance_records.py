@@ -416,3 +416,110 @@ def test_leakage_mean_conventions_and_disconnected_core():
         weights = np.asarray(HalfMaximum().weights(image, (1.0, 0.0)))
         assert weights[24, 28] > 0.99
         assert weights[24, 36] == 0.0
+
+
+MOD_AMPLITUDE = 0.8
+MOD_SCALE_LOD = 4.0
+MOD_LEVEL = 1e-9
+
+
+def _i0(r_lod):
+    return MOD_LEVEL * np.exp(-r_lod / MOD_SCALE_LOD)
+
+
+def _modulated_star():
+    """Stellar map I0(r) (1 + m cos 2 phi) on the _gaussian_source grid."""
+    source, x, y, grid = _gaussian_source()
+    r2 = np.maximum(x**2 + y**2, 1e-30)
+    density = _i0(np.hypot(x, y)) * (1 + MOD_AMPLITUDE * (x**2 - y**2) / r2)
+    star = Image(
+        density * grid.pixel_area,
+        grid,
+        (),
+        Measure.integral(),
+        "stellar_flux_fraction",
+    )
+    return source, star, grid
+
+
+def _disk_integral(f, center_x, radius=0.7, n_r=48, n_phi=96):
+    """Integral of f(x, y) over a disk by midpoint polar quadrature."""
+    r = (np.arange(n_r) + 0.5) / n_r * radius
+    phi = (np.arange(n_phi) + 0.5) / n_phi * 2 * np.pi
+    rr, pp = np.meshgrid(r, phi, indexing="ij")
+    area = rr * (radius / n_r) * (2 * np.pi / n_phi)
+    return float(np.sum(f(center_x + rr * np.cos(pp), rr * np.sin(pp)) * area))
+
+
+@pytest.mark.parametrize("separation", (2.0, 3.0))
+def test_ring_rule_on_a_modulated_map(separation):
+    """aperture_mean is the +x integral; aperture_ring_mean is I0 times the disk.
+
+    Fails if the ring rule keeps any of the cos 2 phi modulation (the +x reading
+    would pass it), averages a point instead of the aperture, or reads the
+    band-limited samples of the symmetrized map, which ripple on its ring edges.
+    """
+    with jax.enable_x64():
+        source, star, _ = _modulated_star()
+        rule = Circular(0.7)
+        kwargs = {"separations_lod": [separation]}
+        along_x = performance_curves(source, star, rule, **kwargs)
+        ring = performance_curves(
+            source, star, rule, leakage_rule="aperture_ring_mean", **kwargs
+        )
+        x_axis = _disk_integral(
+            lambda x, y: (
+                _i0(np.hypot(x, y))
+                * (1 + MOD_AMPLITUDE * (x**2 - y**2) / (x**2 + y**2))
+            ),
+            separation,
+        )
+        ring_ref = _disk_integral(lambda x, y: _i0(np.hypot(x, y)), separation)
+        # The disk integrals are densities (per lod^2); fractions are per pixel.
+        np.testing.assert_allclose(along_x.leakage_fraction[0], x_axis, rtol=1e-3)
+        np.testing.assert_allclose(ring.leakage_fraction[0], ring_ref, rtol=1e-3)
+        assert abs(along_x.leakage_fraction[0] / ring.leakage_fraction[0] - 1) > 0.05
+        assert ring.leakage_rule == "aperture_ring_mean"
+        np.testing.assert_allclose(
+            ring.leakage_density_lod2, ring.leakage_fraction / ring.core_area_lod2
+        )
+        np.testing.assert_allclose(ring.throughput, along_x.throughput)
+
+
+def test_ring_symmetrization_converges_in_azimuth_count():
+    """A cos 2 phi map is averaged exactly by any rung above four angles.
+
+    Fails if the ring mean depends on the angle count once it exceeds the map's
+    highest harmonic.
+    """
+    from optixstuff.performance import ring_azimuth_samples, ring_symmetrized
+
+    with jax.enable_x64():
+        _, star, grid = _modulated_star()
+        default = np.asarray(ring_symmetrized(star).data)
+        center = (grid.center_y, grid.center_x)
+        assert ring_azimuth_samples(grid.shape, center) > 64
+        for n_theta in (8, 16, 32, 64):
+            rung = np.asarray(ring_symmetrized(star, n_theta=n_theta).data)
+            np.testing.assert_allclose(
+                rung, default, rtol=1e-3, atol=1e-3 * default.max()
+            )
+
+
+def test_azimuthal_ring_mean_is_deprecated_but_works():
+    """Fails if the old rule stops warning or stops producing a record."""
+    with jax.enable_x64():
+        source, star, _ = _modulated_star()
+        with pytest.warns(DeprecationWarning, match="azimuthal_ring_mean"):
+            record = performance_curves(
+                source,
+                star,
+                Circular(0.7),
+                separations_lod=[2.0],
+                leakage_rule="azimuthal_ring_mean",
+            )
+        assert record.leakage_rule == "azimuthal_ring_mean"
+        with pytest.raises(ValueError, match="unknown leakage_rule"):
+            performance_curves(
+                source, star, Circular(0.7), separations_lod=[2.0], leakage_rule="x"
+            )
