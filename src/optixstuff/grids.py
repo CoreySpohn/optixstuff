@@ -613,6 +613,60 @@ def _band_limited_matrix(
     return (evaluate @ analyze) / n_padded
 
 
+_RECONSTRUCTION_MARGIN = {
+    "nearest": 0.0,
+    "linear": 0.5,
+    "cubic": 2.0,
+    "band_limited": 2.0,
+}
+
+
+def reconstruction_margin(name: str) -> float:
+    """Reach of a reconstruction at an edge, in source pixels.
+
+    Within this distance of the source footprint the reconstruction mixes in
+    the zero beyond the data: 0 for nearest, 0.5 for linear, 2 for the Keys
+    cubic and for band-limited interpolation.
+    """
+    _validate_reconstruction(name)
+    return _RECONSTRUCTION_MARGIN[name]
+
+
+def coverage(source_grid: PixelGrid, target_grid: PixelGrid, margin: float = 0.0):
+    """Boolean (ny, nx) of target pixels wholly inside the source footprint.
+
+    A target pixel is covered when all four corners of its footprint map into
+    the source footprint shrunk by margin source pixels on every side, so a
+    pixel that straddles the edge is not covered. Pass
+    reconstruction_margin(name) to also exclude the pixels whose resampled
+    value depends on the zero beyond the data. Orientation and basis are
+    handled as in resample. The result is static geometry: a host array for
+    host grids and a traced array when a basis is traced.
+    """
+    mapping = _pixel_map(source_grid, target_grid)
+    traced = _traced(source_grid.basis, target_grid.basis, mapping)
+    xp = jnp if traced else np
+    rows, columns = xp.indices(target_grid.shape)
+    dx = columns - target_grid.center_x
+    dy = rows - target_grid.center_y
+    ny, nx = source_grid.shape
+    tolerance = 1e-9
+    covered = xp.ones(target_grid.shape, dtype=bool)
+    for corner_x in (-0.5, 0.5):
+        for corner_y in (-0.5, 0.5):
+            u, v = dx + corner_x, dy + corner_y
+            x = mapping[0][0] * u + mapping[0][1] * v + source_grid.center_x
+            y = mapping[1][0] * u + mapping[1][1] * v + source_grid.center_y
+            covered = (
+                covered
+                & (x >= -0.5 + margin - tolerance)
+                & (x <= nx - 0.5 - margin + tolerance)
+                & (y >= -0.5 + margin - tolerance)
+                & (y <= ny - 0.5 - margin + tolerance)
+            )
+    return covered
+
+
 def resample(
     image: Image,
     target_grid: PixelGrid,

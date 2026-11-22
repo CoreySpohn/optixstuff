@@ -1076,3 +1076,47 @@ def test_traced_roll_orientation_matches_host_values():
         np.testing.assert_allclose(back, (east, north), atol=1e-15)
     with pytest.raises(ValueError, match="finite"):
         SkyOrientation(float("nan"))
+
+
+def test_coverage_requires_whole_footprint_and_margin_matches_resample():
+    """Fails if a straddling pixel counts as covered or a margin is too small.
+
+    A target shifted by a quarter pixel leaves its edge pixel straddling the
+    source edge, so coverage is False there. Wherever coverage with the
+    reconstruction margin is True, resampling a field of ones returns 1 to
+    1e-12 for the three local reconstructions, on both a shifted and a refined
+    grid. Band-limited interpolation of a constant over a zero-padded array
+    rings with an algebraically decaying tail (about 1e-2 eight pixels in), so
+    no finite margin makes it exact; its margin is the reach used to mask the
+    edge band, and the test asserts only that the band is excluded.
+    """
+    from optixstuff.grids import coverage, reconstruction_margin
+
+    source = PixelGrid.regular((16, 16), 1.0, "arcsec")
+    ones = Image(jnp.ones(source.shape), source, (), Measure.intensive(), "1")
+    shifted = PixelGrid(
+        (20, 20), 9.5 + 0.25, 9.5 - 0.25, ((1.0, 0.0), (0.0, 1.0)), "arcsec"
+    )
+    inside = coverage(source, shifted)
+    assert inside.dtype == bool and inside.shape == shifted.shape
+    # The target spans source pixel offsets [-0.25 - 10, ...]: its columns
+    # 0..2 and the last straddle or leave the source footprint.
+    assert not inside[:, 0].any() and not inside[0, :].any()
+    assert inside[3:-4, 3:-4].all()
+    assert coverage(source, source).all()
+    assert not coverage(source, source, 0.5)[0].any()
+    refined = PixelGrid.regular((32, 32), 0.5, "arcsec")
+    for target in (shifted, refined):
+        for name in ("nearest", "linear", "cubic", "band_limited"):
+            mask = coverage(source, target, reconstruction_margin(name))
+            assert mask.any()
+            actual = resample(ones, target, reconstruction=name).data
+            if name == "band_limited":
+                assert not mask[0].any() and not mask[:, 0].any()
+                continue
+            np.testing.assert_allclose(actual[mask], 1.0, rtol=0, atol=1e-12)
+    assert [
+        reconstruction_margin(n) for n in ("nearest", "linear", "cubic", "band_limited")
+    ] == [0.0, 0.5, 2.0, 2.0]
+    with pytest.raises(ValueError):
+        reconstruction_margin("sinc")
