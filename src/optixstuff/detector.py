@@ -201,8 +201,11 @@ class AbstractDetector(eqx.Module):
         * ``photon_counting`` true (always for ``IdealDetector``): the Poisson
           pmf of the mean ``lambda``, ``y log(lambda) - lambda - log(y!)``. The
           observation must be integer counts; a non-integer value is outside the
-          contract and is scored through ``gammaln`` without notice. A zero
-          mean gives 0 for ``y = 0`` and ``-inf`` otherwise.
+          contract and is scored through ``gammaln`` without notice. There is no
+          floor: where the mean is not positive the density is ``-inf`` for
+          ``y > 0`` with a zero gradient (a wall, not a penalty), and for
+          ``y = 0`` it is ``-mean``, which is 0 at a zero mean and, for a
+          negative mean, a positive value outside the law.
         * Otherwise, for every read noise including zero: the Gaussian density
           with the mean and variance of ``mean_and_variance``,
           ``-(y - m)^2 / (2 v) - log(2 pi v) / 2``. This is the moment-matched
@@ -229,6 +232,48 @@ class AbstractDetector(eqx.Module):
             2.0 * jnp.pi * safe_variance
         )
         return jnp.where(positive, gauss, jnp.where(observed == mean, 0.0, -jnp.inf))
+
+    def fisher_root(self, rates: Rates, plan: FramePlan) -> Array:
+        """Return a vector ``r`` whose Jacobian gives the Fisher information.
+
+        For parameters ``theta`` that enter through ``rates`` (or the plan),
+        ``J^T J`` with ``J = dr/dtheta`` is the expected information of
+        ``log_prob``, summed over independent pixels and bands. The root is in
+        the shape of the law's parts, not flattened, so a caller may mask pixels
+        before it flattens.
+
+        * ``photon_counting``: ``2 sqrt(mean)``, shape of the mean. The
+          information of a Poisson mean is ``dm^2 / m``. It is zero (and has zero
+          derivative, no NaN) where the mean is not positive, the wall of
+          ``log_prob``.
+        * Otherwise, the moment-matched Gaussian of ``log_prob``: the stack
+          ``(mean / sqrt(v0), ln(variance) / sqrt(2))`` with ``v0 =
+          stop_gradient(variance)``, shape ``(2, *mean.shape)``. Its information
+          is ``dm^2 / v + dv^2 / (2 v^2)``, covering the mean-dependent variance.
+          Both parts are zero where the variance is not positive.
+
+        A subclass that overrides ``log_prob`` has a different law and must
+        override this too; otherwise it raises ``NotImplementedError``.
+        """
+        cls = type(self)
+        if (
+            cls.log_prob is not AbstractDetector.log_prob
+            and cls.fisher_root is AbstractDetector.fisher_root
+        ):
+            raise NotImplementedError(
+                f"{cls.__name__} overrides log_prob; its law has no closed-form "
+                "Fisher root here. Override fisher_root with the root of that law."
+            )
+        mean, variance = self.mean_and_variance(rates, plan)
+        if self.photon_counting:
+            positive = mean > 0
+            root = 2.0 * jnp.sqrt(jnp.where(positive, mean, 1.0))
+            return jnp.where(positive, root, 0.0)
+        positive = variance > 0
+        safe_variance = jnp.where(positive, variance, 1.0)
+        mean_part = mean / jnp.sqrt(jax.lax.stop_gradient(safe_variance))
+        variance_part = jnp.log(safe_variance) / jnp.sqrt(2.0)
+        return jnp.where(positive, jnp.stack([mean_part, variance_part]), 0.0)
 
     def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Sample independent pixels/bands, shape ``(W, *spatial)``, n_pix=1.
