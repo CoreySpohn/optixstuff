@@ -66,7 +66,8 @@ class ExposureTime(eqx.Module):
 
     ``valid`` is False where no time reaches the target: the planet rate is at
     or below the residual floor, or the rates are not finite. ``time_s`` is
-    zero there, so no infinity or NaN enters later arithmetic. Round to whole
+    NaN there, so an unreachable target cannot be summed or scheduled as a
+    zero-cost one; mask on ``valid`` first. Round to whole
     frames with ``optixstuff.frames_for_time(time_s, frame_time_s)``.
     """
 
@@ -160,7 +161,7 @@ def exposure_time(
     shape (W,).
 
     A positive target with ``p <= target_snr sqrt(f2)`` cannot be reached at
-    any time: ``valid`` is False and ``time_s`` is zero. The same holds for
+    any time: ``valid`` is False and ``time_s`` is NaN. The same holds for
     rates that are not finite. A nonpositive target needs zero time.
     """
     p, b, floor_sq = _statistics(rates, detector, frame_time_s, post_processing)
@@ -177,4 +178,6 @@ def exposure_time(
         / jnp.where(reachable, denominator, 1.0)
     )
     trivial = (target_snr <= 0) & jnp.isfinite(p) & jnp.isfinite(b)
-    return ExposureTime(jnp.where(trivial, 0.0, time_s), reachable | trivial)
+    valid = reachable | trivial
+    time_s = jnp.where(trivial, 0.0, jnp.where(reachable, time_s, jnp.nan))
+    return ExposureTime(time_s, valid)

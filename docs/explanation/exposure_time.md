@@ -45,7 +45,7 @@ The count variance after `t` live seconds is the sum of the planet's shot noise,
 - `S/N = p t / sqrt(b t + f2 t**2)`
 - `t = snr**2 b / (p**2 - snr**2 f2)`
 
-The detector supplies `b` through `detector.mean_and_variance`, the same call that sizes a drawn image, so an exposure time and a simulated observation share one statistical model. The `f2` term is the reason some targets are unreachable: once `p` falls to `snr * sqrt(f2)` no time is long enough, and the result has `valid` False and a time of zero.
+The detector supplies `b` through `detector.mean_and_variance`, the same call that sizes a drawn image, so an exposure time and a simulated observation share one statistical model. The `f2` term is the reason some targets are unreachable: once `p` falls to `snr * sqrt(f2)` no time is long enough, and the result has `valid` False and a time of NaN.
 
 ## What PostProcessing states
 

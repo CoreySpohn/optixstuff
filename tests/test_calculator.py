@@ -127,18 +127,19 @@ def test_exposure_time_inverts_snr_and_flags_unreachable_targets():
     for target in (ceiling * 1.001, ceiling, jnp.sqrt(ceiling**2 * 1.0)):
         beyond = solve(target)
         assert not beyond.valid.any()
-        np.testing.assert_array_equal(beyond.time_s, [0.0])
+        assert np.isnan(beyond.time_s).all()
     nothing = solve(0.0)
     assert nothing.valid.all()
     np.testing.assert_array_equal(nothing.time_s, [0.0])
 
     step = 1e-4
-    slope = jax.grad(lambda t: solve(t).time_s[0])(5.0)
-    difference = (solve(5.0 + step).time_s[0] - solve(5.0 - step).time_s[0]) / (
-        2 * step
-    )
+    reachable = targets[1]
+    slope = jax.grad(lambda t: solve(t).time_s[0])(reachable)
+    difference = (
+        solve(reachable + step).time_s[0] - solve(reachable - step).time_s[0]
+    ) / (2 * step)
     np.testing.assert_allclose(slope, difference, rtol=1e-7)
-    # An unreachable target has a finite (zero) derivative, not NaN.
+    # The derivative of an unreachable target is finite (zero), though its time is NaN.
     assert jax.grad(lambda t: solve(t).time_s[0])(ceiling[0] * 2) == 0.0
 
 
@@ -161,7 +162,7 @@ def test_unknown_rates_stay_unknown():
             unknown, detector, 5.0, frame_time_s=100.0, post_processing=reference
         )
         assert not solved.valid.any()
-        np.testing.assert_array_equal(solved.time_s, [0.0])
+        assert np.isnan(solved.time_s).all()
 
 
 def test_per_band_targets_and_frame_times():

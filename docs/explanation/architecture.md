@@ -220,7 +220,7 @@ reference image carrying the same background variance as the science image;
 the AYO and pyEDITH convention is
 `PostProcessing(1 / ppf, 1 / ez_ppf, background_variance_factor=2.0)`. `m = 1`
 counts each background once, with no reference subtraction. An
-unreachable target has `valid` False and a time of zero; round a reachable
+unreachable target has `valid` False and a time of NaN; round a reachable
 time with `frames_for_time`.
 
 ## Aperture frames, images, and performance records
