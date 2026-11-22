@@ -139,7 +139,6 @@ FAILING = {
     "yippy_1d": "Y2: valid stays True beyond the node hull",
     "yippy_2d": "Y2: valid stays True beyond the node hull",
     "yippy_sinc": "Y2: the rejected source image is NaN, not zero",
-    "physicaloptix_path": "PO1x: a rejected source holds the on-axis image, not zero",
 }
 
 
