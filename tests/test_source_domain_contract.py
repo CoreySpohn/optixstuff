@@ -135,11 +135,7 @@ IMPLEMENTERS = {
 }
 # Implementers that do not yet meet the contract; each mark names the card whose
 # landing makes the test pass, and strict=True turns the mark red then.
-FAILING = {
-    "yippy_1d": "Y2: valid stays True beyond the node hull",
-    "yippy_2d": "Y2: valid stays True beyond the node hull",
-    "yippy_sinc": "Y2: the rejected source image is NaN, not zero",
-}
+FAILING: dict[str, str] = {}
 
 
 @pytest.fixture(
