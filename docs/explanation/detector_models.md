@@ -113,3 +113,38 @@ thresholding, saturation, gain-register geometry, and correlated noise.
 Combine all source contributions before drawing once, so the detector
 noise is paid once for each band and pixel. QE and survival never act
 again on electron rates.
+
+## Likelihood and Fisher information
+
+`log_prob(observed, electrons, plan)` is the elementwise log density of an
+observed frame. A detector with `photon_counting=True` scores the Poisson pmf
+of the mean. Every other detector scores the Gaussian with the mean and
+variance of `mean_and_variance`, the moment-matched approximation of `draw`.
+There is no floor on the mean: where it is not positive, the Poisson form is
+`-inf` for a positive count (with a zero gradient) and the Gaussian form is
+`-inf` where the variance is not positive and the observation differs from the
+mean. A fit that walks a rate negative meets a wall, not a penalty.
+
+`fisher_root(electrons, plan)` returns a vector `r` whose Jacobian gives the
+expected information of that likelihood. For parameters `theta` that enter
+through the rates, `J = dr/dtheta` and the information is `J^T J`, summed over
+independent pixels and bands.
+
+```text
+Poisson:   r = 2 sqrt(mean)                      J^T J = sum dm^2 / m
+Gaussian:  r = (mean / sqrt(v0), ln(v) / sqrt 2) J^T J = sum dm^2 / v + dv^2 / (2 v^2)
+           v0 = stop_gradient(v)
+```
+
+The Gaussian root covers the mean-dependent variance. The root has the shape of
+the mean for the Poisson law and `(2, *mean.shape)` for the Gaussian law, so a
+caller can mask pixels before it flattens. It is zero, and so is its
+derivative, where the law has no support (a mean that is not positive for the
+Poisson law, a variance that is not positive for the Gaussian law); it is never
+NaN. A subclass that overrides `log_prob` has a different law, and
+`fisher_root` raises `NotImplementedError` naming the class until the subclass
+supplies its own root.
+
+The Gaussian is the assumed law of `log_prob`, not the law of `draw`: the gamma
+gain of `draw` has the same first two moments and a different score. The
+information above is that of the assumed law.
