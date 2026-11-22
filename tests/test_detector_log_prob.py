@@ -141,6 +141,27 @@ def test_impossible_observation_is_minus_inf():
     assert out[0, 0, 0] == -jnp.inf
 
 
+def test_poisson_negative_mean_is_outside_the_law():
+    """Fails if a negative Poisson mean scores a zero count as finite.
+
+    The pmf of zero counts is exp(-mean), so a negative mean would score above
+    one (log above zero) and reward a model that drives a pixel negative.
+    """
+    det = ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(1, 3))
+    rates = _rates([[[-0.5, 0.0, 0.5]]])
+    out = det.log_prob(jnp.zeros((1, 1, 3)), rates, PLAN)
+    mean = 0.5 * PLAN.frame_time_s * PLAN.n_frames
+    assert out[0, 0, 0] == -jnp.inf
+    assert out[0, 0, 1] == 0.0
+    np.testing.assert_allclose(out[0, 0, 2], -mean, rtol=1e-6)
+
+    def score(r):
+        return det.log_prob(jnp.zeros((1, 1, 1)), _rates(r), PLAN).sum()
+
+    grad = jax.grad(score)(jnp.array([[[-0.5]]]))
+    assert jnp.all(jnp.isfinite(grad))
+
+
 def test_photon_counting_contract():
     """Fails if a counting detector may carry read noise or excess noise."""
     with pytest.raises(ValueError):

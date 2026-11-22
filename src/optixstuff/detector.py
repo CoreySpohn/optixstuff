@@ -202,10 +202,9 @@ class AbstractDetector(eqx.Module):
           pmf of the mean ``lambda``, ``y log(lambda) - lambda - log(y!)``. The
           observation must be integer counts; a non-integer value is outside the
           contract and is scored through ``gammaln`` without notice. There is no
-          floor: where the mean is not positive the density is ``-inf`` for
-          ``y > 0`` with a zero gradient (a wall, not a penalty), and for
-          ``y = 0`` it is ``-mean``, which is 0 at a zero mean and, for a
-          negative mean, a positive value outside the law.
+          floor: a negative mean is outside the law and gives ``-inf`` for
+          every ``y``, and a zero mean gives ``-inf`` for ``y > 0`` and 0 for
+          ``y = 0``, each with a zero gradient (a wall, not a penalty).
         * Otherwise, for every read noise including zero: the Gaussian density
           with the mean and variance of ``mean_and_variance``,
           ``-(y - m)^2 / (2 v) - log(2 pi v) / 2``. This is the moment-matched
@@ -225,7 +224,8 @@ class AbstractDetector(eqx.Module):
                 observed * log_mean,
                 jnp.where(observed == 0, 0.0, -jnp.inf),
             )
-            return count_term - mean - jsp.gammaln(observed + 1.0)
+            density = count_term - mean - jsp.gammaln(observed + 1.0)
+            return jnp.where(mean < 0, -jnp.inf, density)
         positive = variance > 0
         safe_variance = jnp.where(positive, variance, 1.0)
         gauss = -0.5 * (observed - mean) ** 2 / safe_variance - 0.5 * jnp.log(
