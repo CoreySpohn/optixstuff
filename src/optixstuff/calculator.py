@@ -65,7 +65,8 @@ class ExposureTime(eqx.Module):
     """Continuous live seconds reaching a target S/N, one value per band.
 
     ``valid`` is False where no time reaches the target: the planet rate is at
-    or below the residual floor, or the rates are not finite. ``time_s`` is
+    or below the residual floor, the rates are not finite, or the read is not
+    ``Rates.supported``. ``time_s`` is
     NaN there, so an unreachable target cannot be summed or scheduled as a
     zero-cost one; mask on ``valid`` first. Round to whole
     frames with ``optixstuff.frames_for_time(time_s, frame_time_s)``.
@@ -89,6 +90,11 @@ def _like(value, shape):
     return jnp.broadcast_to(
         value.reshape(value.shape + (1,) * (len(shape) - value.ndim)), shape
     )
+
+
+def _supported(rates, shape):
+    """Boolean support of the read broadcast to shape, or None when all True."""
+    return None if rates.supported is None else _like(rates.supported, shape)
 
 
 def _statistics(rates, detector, frame_time_s, post_processing):
@@ -135,14 +141,17 @@ def snr(
     ``time_s`` and ``frame_time_s`` are scalar or shape (W,). The result
     equals ``detector.mean_and_variance`` at every whole number of frames and
     interpolates between them. Zero time gives zero. NaN rates, as read
-    outside an aperture record, give NaN. Rate fields may carry trailing
-    batch axes after the band axis.
+    outside an aperture record, give NaN, and so does a read with
+    ``rates.supported`` False, whatever finite rates it holds. Rate fields
+    may carry trailing batch axes after the band axis.
     """
     p, b, floor_sq = _statistics(rates, detector, frame_time_s, post_processing)
     time_s = _per_band(time_s, p.ndim)
     variance = b * time_s + floor_sq * time_s**2
     # Only an exact zero is replaced; a NaN variance propagates.
-    return p * time_s / jnp.sqrt(jnp.where(variance == 0, 1, variance))
+    result = p * time_s / jnp.sqrt(jnp.where(variance == 0, 1, variance))
+    supported = _supported(rates, result.shape)
+    return result if supported is None else jnp.where(supported, result, jnp.nan)
 
 
 def exposure_time(
@@ -162,7 +171,8 @@ def exposure_time(
 
     A positive target with ``p <= target_snr sqrt(f2)`` cannot be reached at
     any time: ``valid`` is False and ``time_s`` is NaN. The same holds for
-    rates that are not finite. A nonpositive target needs zero time.
+    rates that are not finite and for a read with ``rates.supported`` False. A
+    nonpositive target needs zero time, except on an unsupported read.
     """
     p, b, floor_sq = _statistics(rates, detector, frame_time_s, post_processing)
     target_snr = _per_band(target_snr, p.ndim)
@@ -180,4 +190,8 @@ def exposure_time(
     trivial = (target_snr <= 0) & jnp.isfinite(p) & jnp.isfinite(b)
     valid = reachable | trivial
     time_s = jnp.where(trivial, 0.0, jnp.where(reachable, time_s, jnp.nan))
+    supported = _supported(rates, time_s.shape)
+    if supported is not None:
+        valid = valid & supported
+        time_s = jnp.where(supported, time_s, jnp.nan)
     return ExposureTime(time_s, valid)

@@ -114,8 +114,8 @@ class AbstractDetector(eqx.Module):
         library. Inputs have shape ``(W, Q, *spatial)``; outputs have shape
         ``(W, *spatial)``, including scalar-zero absent contributions.
         QE is evaluated at every node before dimensional integration.
-        An aperture's ``n_pix`` is kept and its ``variance`` rates are
-        converted the same way.
+        An aperture's ``n_pix`` and the ``supported`` flag are kept and its
+        ``variance`` rates are converted the same way.
         """
         if rates.carrier != "photon" or not rates.spectral:
             raise ValueError(f"rates must be in photon/s/nm; got {rates.unit}")
@@ -132,6 +132,7 @@ class AbstractDetector(eqx.Module):
             "electron",
             n_pix=rates.n_pix,
             variance=None if rates.variance is None else self.electrons(rates.variance),
+            supported=rates.supported,
             **{
                 name: quadrature.integrate(
                     yield_fraction * jnp.broadcast_to(getattr(rates, name), shape)

@@ -364,3 +364,57 @@ def test_trailing_batch_axes_broadcast_against_the_band_axis():
             ox.snr(one, detector, 5000.0, frame_time_s=frame, post_processing=pp),
             rtol=1e-12,
         )
+
+
+def test_unsupported_reads_are_nan_and_invalid_and_none_changes_nothing():
+    """Fails if a read the data do not cover returns a number, or None alters one.
+
+    Basis: exact. Finite nonzero rates with ``supported`` False give NaN S/N,
+    NaN time and ``valid`` False in that band only; the supported band and the
+    ``supported=None`` and all-True records reproduce the present values
+    bit for bit, through the photon and electron routes alike. The flag also
+    reaches the integrated, electron and nested variance records.
+    """
+    bands = (Band(500.0, 550.0), Band(550.0, 600.0))
+    detector, base = _detector(), _rates(bands)
+    flagged = eqx.tree_at(
+        lambda r: (r.supported, r.variance.supported),
+        base,
+        (jnp.array([True, False]), jnp.array([True, False])),
+        is_leaf=lambda x: x is None,
+    )
+    assert np.isfinite(np.asarray(base.planet)).all() and (base.planet > 0).all()
+    kwargs = dict(frame_time_s=100.0, post_processing=reference)
+    for rates in (base, detector.electrons(base)):
+        want_snr = ox.snr(rates, detector, 3600.0, **kwargs)
+        want_time = ox.exposure_time(rates, detector, 5.0, **kwargs)
+        assert np.isfinite(want_snr).all() and want_time.valid.all()
+        every = eqx.tree_at(
+            lambda r: r.supported,
+            rates,
+            jnp.ones(2, bool),
+            is_leaf=lambda x: x is None,
+        )
+        for same in (rates, every):
+            np.testing.assert_array_equal(
+                ox.snr(same, detector, 3600.0, **kwargs), want_snr
+            )
+            got = ox.exposure_time(same, detector, 5.0, **kwargs)
+            np.testing.assert_array_equal(got.time_s, want_time.time_s)
+            np.testing.assert_array_equal(got.valid, want_time.valid)
+    for rates in (flagged, detector.electrons(flagged), flagged.integrate()):
+        assert rates.supported.tolist() == [True, False]
+        assert rates.variance.supported.tolist() == [True, False]
+    electrons = detector.electrons(flagged)
+    got_snr = ox.snr(electrons, detector, 3600.0, **kwargs)
+    got = ox.exposure_time(electrons, detector, 5.0, **kwargs)
+    want = ox.snr(detector.electrons(base), detector, 3600.0, **kwargs)
+    assert got_snr[0] == want[0] and np.isnan(got_snr[1])
+    assert got.valid.tolist() == [True, False]
+    assert np.isfinite(got.time_s[0]) and np.isnan(got.time_s[1])
+    # A nonpositive target needs no time on a supported read only.
+    free = ox.exposure_time(electrons, detector, 0.0, **kwargs)
+    assert free.valid.tolist() == [True, False] and free.time_s[0] == 0.0
+    # The spectral photon route reaches the same flags.
+    photon_snr = ox.snr(flagged, detector, 3600.0, **kwargs)
+    assert np.isfinite(photon_snr[0]) and np.isnan(photon_snr[1])

@@ -73,14 +73,19 @@ def test_aperture_fields_follow_integration():
     """Fails if integrating drops an aperture's pixel count or variance rates."""
     quad = Quadrature.build((Band(400, 500), Band(600, 700)), order=3)
     ones = jnp.ones((2, 3))
+    flag = jnp.array([[True, False, True], [False, True, True]])
     rates = ox.Rates(
         quad,
         "photon",
         planet=ones,
         n_pix=jnp.array([4.0, 5.0]),
         variance=ox.Rates(quad, "photon", planet=ones / 2, n_pix=2.0),
+        supported=flag,
     )
+    assert ox.Rates(quad, "photon").supported is None
     result = rates.integrate()
+    np.testing.assert_array_equal(result.supported, flag)
+    assert result.supported.dtype == bool
     assert not result.spectral and result.carrier == "photon"
     np.testing.assert_array_equal(result.n_pix, [4.0, 5.0])
     np.testing.assert_array_equal(result.variance.n_pix, 2.0)
@@ -91,3 +96,5 @@ def test_aperture_fields_follow_integration():
         ox.Rates(quad, "photon", variance=ox.Rates(quad, "electron"))
     with pytest.raises(ValueError, match="carrier"):
         ox.Rates(quad, "photons")
+    with pytest.raises(ValueError, match="supported"):
+        ox.Rates(quad, "photon", supported=jnp.ones((3, 3), bool))

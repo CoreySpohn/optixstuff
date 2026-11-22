@@ -43,6 +43,13 @@ class Rates(eqx.Module):
     the squared weights; its ``n_pix`` is the sum of squared weights. Poisson
     variance of a weighted aperture follows it instead of the mean record.
 
+    ``supported``, when set, is a boolean beside the values with shape
+    ``(W, *spatial)``: False marks a read the coronagraph data do not cover.
+    The values there are finite zeros, not NaN, so sums and gradients stay
+    intact; ``optixstuff.snr`` and ``optixstuff.exposure_time`` turn the flag
+    into NaN. None means every read is supported. ``integrate`` and the
+    detector's ``electrons`` carry the flag through unchanged.
+
     An absent source may be scalar zero. ``bands`` (static) names the leading
     axis and equals ``quadrature.bands`` for spectral records.
     """
@@ -58,6 +65,7 @@ class Rates(eqx.Module):
     quadrature: Quadrature | None
     n_pix: Array | None
     variance: "Rates | None"
+    supported: Array | None
 
     def __init__(
         self,
@@ -72,6 +80,7 @@ class Rates(eqx.Module):
         stellar_companions: ArrayLike = 0.0,
         n_pix: ArrayLike | None = None,
         variance: "Rates | None" = None,
+        supported: ArrayLike | None = None,
     ):
         """Store rates sampled on a Quadrature (per nm) or integrated over bands.
 
@@ -93,6 +102,7 @@ class Rates(eqx.Module):
         self.stellar_companions = jnp.asarray(stellar_companions)
         self.n_pix = None if n_pix is None else jnp.asarray(n_pix)
         self.variance = variance
+        self.supported = None if supported is None else jnp.asarray(supported, bool)
 
     def __check_init__(self):
         """Require a known carrier, matching leading axes and a like variance."""
@@ -109,6 +119,9 @@ class Rates(eqx.Module):
                     if self.spectral
                     else f"{name} must have one leading entry per band"
                 )
+        flag = self.supported
+        if flag is not None and flag.ndim and flag.shape[:1] != leading[:1]:
+            raise ValueError("supported must have one leading entry per band")
         other = self.variance
         if other is not None:
             if other.bands != self.bands:
@@ -149,7 +162,8 @@ class Rates(eqx.Module):
 
         Dimensional weights are in nm, so photon/s/nm becomes photon/s.
         Scalar absent terms broadcast to the shape shared by the sources.
-        The carrier and ``n_pix`` are kept; ``variance`` is integrated too.
+        The carrier, ``n_pix`` and ``supported`` are kept; ``variance`` is
+        integrated too.
         """
         quadrature = self.quadrature
         if quadrature is None:
@@ -160,6 +174,7 @@ class Rates(eqx.Module):
             self.carrier,
             n_pix=self.n_pix,
             variance=None if self.variance is None else self.variance.integrate(),
+            supported=self.supported,
             **{
                 name: quadrature.integrate(jnp.broadcast_to(getattr(self, name), shape))
                 for name in _COMPONENTS
