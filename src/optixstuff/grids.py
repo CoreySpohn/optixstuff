@@ -864,6 +864,8 @@ def _read_margins(source_grid, target_grid, reconstruction, measure, mapping):
     """
     _validate_reconstruction(reconstruction)
     sampling = _RECONSTRUCTION_MARGIN[reconstruction]
+    if reconstruction not in _DEPOSIT_HALF_SUPPORT:
+        return sampling, sampling
     deposit = _deposits(source_grid, target_grid, measure, reconstruction)
     traced = _traced(deposit, mapping)
     if not traced and not deposit:

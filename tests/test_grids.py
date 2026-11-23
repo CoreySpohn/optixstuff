@@ -1150,7 +1150,7 @@ def test_coverage_read_margin_traced_basis_matches_host():
             _READ_FRAME,
         )
 
-    for rec in ("linear", "cubic"):
+    for rec in ("linear", "cubic", "band_limited"):
         for scale in (0.5, 2.5):
             host = coverage(
                 source, detector(scale), reconstruction=rec, measure=Measure.integral()
