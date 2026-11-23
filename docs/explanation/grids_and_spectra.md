@@ -202,32 +202,43 @@ density image that declares it.
 
 | Name | Kernel | Margin | Finite reach | `on_grid` read of a density |
 |---|---|---|---|---|
-| `nearest` | value of the cell | 0 | yes | midpoint cell integral, then `resample` |
-| `linear` | tent | 0.5 | yes | midpoint cell integral, then `resample` |
-| `cubic` | Keys cubic convolution, a = -1/2 | 2 | yes | midpoint cell integral, then `resample` |
-| `cubic_spline` | not-a-knot cubic B-spline | 2 | no | integral of the spline over each pixel |
-| `band_limited` | zero-padded Fourier interpolant | 2 | no | midpoint cell integral, then `resample` |
+| `nearest` | value of the cell | 0 | yes | integral of the reconstruction over each pixel |
+| `linear` | tent | 0.5 | yes | integral of the reconstruction over each pixel |
+| `cubic` | Keys cubic convolution, a = -1/2 | 2 | yes | integral of the reconstruction over each pixel |
+| `cubic_spline` | not-a-knot cubic B-spline | 2 | no | integral of the reconstruction over each pixel |
+| `band_limited` | zero-padded Fourier interpolant | 2 | no | integral of the reconstruction over each pixel, by the box integral of `resample` |
 
 For a kernel of finite reach the margin is exact: a pixel whose footprint lies
 that far inside the table never reads the zero beyond it. The cubic spline and
 the band-limited interpolant have no finite reach, so for them the margin marks
 the support boundary and is not an accuracy bound. `coverage` returns these
-margins from the pixel corners.
+margins from the pixel corners. For the read of a density pass the density
+measure to `coverage`: the integral measure of the `on_grid` output gives the
+deposit rule for `nearest`, `linear` and `cubic`, which is never too small and
+may be one ring too wide.
 
-### The cubic spline
+### The pixel read of a density
 
 A table that holds the intensity at each cell center, times the cell area, is a
 set of point samples. A detector pixel measures the integral of the intensity
 over its footprint, and the stored sample is not that integral, not even on the
-native pitch. `on_grid` therefore reads a density that declares `cubic_spline`
-as the integral of the reconstructed density over each target pixel, in one
-form at every pitch, and returns a cell integral in the area the density is per
-(grid units squared of the native grid, or steradians). The read is two matrix
-products per image, one per axis, each built from the closed-form antiderivative
-of the B-spline with the prefilter folded in. It needs axis-aligned grids and
-raises `NotImplementedError` for a rotated or sheared target. `resample` keeps
-its own contract for the same image: it samples the spline at the target centers
-and returns a density.
+native pitch. `on_grid` therefore reads every density as the integral of its
+declared reconstruction over each target pixel, in one form at every pitch, and
+returns a cell integral in the area the density is per (grid units squared of
+the native grid, or steradians). For `nearest`, `linear`, `cubic` and
+`cubic_spline` the read is two matrix products per image, one per axis, each
+built from the closed-form antiderivative of the kernel (with the prefilter
+folded in for the spline). It needs axis-aligned grids and raises
+`NotImplementedError` for a rotated or sheared target, including a target whose
+traced orientation angle differs from the source's. `resample` keeps its own
+contract for the same image: it samples the reconstruction at the target centers,
+on rotated grids too, and returns a density.
+
+The read of a `linear` density smooths it: at the native pitch a pixel collects
+1/8, 3/4 and 1/8 of three neighboring samples along each axis. A product that is
+band-limited at its table pitch is read more accurately as `cubic_spline`.
+
+### The cubic spline
 
 The spline interpolates the samples, with coefficients that are a linear map of
 the table alone: the not-a-knot end condition makes the third derivative
@@ -238,8 +249,9 @@ coronagraph stellar map. On a pupil-limited speckle field with power up to the
 band edge, read between 3 and 26 lambda/D from a table at 0.25 lambda/D, the
 read is wrong by about 0.05 percent of the pixel value at the median and 0.3
 percent at the 95th percentile, over pixel pitches from 0.125 to 0.75 lambda/D.
-In float32 the matrices are built in float64 and cast, and the read moves by
-less than 1e-6 of the pixel value.
+In float32 the read moves by less than 1e-6 of the pixel value, both when the
+matrices are built on the host in float64 and cast, and when a traced pixel
+scale (a wavelength node) builds them with JAX in float32.
 
 Its limits:
 

@@ -98,8 +98,8 @@ deposits instead of sampling and reaches further, so pass
 `reconstruction=` and `measure=` in place of `margin` to get the margin of the
 read that is performed. `cubic_spline`, the not-a-knot cubic spline, and
 `band_limited` have no finite reach, so their margin marks a support boundary
-rather than an exact bound; `on_grid` reads a `cubic_spline` density as the
-integral of the spline over each pixel. Consumers mask with it, and `exposure_time` and `snr` report an
+rather than an exact bound. `on_grid` reads every density as the integral of
+its declared reconstruction over each pixel, on axis-aligned grids only. Consumers mask with it, and `exposure_time` and `snr` report an
 unsupported aperture through `Rates.supported` rather than a number. NaN is
 reserved for terminal statistics such as `snr` and `exposure_time`.
 
