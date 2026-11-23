@@ -716,16 +716,33 @@ def _keys(t):
     return np.where(a <= 1, inner, np.where(a <= 2, outer, 0.0))
 
 
+def _periodic_sinc(u, period):
+    """Interpolant of a zero-padded table of even period, cosine Nyquist term."""
+    out = np.ones_like(u)  # the limit at u = m P is 1 for an even period
+    regular = np.abs(np.sin(np.pi * u / period)) > 1e-12
+    t = u[regular]
+    out[regular] = np.sin(np.pi * t) / np.tan(np.pi * t / period) / period
+    return out
+
+
 def _reference_axis(reconstruction, samples, low, high):
     """Integral of one axis's reconstruction over each [low, high], in cells.
 
-    Gauss-Legendre with 8 nodes on every piece between half-integers, where the
-    reconstruction is a polynomial of degree at most 3, so the rule is exact.
-    The spline comes from scipy's not-a-knot interpolant, restricted to the
-    footprint.
+    Gauss-Legendre with 16 nodes on every piece between half-integers. There
+    the local kernels and the spline are polynomials of degree at most 3, so
+    the rule is exact; the band-limited interpolant (a period of 2N) turns by
+    at most a quarter cycle on a piece, where the rule converges to rounding.
+    The spline comes from scipy's not-a-knot interpolant; the spline and the
+    band-limited interpolant are restricted to the footprint.
     """
     n = samples.size
-    if reconstruction == "cubic_spline":
+    if reconstruction == "band_limited":
+        low, high = np.clip(low, -0.5, n - 0.5), np.clip(high, -0.5, n - 0.5)
+
+        def field(t):
+            return _periodic_sinc(t[..., None] - np.arange(n), 2 * n) @ samples
+
+    elif reconstruction == "cubic_spline":
         spline = make_interp_spline(np.arange(n), samples, k=3)
         low, high = np.clip(low, -0.5, n - 0.5), np.clip(high, -0.5, n - 0.5)
 
@@ -738,7 +755,7 @@ def _reference_axis(reconstruction, samples, low, high):
         def field(t):
             return kernel(t[..., None] - np.arange(n)) @ samples
 
-    nodes, weights = np.polynomial.legendre.leggauss(8)
+    nodes, weights = np.polynomial.legendre.leggauss(16)
     out = np.zeros(low.size)
     for i, (a, b) in enumerate(zip(low, high, strict=True)):
         cuts = np.arange(np.ceil(2 * a), np.floor(2 * b) + 1) / 2
@@ -750,19 +767,21 @@ def _reference_axis(reconstruction, samples, low, high):
 
 
 @pytest.mark.parametrize(
-    "reconstruction", ["nearest", "linear", "cubic", "cubic_spline"]
+    "reconstruction", ["nearest", "linear", "cubic", "cubic_spline", "band_limited"]
 )
 def test_every_density_is_read_by_its_footprint_integral(reconstruction):
     """Fails if ``on_grid`` reads a declared density any other way.
 
     Truth: the integral of the declared reconstruction over each pixel, built in
-    the test from the kernel (box, tent, Keys cubic) or from scipy's not-a-knot
-    spline, by Gauss-Legendre exact on each polynomial piece. The table is
-    separable, so a pixel is the product of two one-dimensional integrals.
-    Pitches 0.25 (aligned, equal to the cell), 0.15 and 0.6 lambda/D (offset).
-    Tolerance: floating point, 1e-12 of the largest pixel. The midpoint read it
-    replaces (cell integral, then sample or deposit) differs by percent at one
-    of these pitches for each of nearest, linear and cubic.
+    the test from the kernel (box, tent, Keys cubic), from scipy's not-a-knot
+    spline, or from the closed-form periodic sinc of a table zero-padded to
+    twice its length (band-limited), by Gauss-Legendre on half-cell pieces.
+    The table is separable, so a pixel is the product of two one-dimensional
+    integrals. Pitches 0.25 (aligned, equal to the cell), 0.15 and 0.6 lambda/D
+    (offset). Tolerance: floating point, 1e-12 of the largest pixel. The
+    midpoint read (cell integral, then sample or deposit) differs by percent
+    at one of these pitches for each of nearest, linear and cubic, and so
+    does a center sample of the band-limited interpolant.
     """
     rng = np.random.default_rng(0)
     n = 40
