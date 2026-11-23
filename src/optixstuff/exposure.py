@@ -23,6 +23,10 @@ class FramePlan(eqx.Module):
     integral count stored as a float. Each field is scalar or shape (W,),
     with one value per band on axis 0 of the rates. Use vmap for other
     batching.
+
+    Attributes:
+        frame_time_s: Seconds per frame, strictly positive, scalar or shape (W,).
+        n_frames: Whole number of frames, stored as a float, scalar or shape (W,).
     """
 
     frame_time_s: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
@@ -54,7 +58,16 @@ class FramePlan(eqx.Module):
         return self.n_frames * self.frame_time_s
 
     def occupied_time_s(self, detector) -> jnp.ndarray:
-        """Observatory seconds, adding read time when collection cannot overlap."""
+        """Observatory seconds, adding read time when collection cannot overlap.
+
+        Args:
+            detector: Detector whose ``read_time_s`` and ``overlaps_read`` set the read
+                overhead.
+
+        Returns:
+            Observatory seconds per band: frames times frame time plus read time when
+            reads cannot overlap collection.
+        """
         read_time_s = 0.0 if detector.overlaps_read else detector.read_time_s
         return self.n_frames * (self.frame_time_s + read_time_s)
 
@@ -67,6 +80,13 @@ def frames_for_time(time_s, frame_time_s) -> FramePlan:
     are exact multiples. Every positive sub-frame duration takes one frame;
     zero duration takes zero frames. Counts remain floating under JIT,
     with zero derivative, including at boundaries (JAX rounding convention).
+
+    Args:
+        time_s: Requested collecting seconds, scalar or shape (W,), at least zero.
+        frame_time_s: Seconds per frame, scalar or shape (W,), positive.
+
+    Returns:
+        Plan with the smallest whole number of frames covering ``time_s``.
     """
     time_s, frame_time_s = jnp.asarray(time_s), jnp.asarray(frame_time_s)
     _band_shape(time_s.shape, frame_time_s.shape)
@@ -87,7 +107,7 @@ class Exposure(eqx.Module):
     The roll, the observation time and the quadrature nodes and weights are array
     leaves, so an exposure can be an argument of JIT, vmap and grad.
 
-    Args:
+    Attributes:
         time_d: Observation time in days from the scene epoch. The local-zodi
             sightline is derived from it, the scene's epoch and the target's
             sky position, not stored here.

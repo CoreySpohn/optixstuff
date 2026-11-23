@@ -52,6 +52,24 @@ class Rates(eqx.Module):
 
     An absent source may be scalar zero. ``bands`` (static) names the leading
     axis and equals ``quadrature.bands`` for spectral records.
+
+    Attributes:
+        planet: Planet rate, photon or electron per second (per nm while spectral).
+        star_leakage: Residual starlight rate, in the same unit.
+        local_zodi: Local zodiacal light rate, in the same unit.
+        exozodi: Exozodiacal light rate, in the same unit.
+        thermal: Warm-optics thermal emission rate, in the same unit.
+        stellar_companions: Rate of other stars in the field, in the same unit.
+        bands: Wavelength bands naming the leading axis.
+        carrier: ``"photon"`` before detector yield, ``"electron"`` after it.
+        quadrature: Wavelength nodes and weights of spectral records, or None once
+            the bands are integrated.
+        n_pix: Sum of aperture weights in detector pixels, or None for per-pixel
+            values.
+        variance: Record summed with squared weights, or None.
+        supported: Boolean flag, shape ``(W, *spatial)``, False where the
+            coronagraph data do not cover the read, or None when all reads are
+            supported.
     """
 
     planet: Array
@@ -86,6 +104,24 @@ class Rates(eqx.Module):
 
         Pass the Quadrature for spectral integrands or the bands for
         band-integrated rates; the carrier is always named.
+
+        Args:
+            sampling: Quadrature for spectral integrands (per nm at its nodes) or the
+                bands of band-integrated rates.
+            carrier: ``"photon"`` or ``"electron"``.
+            planet: Planet rate in the record's unit; scalar zero when absent.
+            star_leakage: Residual starlight rate; scalar zero when absent.
+            local_zodi: Local zodiacal light rate; scalar zero when absent.
+            exozodi: Exozodiacal light rate; scalar zero when absent.
+            thermal: Warm-optics thermal emission rate; scalar zero when absent.
+            stellar_companions: Rate of other stars in the field; scalar zero when
+                absent.
+            n_pix: Sum of aperture weights in detector pixels, scalar or one value per
+                band; None for per-pixel values.
+            variance: Rates of the same kind summed with squared weights; its ``n_pix``
+                is the sum of squared weights.
+            supported: Boolean flag, False where the coronagraph data do not cover the
+                read; None means all reads are supported.
         """
         if isinstance(sampling, Quadrature):
             self.quadrature = sampling
@@ -133,7 +169,11 @@ class Rates(eqx.Module):
 
     @staticmethod
     def component_names() -> tuple[str, ...]:
-        """Names of additive source terms, in their declared order."""
+        """Names of additive source terms, in their declared order.
+
+        Returns:
+            The six source names.
+        """
         return _COMPONENTS
 
     @property
@@ -153,7 +193,11 @@ class Rates(eqx.Module):
         return self.quadrature.nodes_nm.shape
 
     def total(self) -> Array:
-        """Sum the six sources, keeping the leading axes if all are scalar."""
+        """Sum the six sources, keeping the leading axes if all are scalar.
+
+        Returns:
+            Sum over the six sources, in the record's unit.
+        """
         total = sum(getattr(self, name) for name in _COMPONENTS)
         return jnp.broadcast_to(total, total.shape or self._leading_shape)
 
@@ -164,6 +208,9 @@ class Rates(eqx.Module):
         Scalar absent terms broadcast to the shape shared by the sources.
         The carrier, ``n_pix`` and ``supported`` are kept; ``variance`` is
         integrated too.
+
+        Returns:
+            Band-integrated Rates of the same carrier.
         """
         quadrature = self.quadrature
         if quadrature is None:
@@ -190,7 +237,17 @@ class Rates(eqx.Module):
         *,
         dtype=None,
     ) -> "Rates":
-        """Create six zero fields with full shape, leading axes then spatial."""
+        """Create six zero fields with full shape, leading axes then spatial.
+
+        Args:
+            sampling: Quadrature or bands, as for the constructor.
+            carrier: ``"photon"`` or ``"electron"``.
+            spatial_shape: Trailing spatial shape; empty for a single pixel or aperture.
+            dtype: Dtype of the zero fields; the JAX default when None.
+
+        Returns:
+            Rates with six zero fields of shape ``(*leading, *spatial_shape)``.
+        """
         empty = cls(sampling, carrier)
         zero = jnp.zeros((*empty._leading_shape, *spatial_shape), dtype=dtype)
         return cls(sampling, carrier, **dict.fromkeys(_COMPONENTS, zero))

@@ -41,6 +41,15 @@ class PostProcessing(eqx.Module):
     background variance as the science image (the convention of Stark et al.
     2014, AYO and pyEDITH); one is no reference subtraction, each background
     counted once.
+
+    Attributes:
+        speckle_residual_fraction: Fraction of the mean star-leakage rate left
+            after subtraction, in [0, 1].
+        exozodi_residual_fraction: Fraction of the mean exozodi rate left after
+            subtraction, in [0, 1].
+        background_variance_factor: Multiplier ``m >= 1`` on the variance rate of
+            every source except the planet's own shot noise. Keyword-only and
+            required.
     """
 
     speckle_residual_fraction: Array = eqx.field(default=0.0, converter=jnp.asarray)
@@ -70,6 +79,11 @@ class ExposureTime(eqx.Module):
     NaN there, so an unreachable target cannot be summed or scheduled as a
     zero-cost one; mask on ``valid`` first. Round to whole
     frames with ``optixstuff.frames_for_time(time_s, frame_time_s)``.
+
+    Attributes:
+        time_s: Continuous live seconds reaching the target S/N, shape (W,), NaN
+            where unreachable.
+        valid: Boolean, shape (W,), True where ``time_s`` is a reachable time.
     """
 
     time_s: Array
@@ -144,6 +158,19 @@ def snr(
     outside an aperture record, give NaN, and so does a read with
     ``rates.supported`` False, whatever finite rates it holds. Rate fields
     may carry trailing batch axes after the band axis.
+
+    Args:
+        rates: One aperture's Rates, in photon/s/nm (the detector applies its
+            yield) or electron/s.
+        detector: Detector supplying yield and count variance.
+        time_s: Live seconds, scalar or shape (W,).
+        frame_time_s: Seconds per frame, scalar or shape (W,); CIC and read noise
+            accrue once per frame.
+        post_processing: Residual fractions and background variance factor of the
+            subtraction.
+
+    Returns:
+        S/N per band, shape (W,), plus any trailing batch axes of the rates.
     """
     p, b, floor_sq = _statistics(rates, detector, frame_time_s, post_processing)
     time_s = _per_band(time_s, p.ndim)
@@ -173,6 +200,19 @@ def exposure_time(
     any time: ``valid`` is False and ``time_s`` is NaN. The same holds for
     rates that are not finite and for a read with ``rates.supported`` False. A
     nonpositive target needs zero time, except on an unsupported read.
+
+    Args:
+        rates: One aperture's Rates, in photon/s/nm (the detector applies its
+            yield) or electron/s.
+        detector: Detector supplying yield and count variance.
+        target_snr: Target S/N, scalar or shape (W,).
+        frame_time_s: Seconds per frame, scalar or shape (W,); CIC and read noise
+            accrue once per frame.
+        post_processing: Residual fractions and background variance factor of the
+            subtraction.
+
+    Returns:
+        Live seconds per band and the mask of bands where the target is reachable.
     """
     p, b, floor_sq = _statistics(rates, detector, frame_time_s, post_processing)
     target_snr = _per_band(target_snr, p.ndim)

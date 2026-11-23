@@ -55,6 +55,14 @@ class Frame:
     identifies small entrance-pupil angular tilts, theta = s * lambda / D
     in radians for a coordinate s in lambda/D. No tangent or sine projection
     is applied. The default retains this linear angular conversion.
+
+    Attributes:
+        reference_wavelength_nm: Wavelength in nm at which the frame is defined.
+        diameter_m: Telescope diameter in meters, in the stated convention.
+        diameter_convention: ``"circumscribed"`` or ``"inscribed"``; labels which
+            diameter ``diameter_m`` is.
+        coordinate_model: Angular coordinate model; only
+            ``"paraxial_entrance_tilt"`` is supported.
     """
 
     reference_wavelength_nm: float
@@ -75,7 +83,14 @@ class Frame:
             raise ValueError("coordinate_model must be 'paraxial_entrance_tilt'")
 
     def lod_to_arcsec(self, wavelength_nm):
-        """Size of one lambda/D in arcsec; wavelength_nm may be traced."""
+        """Size of one lambda/D in arcsec; wavelength_nm may be traced.
+
+        Args:
+            wavelength_nm: Wavelength in nm, scalar or array.
+
+        Returns:
+            Angular size of one lambda/D in arcsec, shaped like ``wavelength_nm``.
+        """
         return lambda_d_to_arcsec(1.0, wavelength_nm, self.diameter_m)
 
 
@@ -92,6 +107,10 @@ class SkyOrientation:
     pa_y_deg may be a traced value inside a JAX transformation. Such an
     orientation is only for use within that transformation: it cannot be
     compared with another traced angle and must not be returned in a grid.
+
+    Attributes:
+        pa_y_deg: Position angle of detector +y, north through east, in degrees.
+        parity: Handedness of the detector axes, -1 (default) or +1.
     """
 
     pa_y_deg: float
@@ -108,13 +127,29 @@ class SkyOrientation:
             raise ValueError("orientation needs parity -1 or +1")
 
     def sky_to_detector(self, east, north):
-        """Map east/north offsets to named detector (x, y) offsets."""
+        """Map east/north offsets to named detector (x, y) offsets.
+
+        Args:
+            east: East offsets in the sky plane.
+            north: North offsets in the sky plane.
+
+        Returns:
+            Named (x, y) detector offsets, in the unit of the inputs.
+        """
         c, s = _cos_sin(self.pa_y_deg)
         east, north = jnp.asarray(east), jnp.asarray(north)
         return _XY(self.parity * (east * c - north * s), east * s + north * c)
 
     def detector_to_sky(self, x, y):
-        """Return named (east, north) offsets in the sky plane."""
+        """Return named (east, north) offsets in the sky plane.
+
+        Args:
+            x: Detector x offsets.
+            y: Detector y offsets.
+
+        Returns:
+            Named (east, north) offsets, in the unit of the inputs.
+        """
         c, s = _cos_sin(self.pa_y_deg)
         x, y = jnp.asarray(x), jnp.asarray(y)
         return _Sky(self.parity * c * x + s * y, -self.parity * s * x + c * y)
@@ -149,6 +184,17 @@ class PixelGrid:
     (shape, centers, unit and frame stay host values). Such a grid is for use
     within that transformation: resample builds its operators from the traced
     scale; do not return it or compare it with another grid.
+
+    Attributes:
+        shape: Array shape (ny, nx).
+        center_x: Column coordinate of the optical axis, in pixels.
+        center_y: Row coordinate of the optical axis, in pixels.
+        basis: 2 by 2 matrix mapping pixel offsets (dx, dy) to offsets in ``unit``,
+            in ``unit`` per pixel.
+        unit: One of ``"pupil_diameter"``, ``"meter"``, ``"lod"``, ``"arcsec"``,
+            ``"pixel"`` or ``"au"``.
+        frame: Frame defining lambda/D; required when ``unit`` is ``"lod"``.
+        orientation: Relation of the unit plane to the east/north sky, or None.
     """
 
     shape: tuple[int, int]
@@ -196,7 +242,19 @@ class PixelGrid:
 
     @classmethod
     def regular(cls, shape, step, unit, *, center=None, frame=None, orientation=None):
-        """Make an axis-aligned isotropic grid; center defaults to geometric (x,y)."""
+        """Make an axis-aligned isotropic grid; center defaults to geometric (x,y).
+
+        Args:
+            shape: Array shape (ny, nx).
+            step: Pixel spacing in ``unit``, positive and finite.
+            unit: Grid unit, as for the ``unit`` attribute.
+            center: Optical axis (x, y) in pixels; the geometric center when None.
+            frame: Frame defining lambda/D; required for ``"lod"``.
+            orientation: Relation of the unit plane to the sky, or None.
+
+        Returns:
+            The axis-aligned isotropic grid.
+        """
         if center is None:
             cy, cx = get_center(shape)
             center = (cx, cy)
@@ -215,7 +273,14 @@ class PixelGrid:
 
     @classmethod
     def pupil(cls, npix):
-        """Square grid spanning one pupil diameter, with geometric center."""
+        """Square grid spanning one pupil diameter, with geometric center.
+
+        Args:
+            npix: Number of pixels along each axis.
+
+        Returns:
+            Grid in units of the pupil diameter, with pixel spacing 1 / ``npix``.
+        """
         npix = index(npix)
         if npix < 1:
             raise ValueError("npix must be positive")
@@ -223,7 +288,16 @@ class PixelGrid:
 
     @classmethod
     def focal(cls, npix, step_lod, frame):
-        """Square focal grid in lambda/D, with geometric center."""
+        """Square focal grid in lambda/D, with geometric center.
+
+        Args:
+            npix: Number of pixels along each axis.
+            step_lod: Pixel spacing in lambda/D.
+            frame: Frame defining lambda/D.
+
+        Returns:
+            Square grid in lambda/D.
+        """
         return cls.regular((npix, npix), step_lod, "lod", frame=frame)
 
     @classmethod
@@ -234,6 +308,19 @@ class PixelGrid:
 
         Arguments match PixelGrid; only center_x and center_y change meaning
         here. For example, a header count 128 becomes center coordinate 127.5.
+
+        Args:
+            shape: Array shape (ny, nx).
+            center_x: Column center as a corner count, in pixels (a header value);
+                0.5 is subtracted.
+            center_y: Row center as a corner count, in pixels; 0.5 is subtracted.
+            basis: 2 by 2 matrix mapping pixel offsets to offsets in ``unit``.
+            unit: Grid unit, as for the ``unit`` attribute.
+            frame: Frame defining lambda/D; required for ``"lod"``.
+            orientation: Relation of the unit plane to the sky, or None.
+
+        Returns:
+            The grid with pixel-center coordinates.
         """
         return cls(
             shape,
@@ -246,7 +333,11 @@ class PixelGrid:
         )
 
     def coordinates(self):
-        """Return named (x, y) arrays of shape (ny, nx), in this grid's unit."""
+        """Return named (x, y) arrays of shape (ny, nx), in this grid's unit.
+
+        Returns:
+            Named (x, y) arrays of shape (ny, nx) in the grid's unit.
+        """
         rows, columns = jnp.indices(
             self.shape, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32
         )
@@ -257,6 +348,9 @@ class PixelGrid:
 
         The corners follow increasing column index first, then increasing row
         index. Like the grid metadata, the result uses host precision.
+
+        Returns:
+            Array of shape (4, 2) of (x, y) corners in the grid's unit.
         """
         ny, nx = self.shape
         pixels = np.array(
@@ -269,6 +363,9 @@ class PixelGrid:
 
         Reflected axes have descending edges. Resample rotated or sheared
         grids before drawing with imshow.
+
+        Returns:
+            Outer edges (x0, x1, y0, y1) in the grid's unit.
         """
         if self.basis[0][1] != 0 or self.basis[1][0] != 0:
             raise ValueError("resample a rotated or sheared grid before display")
@@ -276,17 +373,37 @@ class PixelGrid:
         return float(first[0]), float(last[0]), float(first[1]), float(last[1])
 
     def radius(self) -> jax.Array:
-        """Distance from the optical axis at each pixel center, in grid units."""
+        """Distance from the optical axis at each pixel center, in grid units.
+
+        Returns:
+            Array of shape (ny, nx) of distances in the grid's unit.
+        """
         return jnp.hypot(*self.coordinates())
 
     def pixel_to_unit(self, x, y):
-        """Map named pixel-center coordinates (x, y) to offsets in unit."""
+        """Map named pixel-center coordinates (x, y) to offsets in unit.
+
+        Args:
+            x: Pixel-center column coordinates.
+            y: Pixel-center row coordinates.
+
+        Returns:
+            Named (x, y) offsets from the optical axis in the grid's unit.
+        """
         dx, dy = jnp.asarray(x) - self.center_x, jnp.asarray(y) - self.center_y
         (a, b), (c, d) = self.basis
         return _XY(a * dx + b * dy, c * dx + d * dy)
 
     def unit_to_pixel(self, x, y):
-        """Invert the basis and center, returning named pixel coordinates (x,y)."""
+        """Invert the basis and center, returning named pixel coordinates (x,y).
+
+        Args:
+            x: Offsets along x in the grid's unit.
+            y: Offsets along y in the grid's unit.
+
+        Returns:
+            Named (x, y) pixel coordinates.
+        """
         (a, b), (c, d) = self.basis
         det = a * d - b * c
         x, y = jnp.asarray(x), jnp.asarray(y)
@@ -320,7 +437,14 @@ class PixelGrid:
         return abs(a * d - b * c)
 
     def cell_area(self, area: str) -> float:
-        """Return cell area in grid units squared or, for an arcsec grid, sr."""
+        """Return cell area in grid units squared or, for an arcsec grid, sr.
+
+        Args:
+            area: ``"grid"`` for grid units squared or ``"sr"`` for steradians.
+
+        Returns:
+            Area of one cell in the requested denominator.
+        """
         if area == "grid":
             return self.pixel_area
         if area != "sr":
@@ -336,6 +460,12 @@ class PixelGrid:
         retaining the frame. A concrete wavelength gives host geometry; a
         traced one gives a grid with traced basis entries for use inside the
         transformation (see the class docstring).
+
+        Args:
+            wavelength_nm: Wavelength in nm; may be traced.
+
+        Returns:
+            The grid in arcsec.
         """
         if self.unit != "lod":
             raise ValueError("to_arcsec requires a lod grid")
@@ -357,6 +487,13 @@ class PixelGrid:
 
         A traced wavelength gives a grid with traced basis entries for use
         inside the transformation (see the class docstring).
+
+        Args:
+            wavelength_nm: Wavelength in nm; may be traced.
+            frame: Frame defining lambda/D.
+
+        Returns:
+            The grid in lambda/D.
         """
         if self.unit != "arcsec":
             raise ValueError("to_lod requires an arcsec grid")
@@ -374,7 +511,15 @@ class PixelGrid:
         )
 
     def is_native(self, wavelength_nm):
-        """Whether this is a lod grid at its frame's reference wavelength."""
+        """Whether this is a lod grid at its frame's reference wavelength.
+
+        Args:
+            wavelength_nm: Wavelength in nm.
+
+        Returns:
+            True for a lod grid whose frame reference wavelength equals the
+            wavelength.
+        """
         return (
             self.unit == "lod" and wavelength_nm == self.frame.reference_wavelength_nm
         )
@@ -388,6 +533,11 @@ class GridArray:
     Construction validates shape and names. PyTree reconstruction bypasses
     construction checks, as JAX may insert placeholders or map away an axis.
     When returning a container with a changed rank, supply the new axis names.
+
+    Attributes:
+        data: Array of shape (..., ny, nx).
+        grid: PixelGrid of the last two axes.
+        leading_axes: One name per leading axis of ``data``.
     """
 
     data: jax.Array
@@ -406,13 +556,26 @@ class GridArray:
             raise ValueError("leading_axes must contain nonempty strings")
 
     def tree_flatten(self):
-        """Expose data, retaining all other dataclass fields as static metadata."""
+        """Expose data, retaining all other dataclass fields as static metadata.
+
+        Returns:
+            The one-tuple of leaves holding the data, and the static metadata tuple.
+        """
         metadata = tuple(getattr(self, field.name) for field in fields(self)[1:])
         return (self.data,), metadata
 
     @classmethod
     def tree_unflatten(cls, metadata, arrays):
-        """Rebuild transformed containers without converting JAX placeholders."""
+        """Rebuild transformed containers without converting JAX placeholders.
+
+        Args:
+            metadata: Static fields from ``tree_flatten``, in field order after
+                ``data``.
+            arrays: One-tuple holding the data array.
+
+        Returns:
+            The rebuilt container.
+        """
         result = object.__new__(cls)
         for attribute, value in zip(fields(cls), (arrays[0], *metadata), strict=True):
             object.__setattr__(result, attribute.name, value)
@@ -422,7 +585,15 @@ class GridArray:
 @jax.tree_util.register_static
 @dataclass(frozen=True)
 class Measure:
-    """Spatial meaning of a value and, for a density, its area denominator."""
+    """Spatial meaning of a value and, for a density, its area denominator.
+
+    Attributes:
+        kind: ``"integral"`` (value integrated over the cell), ``"density"`` (point
+            sample per unit area) or ``"intensive"`` (point sample with no area
+            denominator).
+        area: Area denominator of a density, ``"grid"`` or ``"sr"``; None
+            otherwise.
+    """
 
     kind: str
     area: str | None = None
@@ -437,17 +608,32 @@ class Measure:
 
     @classmethod
     def integral(cls) -> "Measure":
-        """Value integrated over the cell."""
+        """Value integrated over the cell.
+
+        Returns:
+            The integral measure.
+        """
         return cls("integral")
 
     @classmethod
     def density(cls, area: str) -> "Measure":
-        """Point sample of density per grid unit squared or per steradian."""
+        """Point sample of density per grid unit squared or per steradian.
+
+        Args:
+            area: ``"grid"`` for per grid unit squared or ``"sr"`` for per steradian.
+
+        Returns:
+            The density measure.
+        """
         return cls("density", area)
 
     @classmethod
     def intensive(cls) -> "Measure":
-        """Point sample with no area denominator, such as transmission."""
+        """Point sample with no area denominator, such as transmission.
+
+        Returns:
+            The intensive measure.
+        """
         return cls("intensive")
 
 
@@ -458,6 +644,14 @@ class Image(GridArray):
 
     Reconstruction specifies nearest, linear, Keys cubic, or band-limited
     interpolation. Outside specifies zero or half-sample reflection.
+
+    Attributes:
+        measure: Spatial meaning of the values.
+        quantity: Numerator unit of the values, without a per-steradian
+            denominator.
+        reconstruction: Interpolation, ``"nearest"``, ``"linear"``, ``"cubic"`` or
+            ``"band_limited"``.
+        outside: Treatment beyond the array, ``"zero"`` or ``"reflect"``.
     """
 
     measure: Measure
@@ -481,7 +675,11 @@ class Image(GridArray):
             raise ValueError("quantity must contain only the numerator unit")
 
     def integrated(self) -> "Image":
-        """Convert a point density to a cell integral by the midpoint rule."""
+        """Convert a point density to a cell integral by the midpoint rule.
+
+        Returns:
+            The Image with an integral measure; itself when already integral.
+        """
         area = self._integration_area()
         if area is None:
             return self
@@ -496,7 +694,14 @@ class Image(GridArray):
         return self.grid.cell_area(self.measure.area)
 
     def density(self, area: str) -> "Image":
-        """Express values as density per unit area, averaging cell integrals."""
+        """Express values as density per unit area, averaging cell integrals.
+
+        Args:
+            area: ``"grid"`` for per grid unit squared or ``"sr"`` for per steradian.
+
+        Returns:
+            The Image with a density measure.
+        """
         measure = Measure.density(area)
         target_area = self.grid.cell_area(area)
         if self.measure == measure:
@@ -632,6 +837,12 @@ def reconstruction_margin(name: str) -> float:
     algebraic tail (resampling a constant field is off by about 1e-2 eight
     pixels in), so for it the margin marks the support boundary, not an
     accuracy bound.
+
+    Args:
+        name: Reconstruction name.
+
+    Returns:
+        The margin in source pixels.
     """
     _validate_reconstruction(name)
     return _RECONSTRUCTION_MARGIN[name]
@@ -647,6 +858,16 @@ def coverage(source_grid: PixelGrid, target_grid: PixelGrid, margin: float = 0.0
     value depends on the zero beyond the data. Orientation and basis are
     handled as in resample. The result is static geometry: a host array for
     host grids and a traced array when a basis is traced.
+
+    Args:
+        source_grid: Grid of the source footprint.
+        target_grid: Grid whose pixels are tested.
+        margin: Source pixels by which the source footprint is shrunk on every
+            side.
+
+    Returns:
+        Boolean array of shape ``target_grid.shape``, True where a target pixel is
+        covered.
     """
     mapping = _pixel_map(source_grid, target_grid)
     traced = _traced(source_grid.basis, target_grid.basis, mapping)
@@ -773,6 +994,17 @@ def resample(
     target frequencies are M.T*f_source; the condition is each column's
     absolute sum <= 1 (for a diagonal M, each absolute spacing ratio <= 1).
     Coarsening either axis fails this guarantee even if pixel area decreases.
+
+    Args:
+        image: Image to resample.
+        target_grid: Grid of the result, in the same unit as ``image.grid``.
+        reconstruction: Reconstruction for this operation; the Image's own when
+            None.
+        pad_factor: Padding factor of the band-limited zero extension, at least
+            one; ignored for other reconstructions and for reflection.
+
+    Returns:
+        The Image on ``target_grid``.
     """
     source_grid = image.grid
     selected = image.reconstruction if reconstruction is None else reconstruction
@@ -962,6 +1194,16 @@ class CellOverlap:
     """Reusable overlap operator with static geometry and numeric weight leaves.
 
     Construct with footprint_overlap. The matrix shape is (cells, source pixels).
+
+    Attributes:
+        source: Source grid.
+        target: Target grid, or None for a sequence of grids.
+        shape: Matrix shape (cells, source pixels).
+        flat_output: Whether the result has a flat cell axis.
+        blocks: Block factors (by, bx) for aligned tiles, or None.
+        axes: Pair of one-dimensional overlap matrices for a diagonal map, or None.
+        sparse: Triples of cell index, source pixel index and covered fraction, or
+            None.
     """
 
     source: PixelGrid = field(metadata={"static": True})
@@ -982,6 +1224,13 @@ def footprint_overlap(
 
     A single grid produces a gridded result. A sequence concatenates the cells
     of its grids in row-major order. Overlapping cells collect independently.
+
+    Args:
+        source: Source grid.
+        cells: Target grid, or a sequence of grids whose cells are concatenated.
+
+    Returns:
+        The reusable overlap operator.
     """
     flat = not isinstance(cells, PixelGrid)
     targets = tuple(cells) if flat else (cells,)
@@ -1039,6 +1288,14 @@ def integrate_footprints(image: Image, overlap: CellOverlap) -> Image | jax.Arra
     A target pixel receives the covered fraction of each source integral.
     Outside the source, the field is zero. Leading dimensions are preserved.
     A sequence of grids returns a final, flat cell axis.
+
+    Args:
+        image: Integral or density Image on the overlap's source grid.
+        overlap: Operator from ``footprint_overlap``.
+
+    Returns:
+        Integral Image on the target grid, or a plain array with a flat cell axis
+        for a sequence of grids.
     """
     if image.grid != overlap.source:
         raise ValueError("image grid must match the overlap source grid")

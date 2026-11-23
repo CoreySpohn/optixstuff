@@ -37,6 +37,9 @@ def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
         frame: The ``Frame`` of the coronagraph tables or curves.
         source: What carries the frame, for the error message.
 
+    Returns:
+        None.
+
     Raises:
         ValueError: If the primary diameter differs from ``frame.diameter_m``.
     """
@@ -62,7 +65,7 @@ class WarmEmission(eqx.Module):
     emissivity of the warm surfaces times the transmission of the cold
     optics behind them, not a property of any single element.
 
-    Args:
+    Attributes:
         temperature_K: Temperature of the warm telescope [K], finite and
             positive.
         effective_emissivity: Warm emissivity times cold transmission,
@@ -73,7 +76,11 @@ class WarmEmission(eqx.Module):
     effective_emissivity: Array = eqx.field(converter=jnp.asarray)
 
     def __check_init__(self):
-        """Reject a non-positive temperature or an emissivity outside [0, 1]."""
+        """Reject a non-positive temperature or an emissivity outside [0, 1].
+
+        Returns:
+            None.
+        """
         temperature, emissivity = self.temperature_K, self.effective_emissivity
         if isinstance(temperature, jax.core.Tracer) or isinstance(
             emissivity, jax.core.Tracer
@@ -107,7 +114,7 @@ class Instrument(eqx.Module):
     This is the interface passed to simulators (coronagraphoto) and IFS
     instruments (coronachrome).
 
-    Args:
+    Attributes:
         primary: Primary mirror description.
         attenuating_elements: Ordered tuple of throughput elements
             between the primary and coronagraph (mirrors, filters, etc.).
@@ -149,6 +156,9 @@ class Instrument(eqx.Module):
         choice the caller makes explicitly, not a silent default.
 
         The flux scale must be finite and positive when concrete.
+
+        Returns:
+            None.
         """
         scale = self.flux_scale
         if not isinstance(scale, jax.core.Tracer) and not bool(
@@ -164,7 +174,12 @@ class Instrument(eqx.Module):
             check_primary_matches_frame(self.primary, coronagraph.frame)
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Combine the breaks of the optical train and detector yield."""
+        """Combine the breaks of the optical train and detector yield.
+
+        Returns:
+            Sorted union of the break wavelengths in nm of the optical train, detector,
+            coronagraph, disperser and speckle field.
+        """
         optional = (self.coronagraph, self.disperser, self.speckle)
         return spectral_breaks(
             *self.attenuating_elements,
@@ -230,7 +245,11 @@ class Instrument(eqx.Module):
         )
 
     def __repr__(self) -> str:
-        """Tree-shaped summary of every component."""
+        """Tree-shaped summary of every component.
+
+        Returns:
+            Multi-line summary string.
+        """
         lines = [
             "Instrument",
             indent("primary: " + repr(self.primary)),

@@ -24,7 +24,11 @@ class AbstractOpticalElement(eqx.Module):
 
     @abc.abstractmethod
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Return the host wavelength breaks [nm] for this model."""
+        """Return the host wavelength breaks [nm] for this model.
+
+        Returns:
+            Break wavelengths in nm as a 1D array; empty when the model declares none.
+        """
 
     @abc.abstractmethod
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
@@ -61,7 +65,15 @@ class AbstractUniformElement(AbstractOpticalElement):
     """
 
     def apply(self, arr: Array, wavelength_nm: ArrayLike) -> Array:
-        """Apply uniform throughput to a photon array."""
+        """Apply uniform throughput to a photon array.
+
+        Args:
+            arr: Input photon rate array [ph/s/pixel].
+            wavelength_nm: Wavelength in nanometers.
+
+        Returns:
+            Attenuated photon rate array, same shape as ``arr``.
+        """
         return arr * self.get_throughput(wavelength_nm)
 
 
@@ -71,21 +83,40 @@ class ConstantThroughput(AbstractUniformElement):
 
     Useful for modeling simple attenuators, beamsplitters, or as a
     placeholder during instrument design studies.
+
+    Attributes:
+        throughput: Fractional throughput in [0, 1], independent of wavelength.
+        name: Label used in the repr.
     """
 
     throughput: float
     name: str = eqx.field(default="element", static=True)
 
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Return constant throughput, ignoring wavelength."""
+        """Return constant throughput, ignoring wavelength.
+
+        Args:
+            wavelength_nm: Wavelength in nanometers; ignored.
+
+        Returns:
+            The constant throughput.
+        """
         return self.throughput
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """The wavelength dependence is smooth throughout the band."""
+        """The wavelength dependence is smooth throughout the band.
+
+        Returns:
+            An empty array.
+        """
         return np.empty(0)
 
     def __repr__(self) -> str:
-        """One-line summary of throughput value."""
+        """One-line summary of throughput value.
+
+        Returns:
+            One-line summary string.
+        """
         return (
             f"ConstantThroughput(name={self.name!r}, throughput={self.throughput:.3g})"
         )
@@ -99,14 +130,28 @@ class TransmissiveElement(AbstractUniformElement):
     This element supplies the optical-path apply/get_throughput interface;
     an Instrument multiplies the responses of its individual elements.
     Use ConstantThroughput for a wavelength-independent scalar efficiency.
+
+    Attributes:
+        transmission: Spectral Transmission giving the throughput.
     """
 
     transmission: Transmission
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Delegate to the held transmission table."""
+        """Delegate to the held transmission table.
+
+        Returns:
+            Break wavelengths in nm of the held Transmission.
+        """
         return self.transmission.spectral_breaks_nm()
 
     def get_throughput(self, wavelength_nm: ArrayLike) -> ArrayLike:
-        """Evaluate the held response at wavelengths in nanometers."""
+        """Evaluate the held response at wavelengths in nanometers.
+
+        Args:
+            wavelength_nm: Wavelength in nanometers.
+
+        Returns:
+            Throughput from the held Transmission, shaped like ``wavelength_nm``.
+        """
         return self.transmission(wavelength_nm)

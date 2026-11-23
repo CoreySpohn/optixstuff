@@ -59,6 +59,20 @@ class AbstractDetector(eqx.Module):
     that selects the Poisson form of ``log_prob``; it requires read noise 0 and
     excess factor 1.
     Subclasses supply QE; statistics and sampling share the electron contract.
+
+    Attributes:
+        pixel_scale_arcsec: Detector pixel size in arcsec.
+        shape: Detector pixel shape (ny, nx).
+        survival_fraction: Fraction of photons surviving the detector window, in
+            [0, 1].
+        dark_current_e_per_pixel_s: Dark current in electrons per pixel per second.
+        clock_induced_charge_e_per_pixel_frame: Clock-induced charge in electrons
+            per pixel per frame.
+        read_noise_e_rms: Read noise in electrons rms per pixel per frame.
+        excess_noise_factor_sq: Variance multiplier F2 of the gain, at least one.
+        read_time_s: Seconds spent reading a frame.
+        overlaps_read: Whether collection continues during the read.
+        photon_counting: Whether ``log_prob`` takes the Poisson form.
     """
 
     pixel_scale_arcsec: float = eqx.field(static=True, converter=float)
@@ -100,12 +114,23 @@ class AbstractDetector(eqx.Module):
 
     @abc.abstractmethod
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
-        """Return QE in [0, 1], with the same shape as ``wavelength_nm``."""
+        """Return QE in [0, 1], with the same shape as ``wavelength_nm``.
+
+        Args:
+            wavelength_nm: Wavelengths in nm.
+
+        Returns:
+            Quantum efficiency in [0, 1], shaped like ``wavelength_nm``.
+        """
         ...
 
     @abc.abstractmethod
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Wavelength breaks of the detector's quantum efficiency [nm]."""
+        """Wavelength breaks of the detector's quantum efficiency [nm].
+
+        Returns:
+            Wavelengths in nm where the quantum efficiency has a kink or a jump.
+        """
 
     def electrons(self, rates: Rates) -> Rates:
         """Integrate survival * QE * photon/s/nm into electron/s per field.
@@ -116,6 +141,12 @@ class AbstractDetector(eqx.Module):
         QE is evaluated at every node before dimensional integration.
         An aperture's ``n_pix`` and the ``supported`` flag are kept and its
         ``variance`` rates are converted the same way.
+
+        Args:
+            rates: Spectral Rates in photon/s/nm.
+
+        Returns:
+            Band-integrated Rates in electron/s.
         """
         if rates.carrier != "photon" or not rates.spectral:
             raise ValueError(f"rates must be in photon/s/nm; got {rates.unit}")
@@ -158,6 +189,15 @@ class AbstractDetector(eqx.Module):
         per-frame variance. With ``sum_bands=True``, sum axis
         zero only, returning ``spatial`` (a scalar for aperture rates).
         Bands and pixels are independent in this model.
+
+        Args:
+            rates: Band-integrated Rates in electron/s.
+            plan: Frame time and frame count per band.
+            sum_bands: Whether to sum over the band axis.
+
+        Returns:
+            Mean and variance of the electron count, each of shape ``(W, *spatial)``
+            (``spatial`` only when ``sum_bands`` is True).
         """
         _check_electrons(rates)
 
@@ -213,6 +253,14 @@ class AbstractDetector(eqx.Module):
           two moments of ``draw`` are exact) and is not exact at low counts.
           A zero variance gives 0 where ``y`` equals the mean and ``-inf``
           elsewhere.
+
+        Args:
+            observed: Observed frame in electrons, broadcast against the mean.
+            rates: Band-integrated Rates in electron/s.
+            plan: Frame time and frame count per band.
+
+        Returns:
+            Log density of ``observed``, with the broadcast shape.
         """
         mean, variance = self.mean_and_variance(rates, plan)
         observed = jnp.asarray(observed, dtype=mean.dtype)
@@ -255,6 +303,13 @@ class AbstractDetector(eqx.Module):
 
         A subclass that overrides ``log_prob`` has a different law and must
         override this too; otherwise it raises ``NotImplementedError``.
+
+        Args:
+            rates: Band-integrated Rates in electron/s.
+            plan: Frame time and frame count per band.
+
+        Returns:
+            The root vector, in the shape of the law's parts described above.
         """
         cls = type(self)
         if (
@@ -293,6 +348,14 @@ class AbstractDetector(eqx.Module):
         it omits saturation, thresholds, gain-register location effects,
         interpixel correlations, and digitization. It is not a full sensor
         response model. Yield has already been applied by ``electrons``.
+
+        Args:
+            key: JAX PRNG key.
+            rates: Per-pixel Rates in electron/s.
+            plan: Frame time and frame count per band.
+
+        Returns:
+            Sampled electron counts, shape ``(W, *spatial)``.
         """
         rate = _per_pixel_rate(rates)
         live_time, frames = plan._for_bands(rates.bands, rate.ndim)
@@ -338,7 +401,15 @@ class IdealDetector(AbstractDetector):
         read_time_s: ArrayLike = 0.0,
         overlaps_read: bool = False,
     ):
-        """Create ideal hardware; survival and read overhead remain configurable."""
+        """Create ideal hardware; survival and read overhead remain configurable.
+
+        Args:
+            pixel_scale_arcsec: Detector pixel size in arcsec.
+            shape: Detector pixel shape (ny, nx).
+            survival_fraction: Fraction of photons surviving the detector window.
+            read_time_s: Seconds spent reading a frame.
+            overlaps_read: Whether collection continues during the read.
+        """
         super().__init__(
             pixel_scale_arcsec=pixel_scale_arcsec,
             shape=shape,
@@ -349,21 +420,45 @@ class IdealDetector(AbstractDetector):
         )
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Unit QE has no wavelength breaks."""
+        """Unit QE has no wavelength breaks.
+
+        Returns:
+            An empty array.
+        """
         return np.empty(0)
 
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
-        """Return ones with the input wavelength shape."""
+        """Return ones with the input wavelength shape.
+
+        Args:
+            wavelength_nm: Wavelengths in nm.
+
+        Returns:
+            Ones, shaped like ``wavelength_nm``.
+        """
         return jnp.ones_like(jnp.asarray(wavelength_nm), dtype=jnp.result_type(float))
 
     def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
-        """Draw only Poisson source electrons of shape ``(W, *spatial)``."""
+        """Draw only Poisson source electrons of shape ``(W, *spatial)``.
+
+        Args:
+            key: JAX PRNG key.
+            rates: Per-pixel Rates in electron/s.
+            plan: Frame time and frame count per band.
+
+        Returns:
+            Poisson electron counts, shape ``(W, *spatial)``.
+        """
         rate = _per_pixel_rate(rates)
         live_time, _ = plan._for_bands(rates.bands, rate.ndim)
         return jax.random.poisson(key, rate * live_time)
 
     def __repr__(self) -> str:
-        """Summarize detector geometry and ideal yield."""
+        """Summarize detector geometry and ideal yield.
+
+        Returns:
+            One-line summary string.
+        """
         ny, nx = self.shape
         return (
             f"IdealDetector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
@@ -400,6 +495,23 @@ class Detector(AbstractDetector):
         Interpolation is linear and QE is zero outside the measured range.
         Concrete QE and survival outside [0, 1] raise at construction;
         traced values must satisfy the same contract.
+
+        Args:
+            pixel_scale_arcsec: Detector pixel size in arcsec.
+            shape: Detector pixel shape (ny, nx).
+            qe: Constant quantum efficiency in [0, 1].
+            qe_curve: Measured QE as (wavelengths in nm, efficiencies), overriding
+                ``qe``.
+            survival_fraction: Fraction of photons surviving the detector window.
+            dark_current_e_per_pixel_s: Dark current in electrons per pixel per second.
+            clock_induced_charge_e_per_pixel_frame: Clock-induced charge in electrons
+                per pixel per frame.
+            read_noise_e_rms: Read noise in electrons rms per pixel per frame.
+            excess_noise_factor_sq: Variance multiplier F2 of the gain, at least one.
+            read_time_s: Seconds spent reading a frame.
+            overlaps_read: Whether collection continues during the read.
+            photon_counting: Whether ``log_prob`` takes the Poisson form; requires
+                zero read noise and F2 of one.
         """
         self._qe = jnp.asarray(qe)
         self._qe_curve = (
@@ -443,7 +555,14 @@ class Detector(AbstractDetector):
                 )
 
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
-        """Return constant or linearly interpolated QE at every input wavelength."""
+        """Return constant or linearly interpolated QE at every input wavelength.
+
+        Args:
+            wavelength_nm: Wavelengths in nm.
+
+        Returns:
+            Quantum efficiency in [0, 1], shaped like ``wavelength_nm``.
+        """
         wavelength_nm = jnp.asarray(wavelength_nm)
         if self._qe_curve is None:
             return jnp.broadcast_to(self._qe, wavelength_nm.shape)
@@ -455,13 +574,20 @@ class Detector(AbstractDetector):
 
         The linear interpolant has a kink at every table point, and the zero
         extension outside the table has a jump at both ends.
+
+        Returns:
+            Tabulated QE wavelengths in nm, or an empty array for a constant QE.
         """
         if self._qe_curve is None:
             return np.empty(0)
         return np.asarray(self._qe_curve[0])
 
     def __repr__(self) -> str:
-        """Summarize geometry, yield, and noise parameters."""
+        """Summarize geometry, yield, and noise parameters.
+
+        Returns:
+            One-line summary string.
+        """
         ny, nx = self.shape
         qe_str = "spectral" if self._qe_curve is not None else f"{self._qe:.2f}"
         return (

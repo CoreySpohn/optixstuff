@@ -19,6 +19,12 @@ class Circular:
     without a peak search: one aperture fixed in angle per band must have a
     centre independent of pixelization. ``centre="peak"`` follows the PSF's
     refined local peak instead.
+
+    Attributes:
+        radius_lod: Circle radius in lambda/D units of the Image's frame. Must be
+            finite and positive.
+        centre: Center convention, ``"source"`` (the supplied source position) or
+            ``"peak"`` (the refined local PSF peak).
     """
 
     radius_lod: float
@@ -32,7 +38,18 @@ class Circular:
             raise ValueError('centre must be "source" or "peak"')
 
     def weights(self, psf, source_position, *, oversample=10):
-        """Fractional native-pixel coverage, using exact circle-square overlaps."""
+        """Fractional native-pixel coverage, using exact circle-square overlaps.
+
+        Args:
+            psf: Per-pixel source-flux Image the weights are laid on.
+            source_position: Source position (x, y) in lambda/D units of the Image's
+                frame.
+            oversample: Subpixel sampling factor per axis used to refine the peak and
+                the aperture edge.
+
+        Returns:
+            Fractional native-pixel coverage on the PSF Image's grid.
+        """
         from .performance import _rule_weights
 
         return _rule_weights(self, psf, source_position, oversample)
@@ -47,6 +64,10 @@ class HalfMaximum:
     """Region about the PSF peak by construction, above ``fraction`` of it.
 
     Only the connected component of the refined source-local peak is used.
+
+    Attributes:
+        fraction: Level, as a fraction of the refined local peak, above which the
+            region is kept. Strictly between zero and one.
     """
 
     fraction: float = 0.5
@@ -57,7 +78,18 @@ class HalfMaximum:
             raise ValueError("fraction must be between zero and one")
 
     def weights(self, psf, source_position, *, oversample=10):
-        """Fractional native-pixel coverage from the band-limited level set."""
+        """Fractional native-pixel coverage from the band-limited level set.
+
+        Args:
+            psf: Per-pixel source-flux Image the weights are laid on.
+            source_position: Source position (x, y) in lambda/D units of the Image's
+                frame.
+            oversample: Subpixel sampling factor per axis used to refine the peak and
+                the level set.
+
+        Returns:
+            Fractional native-pixel coverage on the PSF Image's grid.
+        """
         from .performance import _rule_weights
 
         return _rule_weights(self, psf, source_position, oversample)

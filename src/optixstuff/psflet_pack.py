@@ -33,7 +33,18 @@ def _optional_asarray(x):
 
 
 class PsfletPack(eqx.Module):
-    """Tabulated pixel-integrated PSFlet templates (see the module docstring)."""
+    """Tabulated pixel-integrated PSFlet templates (see the module docstring).
+
+    Attributes:
+        templates: Template planes, shape ``(n_field, n_lam, n_off, n_off)``.
+        offsets: Uniform ascending pixel-offset axis, shape ``(n_off,)``.
+        wavelengths_nm: Ascending tabulation wavelengths in nm, shape ``(n_lam,)``.
+        field_xy: Field-anchor positions in lenslet-index coordinates, shape
+            ``(n_field, 2)``.
+        centroids: Optional ``(dx, dy)`` pixel corrections to the dispersion-model
+            centroid, shape ``(n_field, n_lam, 2)``.
+        meta_json: Provenance string, not interpreted.
+    """
 
     templates: Array = eqx.field(converter=jnp.asarray)
     offsets: Array = eqx.field(converter=jnp.asarray)
@@ -43,7 +54,11 @@ class PsfletPack(eqx.Module):
     meta_json: str = eqx.field(static=True, default="")
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Return the wavelengths where template and centroid interpolation changes."""
+        """Return the wavelengths where template and centroid interpolation changes.
+
+        Returns:
+            The tabulation wavelengths in nm.
+        """
         return np.asarray(self.wavelengths_nm)
 
     def __check_init__(self):
@@ -74,7 +89,12 @@ class PsfletPack(eqx.Module):
 
 
 def save_psflet_pack(path, pack):
-    """Write a pack to the documented npz format (``format_version`` 1)."""
+    """Write a pack to the documented npz format (``format_version`` 1).
+
+    Args:
+        path: Destination of the npz file.
+        pack: Pack to write.
+    """
     data = dict(
         format_version=np.int64(PACK_FORMAT_VERSION),
         templates=np.asarray(pack.templates),
@@ -90,7 +110,14 @@ def save_psflet_pack(path, pack):
 
 
 def load_psflet_pack(path):
-    """Load a pack written by :func:`save_psflet_pack` or a conforming emitter."""
+    """Load a pack written by :func:`save_psflet_pack` or a conforming emitter.
+
+    Args:
+        path: Path of the npz file.
+
+    Returns:
+        The pack read from the file.
+    """
     with np.load(path, allow_pickle=False) as data:
         version = int(data["format_version"]) if "format_version" in data else None
         if version != PACK_FORMAT_VERSION:

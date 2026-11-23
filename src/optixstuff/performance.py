@@ -43,7 +43,14 @@ _QUINTIC_PAD = 48
 
 
 def core_window_half_width_pix(pixel_scale_lod: float) -> int:
-    """Half-width in pixels of the core-area window for a pixel scale."""
+    """Half-width in pixels of the core-area window for a pixel scale.
+
+    Args:
+        pixel_scale_lod: Pixel scale in lambda/D per pixel.
+
+    Returns:
+        Half-width in pixels covering ``CORE_WINDOW_LOD`` lambda/D, rounded up.
+    """
     return int(np.ceil(CORE_WINDOW_LOD / pixel_scale_lod))
 
 
@@ -369,6 +376,22 @@ def circular_aperture(
 
     Returns:
         ``(planet_flux, area, star_flux)``; ``star_flux`` is zero when omitted.
+
+    Args:
+        psf: 2-D PSF image, flux per pixel.
+        radius_pix: Circle radius in pixels.
+        pixel_scale_lod: Pixel scale in lambda/D per pixel.
+        oversample: Subpixels per pixel side.
+        half_width_pix: Half-width in pixels of the measurement window.
+        star_psf: Optional stellar image measured through the same weights.
+        nominal_center: Optional source (row, column) in pixels restricting the
+            peak search.
+        fixed_center: Optional (row, column) in pixels of the circle center, with
+            no peak search.
+        star_frame: Optional ``(star_cy, star_cx, off_cy, off_cx, pitch_ratio)``
+            mapping detector coordinates to the stellar frame.
+        return_samples: Return the subpixel image, circle weights and window
+            start instead of the sums, as ``(fine, circle, start_y, start_x)``.
     """
     search_radius = PEAK_SEARCH_RADIUS_LOD / pixel_scale_lod
     if fixed_center is None:
@@ -1093,6 +1116,13 @@ class SampledProfile(eqx.Module):
     Separations are in the supplied lambda/D frame. The two end segments
     extrapolate linearly in the interpolation space. A single sample is constant.
     Sample values can depend on a traced parameter such as stellar diameter.
+
+    Attributes:
+        separation_lod: Increasing sample separations in lambda/D.
+        values: Sample values, one per separation, in ``quantity`` units.
+        quantity: Name of the sampled quantity.
+        frame: Frame defining lambda/D.
+        interpolation: ``"linear"`` or ``"log"`` interpolation space.
     """
 
     separation_lod: np.ndarray | jax.Array
@@ -1105,7 +1135,16 @@ class SampledProfile(eqx.Module):
     def __init__(
         self, separation_lod, values, *, quantity, frame, interpolation, _fit=None
     ):
-        """Fit the supplied samples in their declared quantity and frame."""
+        """Fit the supplied samples in their declared quantity and frame.
+
+        Args:
+            separation_lod: Increasing sample separations in lambda/D.
+            values: Sample values, one per separation.
+            quantity: Name of the sampled quantity.
+            frame: Frame defining lambda/D.
+            interpolation: ``"linear"`` or ``"log"`` interpolation space.
+            _fit: Precomputed fit carried through ``dataclasses.replace``; leave None.
+        """
         if interpolation not in ("linear", "log"):
             raise ValueError("interpolation must be 'linear' or 'log'")
         self.quantity, self.frame, self.interpolation = quantity, frame, interpolation
@@ -1122,7 +1161,14 @@ class SampledProfile(eqx.Module):
 
     @classmethod
     def from_uniform_sky(cls, sky):
-        """Prepare the annular mean of a dimensionless native uniform-sky map."""
+        """Prepare the annular mean of a dimensionless native uniform-sky map.
+
+        Args:
+            sky: Dimensionless uniform-sky Image on a native lod grid.
+
+        Returns:
+            Profile of the annular mean against separation in lambda/D.
+        """
         radii, values, counts = radial_profile(sky)
         populated = np.asarray(counts) > 0
         return cls(
@@ -1134,7 +1180,14 @@ class SampledProfile(eqx.Module):
         )
 
     def evaluate(self, separation_lod):
-        """Evaluate on an arbitrary scalar or array of separations in this frame."""
+        """Evaluate on an arbitrary scalar or array of separations in this frame.
+
+        Args:
+            separation_lod: Separations in lambda/D, scalar or array.
+
+        Returns:
+            Interpolated values, shaped like ``separation_lod``.
+        """
         return _evaluate_profile(
             self.separation_lod,
             self.values,
@@ -1151,6 +1204,13 @@ def ring_azimuth_samples(shape, center):
     A map carries harmonics up to half its circumference in pixels at its corner
     radius, so this many equally spaced angles average every ring without
     aliasing (1131 for a 256 by 256 map).
+
+    Args:
+        shape: Map shape (ny, nx).
+        center: Optical axis (row, column) in pixels.
+
+    Returns:
+        Number of equally spaced position angles per ring.
     """
     return int(np.ceil(2 * np.pi * np.max(profile_radii(shape, center))))
 
@@ -1172,6 +1232,16 @@ def ring_symmetrized(image, grid=None, n_theta=None):
     differs from the image's: each pixel takes the ring mean at its own angular
     radius, in flux fraction per pixel of ``grid``, and zero beyond the image
     footprint. The default is the image's own grid.
+
+    Args:
+        image: Stellar Image to symmetrize.
+        grid: Pixel grid of the result; the image's own grid when None.
+        n_theta: Number of position angles per ring; ``ring_azimuth_samples`` when
+            None.
+
+    Returns:
+        Image on ``grid`` with each pixel set to the mean of its ring, in flux
+        fraction per pixel of ``grid``.
     """
     image = image.integrated()
     sg = image.grid
@@ -1198,29 +1268,44 @@ def ring_symmetrized(image, grid=None, n_theta=None):
 class PerformanceCurves(eqx.Module):
     """Frozen photometry on one separation axis; all fractions are absolute.
 
-    ``separation_lod``: nonnegative increasing sample offsets, shape (S,).
-    ``frame``: wavelength and circumscribed/inscribed diameter defining lambda/D.
-    ``rule``: the static, hashable aperture rule.
-    ``throughput``: weighted fraction of unocculted planet flux, tau.
-    ``throughput_variance``: planet flux fraction integrated with squared weights.
-    ``core_area_lod2``: pixel area times the sum of weights, A.
-    ``core_area_variance_lod2``: pixel area times the sum of squared weights.
-    ``leakage_fraction``: stellar per-pixel fractions integrated with the weights.
-    ``leakage_fraction_variance``: stellar fractions integrated with squared weights.
-    ``leakage_density_lod2``: ``leakage_fraction / core_area_lod2`` for
-    aperture_mean and aperture_ring_mean; the radial azimuthal point-sample mean
-    per unit area for azimuthal_ring_mean. These differ in general.
-    ``leakage_density_variance_lod2``: variance leakage per variance area for the
-    aperture rules, or the same azimuthal density for azimuthal_ring_mean.
-    ``raw_contrast``: leakage_density_lod2 * A / tau, with 1e20 when tau <= 0.
-    ``iwa_lod``: first half-maximum-throughput crossing of PCHIP; if no crossing
-    exists, the first positive-throughput separation (NaN for an all-zero curve).
-    ``data_extent_lod``: minimum array half-width, not an outer working angle.
-    ``leakage_rule``: the rule that produced the leakage fields (see below).
-    ``stellar_diameter_lod``: optional provenance, a diameter in the stellar lod frame.
-    ``interpolation``: immutable quantity-to-space mapping. PCHIP within the
-    sampled interval and linear end-segment tails in that same space. Exact
-    zeros use a 1e-300 floor for log interpolation and remain zero at their knots.
+    Attributes:
+        separation_lod: Nonnegative increasing sample offsets in lambda/D, shape
+            (S,).
+        frame: Wavelength and circumscribed/inscribed diameter defining
+            lambda/D.
+        rule: The static, hashable aperture rule.
+        throughput: Weighted fraction of unocculted planet flux, tau, shape (S,).
+        throughput_variance: Planet flux fraction integrated with squared
+            weights, shape (S,).
+        core_area_lod2: Pixel area times the sum of weights, A, in (lambda/D)^2,
+            shape (S,).
+        core_area_variance_lod2: Pixel area times the sum of squared weights, in
+            (lambda/D)^2, shape (S,).
+        leakage_fraction: Stellar per-pixel fractions integrated with the
+            weights, shape (S,).
+        leakage_fraction_variance: Stellar fractions integrated with squared
+            weights, shape (S,).
+        leakage_density_lod2: ``leakage_fraction / core_area_lod2`` in
+            1 / (lambda/D)^2 for aperture_mean and aperture_ring_mean; the radial
+            azimuthal point-sample mean per unit area for azimuthal_ring_mean.
+            These differ in general. Shape (S,).
+        leakage_density_variance_lod2: Variance leakage per variance area for the
+            aperture rules, or the same azimuthal density for
+            azimuthal_ring_mean. Shape (S,).
+        raw_contrast: ``leakage_density_lod2 * A / tau``, dimensionless, with 1e20
+            when tau <= 0. Shape (S,).
+        iwa_lod: First half-maximum-throughput crossing of PCHIP, in lambda/D; if
+            no crossing exists, the first positive-throughput separation (NaN for
+            an all-zero curve).
+        data_extent_lod: Minimum array half-width in lambda/D, not an outer
+            working angle.
+        leakage_rule: The rule that produced the leakage fields (see below).
+        stellar_diameter_lod: Optional provenance, a diameter in lambda/D of the
+            stellar lod frame.
+        interpolation: Immutable quantity-to-space mapping. PCHIP within the
+            sampled interval and linear end-segment tails in that same space.
+            Exact zeros use a 1e-300 floor for log interpolation and remain zero
+            at their knots.
 
     Every field is a function of separation only. For a stellar map that is not
     rotationally symmetric (a 2D product) the leakage is therefore a reduction
@@ -1303,7 +1388,33 @@ class PerformanceCurves(eqx.Module):
         leakage_density_variance_lod2,
         _fits=None,
     ):
-        """Validate measured arrays and prepare one set of PCHIP coefficients."""
+        """Validate measured arrays and prepare one set of PCHIP coefficients.
+
+        Args:
+            separation_lod: Nonnegative increasing separations in lambda/D, shape (S,).
+            frame: Frame defining lambda/D.
+            rule: Aperture rule, Circular or HalfMaximum.
+            throughput: Planet flux fraction in the aperture, shape (S,).
+            core_area_lod2: Aperture area in lambda/D squared, shape (S,).
+            leakage_fraction: Stellar flux fraction in the aperture, shape (S,).
+            leakage_density_lod2: Leakage per unit area in 1 / (lambda/D)^2, shape
+                (S,).
+            raw_contrast: Dimensionless raw contrast, shape (S,).
+            iwa_lod: Inner working angle in lambda/D.
+            data_extent_lod: Minimum array half-width in lambda/D.
+            leakage_rule: One of ``LEAKAGE_RULES``.
+            stellar_diameter_lod: Optional stellar diameter in lambda/D, provenance
+                only.
+            throughput_variance: Planet flux fraction with squared weights, shape (S,).
+            core_area_variance_lod2: Area with squared weights in lambda/D squared,
+                shape (S,).
+            leakage_fraction_variance: Stellar flux fraction with squared weights,
+                shape (S,).
+            leakage_density_variance_lod2: Variance leakage per variance area, shape
+                (S,).
+            _fits: Precomputed fits carried through ``dataclasses.replace``; leave
+                None.
+        """
         if not isinstance(rule, (Circular, HalfMaximum)):
             raise TypeError("rule must be Circular or HalfMaximum")
         if leakage_rule not in LEAKAGE_RULES:
@@ -1338,7 +1449,15 @@ class PerformanceCurves(eqx.Module):
             self._fits[name] = _profile_fit(x, a, self.interpolation[name])
 
     def evaluate(self, name, separation_lod):
-        """Evaluate one named quantity using its declared interpolation space."""
+        """Evaluate one named quantity using its declared interpolation space.
+
+        Args:
+            name: Quantity name, a key of ``interpolation``.
+            separation_lod: Separations in lambda/D, scalar or array.
+
+        Returns:
+            Interpolated values, shaped like ``separation_lod``.
+        """
         if name not in self.interpolation:
             raise ValueError(f"quantity {name!r} is not present in this record")
         return _evaluate_profile(
@@ -1401,6 +1520,22 @@ def performance_curves(
     (that aperture averaged over position angle, summed as native exact-coverage
     pixel weights over the ring-symmetrized stellar map on the PSF grid) or the
     deprecated ``azimuthal_ring_mean``; see :class:`PerformanceCurves`.
+
+    Args:
+        offaxis: Function of a separation in lambda/D returning the off-axis source
+            Image on the +x axis.
+        stellar: Stellar-flux Image, possibly on a distinct grid and frame.
+        rule: Aperture rule, Circular or HalfMaximum.
+        separations_lod: Increasing nonnegative separations in lambda/D, required.
+        source_positions_lod: Optional (x, y) source position in lambda/D for each
+            separation; ``(s, 0)`` by default.
+        leakage_rule: ``"aperture_mean"``, ``"aperture_ring_mean"`` or the
+            deprecated ``"azimuthal_ring_mean"``.
+        stellar_diameter_lod: Optional stellar diameter in lambda/D, recorded as
+            provenance only.
+
+    Returns:
+        The photometric record on the separation axis.
     """
     if leakage_rule == "azimuthal_ring_mean":
         warnings.warn(

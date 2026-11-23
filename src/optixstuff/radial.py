@@ -30,6 +30,18 @@ def radial_profile(
     edge. Pixels outside the edge range are excluded. Empty bins return NaN.
     The statistic (mean, median, or max) propagates NaNs within a bin.
     Under JIT, stat and nbins must be static.
+
+    Args:
+        image: Real 2D Image; distances use its grid units, from the optical axis.
+        stat: Statistic per bin, ``"mean"``, ``"median"`` or ``"max"``.
+        edges: Strictly increasing bin edges in the grid units; takes precedence
+            over ``nbins``.
+        nbins: Number of equally spaced bins from zero to the farthest sample
+            center; ``max(1, max(grid.shape) // 2)`` when None.
+
+    Returns:
+        Bin centers in the grid units, the statistic per bin (NaN where empty) and
+        the pixel count per bin.
     """
     if stat not in ("mean", "median", "max"):
         raise ValueError(f"unknown stat: {stat!r}; use 'mean', 'median', or 'max'")

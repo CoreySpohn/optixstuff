@@ -39,7 +39,11 @@ class SpectralBreaks(Protocol):
     """Model declaring wavelength breaks needed for piecewise integration."""
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Return concrete break wavelengths [nm], or an empty 1D array."""
+        """Return concrete break wavelengths [nm], or an empty 1D array.
+
+        Returns:
+            Break wavelengths in nm as a 1D array; empty when the model declares none.
+        """
         ...
 
 
@@ -51,7 +55,14 @@ def _break_array(breaks_nm):
 
 
 def spectral_breaks(*models: SpectralBreaks) -> np.ndarray:
-    """Return the sorted union of model-declared spectral breaks [nm] on the host."""
+    """Return the sorted union of model-declared spectral breaks [nm] on the host.
+
+    Args:
+        *models: Models that each declare ``spectral_breaks_nm()``.
+
+    Returns:
+        Sorted unique break wavelengths in nm.
+    """
     tables = []
     for model in models:
         if not isinstance(model, SpectralBreaks) or not callable(
@@ -66,7 +77,12 @@ def spectral_breaks(*models: SpectralBreaks) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Band:
-    """Positive wavelength interval [nm], stored as hashable host floats."""
+    """Positive wavelength interval [nm], stored as hashable host floats.
+
+    Attributes:
+        low_nm: Short edge of the band in nm.
+        high_nm: Long edge of the band in nm, at least ``low_nm``.
+    """
 
     low_nm: float
     high_nm: float
@@ -94,7 +110,15 @@ class Band:
         return self.high_nm - self.low_nm
 
     def channels(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
-        """Partition into n bands using one shared edge table, including endpoints."""
+        """Partition into n bands using one shared edge table, including endpoints.
+
+        Args:
+            n: Number of channels.
+            spacing: ``"linear"`` or ``"log"`` edge spacing.
+
+        Returns:
+            The ``n`` contiguous bands covering this band.
+        """
         n = index(n)
         if n < 1:
             raise ValueError("n must be a positive integer")
@@ -129,6 +153,15 @@ def rebin_bands(values, src_bands, dst_bands, axis=0):
     and destination bands must have positive widths. An Image
     retains its spatial grid, measure, quantity and reconstruction; axis must
     name a leading (non-spatial) dimension in that case.
+
+    Args:
+        values: Band integrals, an array or an Image, with a band axis.
+        src_bands: Bands of the input values.
+        dst_bands: Bands of the output.
+        axis: Band axis of ``values``; must be a leading axis for an Image.
+
+    Returns:
+        Band integrals over ``dst_bands``, in the same units and type as the input.
     """
     image = values if isinstance(values, Image) else None
     data = image.data if image is not None else jnp.asarray(values)
@@ -158,6 +191,12 @@ def trapezoid_weights(x):
     are independent grids. A singleton has zero weight (zero integration
     span); an empty axis raises. Concrete inputs must be finite and strictly
     increasing; under JAX tracing the caller must maintain these conditions.
+
+    Args:
+        x: Increasing grid, with leading axes as independent grids.
+
+    Returns:
+        Trapezoid weights with the shape of ``x``.
     """
     x = jnp.asarray(x)
     x = x.astype(jnp.result_type(x, 1.0))
@@ -191,6 +230,10 @@ class Transmission:
     Transformed tables must preserve the construction constraints. A photon
     spectrum multiplied by this response integrates detected photons; no
     energy-to-photon weighting or normalization is implicit.
+
+    Attributes:
+        wavelength_nm: Strictly increasing wavelengths in nm of the table.
+        transmission: Dimensionless response at those wavelengths.
     """
 
     wavelength_nm: jax.Array
@@ -217,11 +260,26 @@ class Transmission:
 
     @classmethod
     def from_band(cls, band: Band) -> "Transmission":
-        """Unit response between the two supplied wavelength edges [nm]."""
+        """Unit response between the two supplied wavelength edges [nm].
+
+        Args:
+            band: Band whose edges bound the response.
+
+        Returns:
+            A Transmission equal to one between the band edges.
+        """
         return cls([band.low_nm, band.high_nm], [1.0, 1.0])
 
     def __call__(self, wavelength_nm):
-        """Evaluate at scalar or array wavelengths [nm], with zero extrapolation."""
+        """Evaluate at scalar or array wavelengths [nm], with zero extrapolation.
+
+        Args:
+            wavelength_nm: Wavelength in nm, scalar or array.
+
+        Returns:
+            Dimensionless response, shaped like ``wavelength_nm``, zero outside the
+            table.
+        """
         return jnp.interp(
             wavelength_nm,
             jnp.asarray(self.wavelength_nm, dtype=float),
@@ -231,7 +289,11 @@ class Transmission:
         )
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """All breakpoints [nm], including support endpoints for zero extension."""
+        """All breakpoints [nm], including support endpoints for zero extension.
+
+        Returns:
+            The tabulated wavelengths in nm.
+        """
         return np.asarray(self.wavelength_nm)
 
     @property
@@ -265,6 +327,16 @@ class Transmission:
         Construct the rule on the host from this table and any additional
         breaks in fn. With no fn the result is the equivalent width [nm].
         A scalar-wavelength fn may return any fixed shape.
+
+        Args:
+            band: Wavelength interval of the integral.
+            fn: Optional function of one wavelength in nm; the response alone when
+                None.
+            order: Quadrature order per panel.
+            breaks_nm: Extra break wavelengths in nm for ``fn``.
+
+        Returns:
+            The integral in units of ``fn`` times nm, or the equivalent width in nm.
         """
         rule = Quadrature.build((band,), self, order=order, breaks_nm=breaks_nm)
         if fn is None:
@@ -273,12 +345,24 @@ class Transmission:
         return rule.integrate(values[None])[0]
 
     def tree_flatten(self):
-        """Expose both table arrays as dynamic leaves."""
+        """Expose both table arrays as dynamic leaves.
+
+        Returns:
+            The wavelength and transmission arrays as leaves, and None for metadata.
+        """
         return (self.wavelength_nm, self.transmission), None
 
     @classmethod
     def tree_unflatten(cls, metadata, arrays):
-        """Rebuild transformed tables without host validation."""
+        """Rebuild transformed tables without host validation.
+
+        Args:
+            metadata: Auxiliary data from ``tree_flatten``; unused.
+            arrays: The wavelength and transmission arrays.
+
+        Returns:
+            The rebuilt Transmission.
+        """
         result = object.__new__(cls)
         object.__setattr__(result, "wavelength_nm", arrays[0])
         object.__setattr__(result, "transmission", arrays[1])
@@ -303,6 +387,13 @@ class Probe:
     parameter, sampled at ``samples`` evenly spaced values; several ranges
     form a grid. The error at one parameter value can vanish while the error
     nearby is large, so the stored figure is the maximum over the ranges.
+
+    Attributes:
+        fn: Function ``fn(wavelength_nm, **parameters)`` returning the smooth
+            factor a consumer evaluates at the nodes.
+        weights: Name of the weight row the factor is summed with.
+        ranges: Admissible ``(low, high)`` interval of each traced parameter.
+        samples: Number of evenly spaced values sampled per parameter range.
     """
 
     fn: Callable[..., ArrayLike]
@@ -311,7 +402,11 @@ class Probe:
     samples: int = 17
 
     def parameter_grid(self) -> list[dict[str, float]]:
-        """Return every sampled parameter combination, one dict per call."""
+        """Return every sampled parameter combination, one dict per call.
+
+        Returns:
+            One dict of parameter values per sampled combination.
+        """
         if index(self.samples) < 2:
             raise ValueError("samples must be at least 2")
         axes = []
@@ -406,6 +501,14 @@ class Quadrature(eqx.Module):
     with x64 enabled for float64 leaves. Padding has zero weight under every
     name and sits at the band center. A monochromatic channel carries one
     integrated rate with unit weight.
+
+    Attributes:
+        bands: Wavelength bands, one per row.
+        nodes_nm: Node wavelengths in nm, shape (W, Q).
+        weight_table: Named weight rows, each of shape (W, Q), in host-spectrum
+            units times nm.
+        envelope_error: Named relative quadrature errors of the probes, each of
+            shape (W,).
     """
 
     bands: tuple[Band, ...] = eqx.field(static=True)
@@ -418,6 +521,13 @@ class Quadrature(eqx.Module):
 
         A bare array is the ``"response"`` weights. ``envelope_error`` maps a
         probe name to relative errors of shape (W,).
+
+        Args:
+            bands: Wavelength bands, one per row of nodes.
+            nodes_nm: Node wavelengths in nm, shape (W, Q).
+            weights: Weights of shape (W, Q) for the ``"response"`` name, or a mapping
+                of names to such arrays.
+            envelope_error: Mapping of probe names to relative errors of shape (W,).
         """
         self.bands = tuple(bands)
         self.nodes_nm = jnp.asarray(nodes_nm)
@@ -489,6 +599,20 @@ class Quadrature(eqx.Module):
         ``envelope_error``: the largest relative difference from the
         reference rule over each probe's parameter ranges, times a safety
         factor of 1.1, with shape (W,).
+
+        Args:
+            bands: Wavelength bands to integrate over.
+            *models: Models whose ``spectral_breaks_nm()`` are declared as breaks.
+            order: Number of nodes per panel.
+            breaks_nm: Extra break wavelengths in nm.
+            response: Function of wavelength in nm giving the instrument response, or
+                None for a response of one.
+            spectra: Named functions of wavelength in nm for rough host spectra that
+                the weights absorb.
+            probes: Named integrand families whose quadrature error is stored.
+
+        Returns:
+            The Quadrature holding nodes, named weights and probe errors.
 
         Raises:
             ValueError: If any weight is negative, which happens when the
@@ -621,7 +745,14 @@ class Quadrature(eqx.Module):
 
     @classmethod
     def monochromatic(cls, wavelength_nm: float) -> Self:
-        """Select an already integrated rate at one wavelength, with unit weight."""
+        """Select an already integrated rate at one wavelength, with unit weight.
+
+        Args:
+            wavelength_nm: Wavelength in nm.
+
+        Returns:
+            A one-band, one-node Quadrature with unit weight.
+        """
         band = Band(wavelength_nm, wavelength_nm)
         return cls((band,), [[band.low_nm]], [[1.0]])
 
@@ -631,7 +762,14 @@ class Quadrature(eqx.Module):
         return tuple(self.weight_table)
 
     def weights(self, name: str = "response") -> jax.Array:
-        """Return the (W, Q) weights of one name, in host-spectrum units times nm."""
+        """Return the (W, Q) weights of one name, in host-spectrum units times nm.
+
+        Args:
+            name: Name of the weight row.
+
+        Returns:
+            Weights of shape (W, Q), in host-spectrum units times nm.
+        """
         try:
             return self.weight_table[name]
         except KeyError:
@@ -664,6 +802,13 @@ class Quadrature(eqx.Module):
 
         The values exclude whatever the named weights absorbed: the response
         always, and the host spectrum of that name.
+
+        Args:
+            values: Values at the nodes, shape (W, Q, ...).
+            weights: Name of the weight row.
+
+        Returns:
+            The integral over each band, shape (W, ...).
         """
         values = jnp.asarray(values)
         if values.shape[:2] != self.nodes_nm.shape:
@@ -677,6 +822,13 @@ class Quadrature(eqx.Module):
 
         The integral is divided by the sum of the named weights, which is the
         band width for a unit response.
+
+        Args:
+            values: Values at the nodes, shape (W, Q, ...).
+            weights: Name of the weight row.
+
+        Returns:
+            The weighted mean over each band, shape (W, ...).
         """
         if any(band.width_nm == 0 for band in self.bands):
             raise ValueError("a monochromatic integrated rate has no band-width mean")
@@ -685,7 +837,14 @@ class Quadrature(eqx.Module):
         return integral / total.reshape((-1,) + (1,) * (integral.ndim - 1))
 
     def band(self, i: int) -> Self:
-        """Select a single band, preserving its row, padding, and wavelength axis."""
+        """Select a single band, preserving its row, padding, and wavelength axis.
+
+        Args:
+            i: Index of the band.
+
+        Returns:
+            A Quadrature holding only that band.
+        """
         return type(self)(
             (self.bands[i],),
             self.nodes_nm[i][None],

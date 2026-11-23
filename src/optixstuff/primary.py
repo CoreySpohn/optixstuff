@@ -11,16 +11,35 @@ from optixstuff.grids import Frame
 
 
 class AbstractPrimary(eqx.Module):
-    """Aperture geometry in metres, independent of its optical consumers."""
+    """Aperture geometry in metres, independent of its optical consumers.
+
+    Attributes:
+        collecting_area_m2: Collecting area in square meters.
+    """
 
     collecting_area_m2: AbstractVar[float]
 
     @abc.abstractmethod
     def diameter(self, convention: str) -> float:
-        """Return metres for static 'circumscribed' or 'inscribed'; else raise."""
+        """Return metres for static 'circumscribed' or 'inscribed'; else raise.
+
+        Args:
+            convention: ``"circumscribed"`` or ``"inscribed"``.
+
+        Returns:
+            Diameter in meters under that convention.
+        """
 
     def frame(self, reference_wavelength_nm, convention="circumscribed") -> Frame:
-        """Build static lambda/D geometry from this primary's declared diameter."""
+        """Build static lambda/D geometry from this primary's declared diameter.
+
+        Args:
+            reference_wavelength_nm: Reference wavelength in nm of the lambda/D scale.
+            convention: Diameter convention, ``"circumscribed"`` or ``"inscribed"``.
+
+        Returns:
+            The Frame carrying the diameter under that convention.
+        """
         return Frame(reference_wavelength_nm, self.diameter(convention), convention)
 
 
@@ -30,6 +49,11 @@ class SimplePrimary(AbstractPrimary):
     All dimensions are metres. For a filled circular aperture only, the
     inscribed diameter may be omitted and defaults to the circumscribed one.
     Area is supplied independently; it never determines either diameter.
+
+    Attributes:
+        circumscribed_diameter_m: Circumscribed diameter in meters.
+        inscribed_diameter_m: Inscribed diameter in meters.
+        collecting_area_m2: Collecting area in square meters.
     """
 
     circumscribed_diameter_m: float
@@ -39,7 +63,14 @@ class SimplePrimary(AbstractPrimary):
     def __init__(
         self, *, circumscribed_diameter_m, collecting_area_m2, inscribed_diameter_m=None
     ):
-        """Store both diameter conventions and the independently measured area."""
+        """Store both diameter conventions and the independently measured area.
+
+        Args:
+            circumscribed_diameter_m: Circumscribed diameter in meters.
+            collecting_area_m2: Collecting area in square meters.
+            inscribed_diameter_m: Inscribed diameter in meters; defaults to the
+                circumscribed diameter.
+        """
         self.circumscribed_diameter_m = circumscribed_diameter_m
         self.inscribed_diameter_m = (
             circumscribed_diameter_m
@@ -49,7 +80,14 @@ class SimplePrimary(AbstractPrimary):
         self.collecting_area_m2 = collecting_area_m2
 
     def diameter(self, convention):
-        """Return the explicitly selected diameter in metres."""
+        """Return the explicitly selected diameter in metres.
+
+        Args:
+            convention: ``"circumscribed"`` or ``"inscribed"``.
+
+        Returns:
+            Diameter in meters under that convention.
+        """
         if convention == "circumscribed":
             return self.circumscribed_diameter_m
         if convention == "inscribed":
@@ -57,7 +95,11 @@ class SimplePrimary(AbstractPrimary):
         raise ValueError(f"Unknown diameter convention: {convention!r}")
 
     def __repr__(self):
-        """Summarize the two diameter conventions and collecting area."""
+        """Summarize the two diameter conventions and collecting area.
+
+        Returns:
+            One-line summary string.
+        """
         return (
             f"SimplePrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
             f"D_insc={self.inscribed_diameter_m:.3g} m, "
@@ -89,6 +131,16 @@ class SegmentedPrimary(AbstractPrimary):
     For n=0 a single hexagon has D_circ=2*a and D_insc=sqrt(3)*a.
     Area=(1+3*n*(n+1))*6*(sqrt(3)/4)*a**2, the sum of six equilateral
     triangles per segment. Gaps alter pitch and extent, not segment area.
+
+    Attributes:
+        segment_point_to_point_m: Vertex-to-vertex size of one segment in meters.
+        segment_gap_m: Gap between neighboring segments in meters.
+        collecting_area_m2: Total segment area in square meters.
+        circumscribed_diameter_m: Circumscribed diameter in meters.
+        inscribed_diameter_m: Inscribed diameter in meters.
+        n_rings: Number of complete rings around the center segment.
+        n_segments: Total number of segments.
+        segment_shape: Segment shape, ``"hexagon"``.
     """
 
     segment_point_to_point_m: float
@@ -108,7 +160,14 @@ class SegmentedPrimary(AbstractPrimary):
         segment_gap_m=0.0,
         segment_shape="hexagon",
     ):
-        """Derive diameters and area from the full hexagonal segment geometry."""
+        """Derive diameters and area from the full hexagonal segment geometry.
+
+        Args:
+            n_rings: Number of complete rings around the center segment, nonnegative.
+            segment_point_to_point_m: Vertex-to-vertex size of one segment in meters.
+            segment_gap_m: Gap between neighboring segments in meters.
+            segment_shape: Segment shape; only ``"hexagon"`` is supported.
+        """
         if segment_shape != "hexagon":
             raise ValueError("segment_shape must be hexagon")
         if int(n_rings) != n_rings or n_rings < 0:
@@ -138,7 +197,14 @@ class SegmentedPrimary(AbstractPrimary):
         self.collecting_area_m2 = self.n_segments * 3 * sqrt(3) / 2 * a**2
 
     def diameter(self, convention):
-        """Return metres under one of the two explicit diameter conventions."""
+        """Return metres under one of the two explicit diameter conventions.
+
+        Args:
+            convention: ``"circumscribed"`` or ``"inscribed"``.
+
+        Returns:
+            Diameter in meters under that convention.
+        """
         if convention == "circumscribed":
             return self.circumscribed_diameter_m
         if convention == "inscribed":
@@ -165,7 +231,11 @@ class SegmentedPrimary(AbstractPrimary):
         )
 
     def __repr__(self):
-        """Summarize aperture extents, segment count and collecting area."""
+        """Summarize aperture extents, segment count and collecting area.
+
+        Returns:
+            One-line summary string.
+        """
         return (
             f"SegmentedPrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
             f"D_insc={self.inscribed_diameter_m:.3g} m, "

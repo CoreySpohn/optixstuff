@@ -32,6 +32,17 @@ class FocalResponse(eqx.Module):
     are (y, x) and (m, y, x), or (w, y, x) and (w, m, y, x) for a table
     of wavelength nodes. input_energy is the total incident photon
     count, scalar or one count per wavelength node.
+
+    Attributes:
+        e_nom: Nominal complex focal amplitude, shape (y, x) or (w, y, x), in
+            sqrt(photons) per sqrt(grid unit area).
+        G: Complex sensitivity per command or mode coefficient, shape (m, y, x) or
+            (w, m, y, x), in the units of ``e_nom`` per coefficient unit.
+        grid: PixelGrid the amplitudes are sampled on.
+        input_energy: Total incident photon count, scalar or one per wavelength
+            node; positive and finite.
+        reference_wavelength_nm: Wavelength in nm at which ``G`` is specified; must
+            match the grid's frame.
     """
 
     e_nom: Array = eqx.field(converter=jnp.asarray)
@@ -66,6 +77,13 @@ class FocalResponse(eqx.Module):
         """Return (e_nom, G) in sqrt(photons) per pixel and per command unit.
 
         If given, pixels is a (rows, columns) index pair on the grid.
+
+        Args:
+            pixels: Optional (rows, columns) index pair on the grid selecting pixels.
+
+        Returns:
+            The pair ``(e_nom, G)`` in sqrt(photons) per pixel and per command unit,
+            at the selected pixels if given.
         """
         e_nom, G = self.e_nom, self.G
         if pixels is not None:
@@ -86,17 +104,23 @@ class AbstractSpeckleField(eqx.Module):
     Frame. They return Images, leaving detector resampling to the consumer.
     The realization is fixed at construction, preserving temporal correlation
     across exposures without a per-call random key.
+
+    Attributes:
+        grid: Native lambda/D sampling, including center, basis and Frame.
+        epoch_d: Clock origin in days from the scene epoch, subtracted by
+            implementations.
     """
 
     grid: AbstractVar[PixelGrid]
-    """Native lambda/D sampling, including center, basis and Frame."""
-
     epoch_d: AbstractVar[float]
-    """Clock origin in days from the scene epoch, subtracted by implementations."""
 
     @abc.abstractmethod
     def spectral_breaks_nm(self) -> np.ndarray:
-        """Return the host wavelength breaks [nm] for this model."""
+        """Return the host wavelength breaks [nm] for this model.
+
+        Returns:
+            Break wavelengths in nm as a 1D array; empty when the model declares none.
+        """
 
     @abc.abstractmethod
     def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
@@ -104,6 +128,13 @@ class AbstractSpeckleField(eqx.Module):
 
         The nominal coronagraph leakage must not be included again. Concrete
         implementations document their wavelength geometry and leading axes.
+
+        Args:
+            wavelength_nm: Wavelength in nm, scalar or array.
+            time_d: Time in days from the scene epoch.
+
+        Returns:
+            Stellar flux fraction excess per cell on the field's grid.
         """
 
     def realize_average(
@@ -121,6 +152,15 @@ class AbstractSpeckleField(eqx.Module):
         Only one image accumulator is held, irrespective of n_sub. All image
         metadata and wavelength leading axes are retained. Enable JAX x64 when
         sub-exposure offsets need more precision than the absolute day clock.
+
+        Args:
+            wavelength_nm: Wavelength in nm, scalar or array.
+            exposure_s: Exposure duration in seconds.
+            start_time_d: Start of the exposure in days from the scene epoch.
+            n_sub: Number of exposure midpoints averaged.
+
+        Returns:
+            Time-averaged stellar flux fraction excess per cell on the field's grid.
 
         Raises:
             ValueError: If n_sub is not a positive integer.
@@ -169,6 +209,11 @@ class LinearSpeckleField(AbstractSpeckleField):
     lost information; enable JAX x64 and promote to float64 BEFORE adding a
     small offset to an absolute epoch on device. Deep-contrast accuracy also
     requires x64 arrays; this class does not change global JAX precision.
+
+    Attributes:
+        response: Focal amplitudes and their photometric reference.
+        epoch_d: Clock origin in days from the scene epoch; keyword-only, default
+            zero.
     """
 
     response: FocalResponse
@@ -176,7 +221,11 @@ class LinearSpeckleField(AbstractSpeckleField):
     _response_ndim: ClassVar[int] = 2
 
     def spectral_breaks_nm(self) -> np.ndarray:
-        """The wavelength dependence is smooth throughout the band."""
+        """The wavelength dependence is smooth throughout the band.
+
+        Returns:
+            An empty array.
+        """
         return np.empty(0)
 
     @property
@@ -199,6 +248,12 @@ class LinearSpeckleField(AbstractSpeckleField):
 
         The implementation forms elapsed time time_d - epoch_d. Coefficient
         units are those used to define G (for example nm of wavefront error).
+
+        Args:
+            time_d: Time in days from the scene epoch.
+
+        Returns:
+            Coefficients eps of shape ``(*time_shape, n_modes)``.
         """
 
     def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
@@ -211,6 +266,15 @@ class LinearSpeckleField(AbstractSpeckleField):
         for (W, Q), ('wavelength',) for a vector, otherwise wavelength_0, ...;
         times use time_0, ... .
         The cross-term form avoids cancellation of nearly equal intensities.
+
+        Args:
+            wavelength_nm: Positive wavelength in nm, scalar or array, including (W, Q)
+                quadrature nodes.
+            time_d: Time in days from the scene epoch, scalar or array.
+
+        Returns:
+            Stellar flux fraction excess per cell, shape
+            ``(*wavelength_shape, *time_shape, ny, nx)``.
         """
         wavelengths = jnp.asarray(wavelength_nm)
         eps = self.coefficients(time_d)
@@ -251,6 +315,14 @@ class LinearSpeckleField(AbstractSpeckleField):
         angular detector, resample EACH node using its wavelength first,
         then integrate with the stellar spectrum and throughput at the nodes.
         This helper neither applies a spectrum nor produces Rates.
+
+        Args:
+            quadrature: Wavelength nodes and weights of the bands.
+            time_d: Time in days from the scene epoch, scalar or array.
+
+        Returns:
+            Band-mean stellar flux fraction excess per cell, shape
+            ``(W, *time_shape, ny, nx)``.
         """
         nodes = self.realize(wavelength_nm=quadrature.nodes_nm, time_d=time_d)
         mean = quadrature.mean(nodes.data)
