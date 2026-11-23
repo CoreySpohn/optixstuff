@@ -35,16 +35,20 @@ feature narrower than about the band width over the order needs a declared
 break.
 
 The node count of a piece follows the response it is read through. A pixel at
-separation s, in lambda/D at the band center c, sees a diffraction pattern
-slide across a piece from a to b by `s * c * (1 / a - 1 / b)` chromatic
-cycles. `field_lod` is the largest separation at which the response is read.
+separation s from the axis, in lambda/D at the band center c, sees a
+diffraction pattern slide across a piece from a to b by
+`s * c * (1 / a - 1 / b)` chromatic cycles. `field_lod` is the largest separation at which the response is read.
 A piece that holds no cycles keeps exactly `order` nodes; otherwise it gets
 `max(order, 2 * ceil((order + 3 * cycles) / 2))` nodes. The default of zero
 suits a response read at one band-center separation for every node, such as
 a performance curve. An image out to the corner of a 128 by 128 detector at
 0.25 lambda/D reads separations up to 22.6 lambda/D. An `Instrument` declares
 the radius its detector spans through `spectral_field_lod(band)`, the detector
-half-diagonal in lambda/D at the band center, and `field_lod=None` takes it:
+half-diagonal in lambda/D at the band center, and `field_lod=None` takes it.
+For a smooth response, a caller who wants the rings of a source at separation
+`q` resolved everywhere passes the half-diagonal plus `q`; on a tabulated
+product the extra nodes do not remove the floor set by how the pixels read the
+table:
 
 ```python
 import math

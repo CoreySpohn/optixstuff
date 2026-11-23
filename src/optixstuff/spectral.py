@@ -544,11 +544,15 @@ class Quadrature(eqx.Module):
         order.
 
         The node count of a piece is set by the response it is read through.
-        A pixel at separation s (in lambda/D at the band center c) sees the
-        diffraction pattern slide across a piece from a to b by
-        ``cycles = s * c * (1 / a - 1 / b)`` chromatic cycles. With
-        ``field_lod`` the largest separation read, a piece that holds no
-        cycles gets exactly ``order`` nodes; otherwise it gets
+        A pixel at separation s from the axis (in lambda/D at the band center
+        c) sees the diffraction pattern slide across a piece from a to b by
+        ``cycles = s * c * (1 / a - 1 / b)`` chromatic cycles. For a smooth
+        response, the rings of a source at separation ``q`` are resolved
+        everywhere with ``field_lod`` of the half-diagonal plus ``q``; on a
+        tabulated product the extra nodes do not remove the floor set by how
+        the pixels read the table. With ``field_lod`` the largest separation
+        read, a piece that holds no cycles gets exactly ``order`` nodes;
+        otherwise it gets
         ``max(order, 2 * ceil((order + NODES_PER_CYCLE * cycles) / 2))``.
         A ``field_lod`` of zero, the default, is right for a response read at
         one band-center separation for every node, and gives ``order`` nodes

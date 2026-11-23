@@ -198,7 +198,11 @@ class Instrument(eqx.Module):
         nodes the larger this is. The detector is fixed in angle, so the value
         is converted at the band center; it is larger for a bluer band. An
         instrument that reads a smaller field overrides this method, or the
-        caller passes ``field_lod`` to ``Quadrature.build``.
+        caller passes ``field_lod`` to ``Quadrature.build``. The separation is
+        measured from the axis. For a smooth response, a caller who wants the
+        rings of a source at separation ``q`` resolved everywhere passes the
+        half-diagonal plus ``q``; on a tabulated product the extra nodes do not
+        remove the floor set by how the pixels read the table.
 
         Args:
             band: The wavelength band whose center sets the lambda/D scale.
