@@ -1186,9 +1186,14 @@ def test_coverage_read_keywords_validate():
 
 
 def _d_mask(n):
-    """A D-shaped data mask: a disk cut by a vertical chord, on n unit cells."""
+    """A data mask with no mirror symmetry, on n unit cells.
+
+    An off-center disk cut by a vertical chord and a horizontal one, so a mask
+    read flipped along either axis disagrees with it.
+    """
     yy, xx = np.indices((n, n)) - (n - 1) / 2
-    return (np.hypot(xx, yy) <= 0.42 * n) & (xx >= -0.2 * n)
+    disk = np.hypot(xx - 0.05 * n, yy + 0.07 * n) <= 0.42 * n
+    return disk & (xx >= -0.2 * n) & (yy <= 0.25 * n)
 
 
 @pytest.mark.parametrize("rec", ["linear", "cubic"])
@@ -1199,9 +1204,9 @@ def test_coverage_with_a_data_mask_reads_the_unmasked_field(width, rec):
     A smooth field and the same field zero-filled off a D-shaped mask, on 48
     unit cells, read onto a detector of 0.25, 0.7, 2.5 and 4 cells per pixel
     (offset 0.37 pixel), linear and cubic. Truth: the read of the unmasked
-    field. Wherever ``coverage(valid=...)`` is True the two reads agree to 64
-    eps of the field maximum (the same samples through the same read; a
-    masked cell enters with weight zero). Every covered pixel is also covered
+    field. Wherever ``coverage(valid=...)`` is True the two reads are equal,
+    exactly: the same samples through the same read, where every masked cell
+    enters with weight exactly zero (measured 0.0). Every covered pixel is also covered
     without the mask, and at least one pixel the unmasked ``coverage`` admits
     is refused.
     """
@@ -1231,8 +1236,7 @@ def test_coverage_with_a_data_mask_reads_the_unmasked_field(width, rec):
     assert covered.any() and (unmasked & ~covered).any()
     assert not (covered & ~unmasked).any()
     full, masked = read(field), read(np.where(mask, field, 0.0))
-    scale = np.abs(full).max()
-    assert np.abs(masked - full)[covered].max() <= 64 * np.finfo(float).eps * scale
+    np.testing.assert_array_equal(masked[covered], full[covered])
 
 
 def test_coverage_data_mask_contract():

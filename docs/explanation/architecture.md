@@ -308,6 +308,8 @@ products, whose stored reference grid remains explicit.
 native lambda/D coordinates, dividing the nm weights by their per-band sum.
 The output retains flux-fraction units and the band axis. It cannot replace
 node-level resampling and spectral weighting for a fixed angular detector.
+`realize_average(..., start_time_d=..., exposure_s=..., n_sub=8)` averages
+realized Images with the midpoint rule, retaining metadata.
 
 A speckle field is a product too, and its grid usually covers less of the
 detector than the static coronagraph products. `Rates.supported` is the strict
@@ -327,8 +329,6 @@ zero elsewhere) says so through `data_mask()`, and
 `coverage(..., valid=mask, reconstruction=..., measure=...)` then refuses every
 pixel whose read reaches a cell without data. A mask is accepted only for
 reconstructions of finite reach.
-`realize_average(..., start_time_d=..., exposure_s=..., n_sub=8)` averages
-realized Images with the midpoint rule, retaining metadata.
 
 `epoch_d` is a static host float64 origin. Enable JAX x64 and promote absolute
 timestamps before adding small offsets on device; subtracting the epoch cannot
