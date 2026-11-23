@@ -15,6 +15,8 @@ from optixstuff.grids import (
     Image,
     Measure,
     PixelGrid,
+    _footprint_integral,
+    _reads_footprint,
     footprint_overlap,
     integrate_footprints,
     resample,
@@ -28,8 +30,13 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
     Resample using the product's frame; reconcile different lod frames via sky.
 
     Measured cell integrals with piecewise-constant reconstruction collect by
-    footprint. Optical point samples integrate their declared reconstruction,
-    including on the native pitch. Transmission samples the reconstruction.
+    footprint. Point densities declaring ``cubic_spline`` are read as the
+    integral of that reconstruction over each pixel's footprint, at every
+    pitch including the native one, and return a cell integral in the area the
+    density is per (grid units squared of the native grid, or steradians); this
+    read is axis-aligned only and raises NotImplementedError for a rotated or
+    sheared target. Other densities become cell integrals by the midpoint rule
+    and are resampled. Transmission samples the reconstruction.
 
     Args:
         image: Native product Image.
@@ -45,7 +52,8 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
     )
     if measured_cells and source == target:
         return image
-    if image.measure != Measure.intensive():
+    footprint = _reads_footprint(image.measure, image.reconstruction)
+    if image.measure != Measure.intensive() and not footprint:
         image = image.integrated()
     if source.unit != target.unit or (
         source.unit == "lod" and source.frame != target.frame
@@ -54,6 +62,8 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
             source = source.to_arcsec(source.frame.reference_wavelength_nm)
         if target.unit == "lod":
             target = target.to_arcsec(target.frame.reference_wavelength_nm)
+    if footprint:
+        return replace(_footprint_integral(image, source, target), grid=grid)
     native = replace(image, grid=source)
     sampled = (
         integrate_footprints(native, footprint_overlap(source, target))

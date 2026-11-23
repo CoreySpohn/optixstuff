@@ -5,6 +5,7 @@ is centered at (i, j), so the array corner is (-0.5, -0.5). Coordinates obey
 u = B (p - c). No array or device value is stored in a PixelGrid.
 """
 
+import functools
 import math
 import re
 from collections.abc import Sequence
@@ -642,16 +643,28 @@ class Measure:
 class Image(GridArray):
     """Image samples with their spatial measure and numerator unit.
 
-    Reconstruction specifies nearest, linear, Keys cubic, or band-limited
-    interpolation. Values beyond the array are zero: an image ends where its
-    data end.
+    Reconstruction specifies nearest, linear, Keys cubic, cubic spline, or
+    band-limited interpolation. Values beyond the array are zero: an image ends
+    where its data end.
+
+    ``cubic_spline`` is the interpolating cubic B-spline of the samples with the
+    not-a-knot end condition: the coefficients are a linear map of the samples
+    alone (a prefilter, the inverse of the tridiagonal 1/6, 2/3, 1/6 system
+    closed by continuity of the third derivative at the second and the
+    second-to-last sample), and the reconstruction is restricted to the
+    footprint ``[-1/2, N - 1/2]`` of each axis. It reproduces cubic
+    polynomials exactly over the whole footprint. Every coefficient depends on
+    every sample, with a weight that falls by about 0.268 per cell, so like
+    ``band_limited`` it has no finite reach. It suits products that are
+    band-limited at the table pitch, including tables cut inside a bright
+    field; it rings at a hard edge and is not for zero-filled masks.
 
     Attributes:
         measure: Spatial meaning of the values.
         quantity: Numerator unit of the values, without a per-steradian
             denominator.
-        reconstruction: Interpolation, ``"nearest"``, ``"linear"``, ``"cubic"`` or
-            ``"band_limited"``.
+        reconstruction: Interpolation, ``"nearest"``, ``"linear"``, ``"cubic"``,
+            ``"cubic_spline"`` or ``"band_limited"``.
     """
 
     measure: Measure
@@ -725,9 +738,10 @@ class Image(GridArray):
 
 def _validate_reconstruction(reconstruction):
     """Reject unknown reconstruction names before tracing numeric operations."""
-    if reconstruction not in ("nearest", "linear", "cubic", "band_limited"):
+    if reconstruction not in _RECONSTRUCTION_MARGIN:
         raise ValueError(
-            "reconstruction must be nearest, linear, cubic, or band_limited"
+            "reconstruction must be nearest, linear, cubic, cubic_spline, or "
+            "band_limited"
         )
 
 
@@ -801,10 +815,258 @@ def _band_limited_matrix(n_source, positions, width, pad_factor, dtype, integrat
     return (evaluate @ analyze) / n_padded
 
 
+def _hat_antiderivative(t, xp):
+    """Integral of the linear kernel from -inf to t, piecewise in t."""
+    return xp.where(
+        t < -1.0,
+        0.0,
+        xp.where(
+            t < 0.0,
+            0.5 * (t + 1.0) ** 2,
+            xp.where(t < 1.0, 1.0 - 0.5 * (1.0 - t) ** 2, 1.0),
+        ),
+    )
+
+
+def _keys_antiderivative(t, xp):
+    """Integral of the Keys cubic (a = -1/2) from -inf to t, piecewise in t."""
+    t2 = t * t
+    t3 = t2 * t
+    t4 = t2 * t2
+    return xp.where(
+        t < -2.0,
+        0.0,
+        xp.where(
+            t < -1.0,
+            t4 / 8 + 5 * t3 / 6 + 2 * t2 + 2 * t + 2 / 3,
+            xp.where(
+                t < 0.0,
+                0.5 + t - 5 * t3 / 6 - 3 * t4 / 8,
+                xp.where(
+                    t < 1.0,
+                    0.5 + t - 5 * t3 / 6 + 3 * t4 / 8,
+                    xp.where(
+                        t < 2.0, 1 / 3 + 2 * t - 2 * t2 + 5 * t3 / 6 - t4 / 8, 1.0
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def _bspline(t, xp):
+    """Cubic B-spline kernel, piecewise in t."""
+    t2 = t * t
+    t3 = t2 * t
+    return xp.where(
+        t < -2.0,
+        0.0,
+        xp.where(
+            t < -1.0,
+            (2.0 + t) ** 3 / 6,
+            xp.where(
+                t < 0.0,
+                2 / 3 - t2 - t3 / 2,
+                xp.where(
+                    t < 1.0,
+                    2 / 3 - t2 + t3 / 2,
+                    xp.where(t < 2.0, (2.0 - t) ** 3 / 6, 0.0),
+                ),
+            ),
+        ),
+    )
+
+
+def _bspline_antiderivative(t, xp):
+    """Integral of the cubic B-spline from -inf to t, piecewise in t."""
+    t3 = t * t * t
+    t4 = t3 * t
+    return xp.where(
+        t < -2.0,
+        0.0,
+        xp.where(
+            t < -1.0,
+            (2.0 + t) ** 4 / 24,
+            xp.where(
+                t < 0.0,
+                0.5 + 2 * t / 3 - t3 / 3 - t4 / 8,
+                xp.where(
+                    t < 1.0,
+                    0.5 + 2 * t / 3 - t3 / 3 + t4 / 8,
+                    xp.where(t < 2.0, 1.0 - (2.0 - t) ** 4 / 24, 1.0),
+                ),
+            ),
+        ),
+    )
+
+
+# The antiderivatives are polynomials in t on each piece, with no sign or
+# absolute value, so their derivative at a knot (a pixel edge on a sample) is
+# the kernel value there.
+_LOCAL_ANTIDERIVATIVE = {
+    "linear": _hat_antiderivative,
+    "cubic": _keys_antiderivative,
+}
+
+
+@functools.lru_cache(maxsize=32)
+def _not_a_knot_prefilter(n_source):
+    """Map from N samples to the N + 4 cubic B-spline coefficients c_-2..c_N+1.
+
+    c_-1..c_N solve the interpolation conditions (c_n-1 + 4 c_n + c_n+1) / 6 =
+    d_n and the not-a-knot conditions (zero fourth difference of the
+    coefficients about knots 1 and N - 2, a continuous third derivative there).
+    The ghosts c_-2 and c_N+1 continue the end pieces, so the expansion is the
+    not-a-knot spline, end pieces extended, on [-1, N]. Host float64.
+    """
+    if n_source < 4:
+        raise ValueError("cubic_spline needs at least 4 samples along each axis")
+    m = n_source + 2  # unknowns c_-1 .. c_N at columns 0 .. N+1
+    system = np.zeros((m, m))
+    rows = np.arange(n_source)
+    system[rows, rows] = 1 / 6
+    system[rows, rows + 1] = 4 / 6
+    system[rows, rows + 2] = 1 / 6
+    fourth = np.array([-1.0, 4.0, -6.0, 4.0, -1.0])
+    system[n_source, 0:5] = fourth
+    system[n_source + 1, m - 5 : m] = fourth
+    rhs = np.zeros((m, n_source))
+    rhs[rows, rows] = 1.0
+    inner = np.linalg.solve(system, rhs)
+    low = fourth[1:] @ inner[0:4]
+    high = fourth[1:][::-1] @ inner[m - 4 : m]
+    prefilter = np.vstack([low, inner, high])
+    prefilter.setflags(write=False)
+    return prefilter
+
+
+def _cubic_spline_matrix(n_source, positions, width, dtype, integrate):
+    """Target-by-source matrix of a not-a-knot cubic spline along one axis.
+
+    With ``integrate`` each row integrates the spline over [p - w/2, p + w/2]
+    clipped to the footprint [-1/2, N - 1/2], in source pixels; otherwise it
+    samples the spline at p, zero outside the footprint. Positions and width
+    may be traced; the matrix is then built with JAX operations.
+    """
+    xp = jnp if _traced(positions, width) else np
+    positions = xp.asarray(positions)
+    knots = np.arange(-2, n_source + 2, dtype=np.float64)
+    if integrate:
+        low = xp.clip(positions - width / 2, -0.5, n_source - 0.5)
+        high = xp.clip(positions + width / 2, -0.5, n_source - 0.5)
+        basis = _bspline_antiderivative(
+            high[:, None] - knots, xp
+        ) - _bspline_antiderivative(low[:, None] - knots, xp)
+    else:
+        inside = (positions >= -0.5) & (positions <= n_source - 0.5)
+        basis = xp.where(inside[:, None], _bspline(positions[:, None] - knots, xp), 0.0)
+    prefilter = _not_a_knot_prefilter(n_source)
+    if xp is np:
+        return (basis @ prefilter).astype(dtype)
+    return basis.astype(dtype) @ jnp.asarray(prefilter, dtype=dtype)
+
+
+def _footprint_matrix(n_source, positions, width, reconstruction, dtype):
+    """Integral of each source sample's cardinal function over each target pixel.
+
+    Rows are target pixels [p - w/2, p + w/2] along one axis and columns are
+    source samples, in source pixels. The local kernels sum zero-extended
+    samples and are not clipped, so a covering grid collects the sum of the
+    samples exactly; the cubic spline is restricted to the footprint.
+    """
+    if reconstruction == "cubic_spline":
+        return _cubic_spline_matrix(n_source, positions, width, dtype, True)
+    antiderivative = _LOCAL_ANTIDERIVATIVE[reconstruction]
+    xp = jnp if _traced(positions, width) else np
+    positions = xp.asarray(positions)
+    samples = np.arange(n_source, dtype=np.float64)
+    high = positions[:, None] + width / 2 - samples
+    low = positions[:, None] - width / 2 - samples
+    matrix = antiderivative(high, xp) - antiderivative(low, xp)
+    return matrix.astype(dtype)
+
+
+def _require_axis_aligned(name, source_grid, target_grid, mapping):
+    """Raise for a rotated or sheared basis or map; traced matrices are skipped."""
+    for matrix in (source_grid.basis, target_grid.basis, mapping):
+        if _traced(matrix) or isinstance(matrix, jax.core.Tracer):
+            continue  # a traced basis keeps the diagonal form it was built with
+        matrix = np.asarray(matrix)
+        tolerance = 32 * np.finfo(float).eps * np.max(np.abs(matrix))
+        if np.any(np.abs(matrix[[0, 1], [1, 0]]) > tolerance):
+            raise NotImplementedError(
+                f"{name} reconstruction does not support rotated or sheared "
+                "grid bases or composed maps"
+            )
+
+
+def _axis_positions(source_grid, target_grid, mapping):
+    """Target pixel centers in source pixels and pixel widths, for x then y."""
+    traced = _traced(source_grid.basis, target_grid.basis)
+    xp = jnp if traced else np
+    axes = []
+    for axis, source_center, target_center in (
+        (0, source_grid.center_x, target_grid.center_x),
+        (1, source_grid.center_y, target_grid.center_y),
+    ):
+        ratio = mapping[axis, axis]
+        positions = (
+            xp.arange(target_grid.shape[1 - axis]) - target_center
+        ) * ratio + source_center
+        axes.append((source_grid.shape[1 - axis], positions, abs(ratio)))
+    return axes
+
+
+# Density images whose ``on_grid`` read is the footprint integral of the
+# declared reconstruction. Adding "linear" and "cubic" moves those products
+# to the same read; ``_footprint_matrix`` already holds their kernels.
+_FOOTPRINT_READS = frozenset({"cubic_spline"})
+
+
+def _reads_footprint(measure, reconstruction):
+    """Whether ``on_grid`` integrates the reconstruction over each pixel."""
+    return measure.kind == "density" and reconstruction in _FOOTPRINT_READS
+
+
+def _footprint_integral(image, source_grid, target_grid):
+    """Integral of a density's declared reconstruction over each target pixel.
+
+    The density is reconstructed from its point samples and integrated over the
+    footprint of every target pixel, in the area the density is per: a
+    ``grid`` density in the units of ``image.grid`` and an ``sr`` density in
+    steradians, with the source cell area taken as ``Image.integrated`` takes
+    it. ``source_grid`` is ``image.grid`` expressed in the target's unit. The
+    result is a cell integral that keeps the reconstruction name. The read is
+    axis-aligned only: a rotated or sheared map raises NotImplementedError.
+    """
+    area = image._integration_area()
+    mapping = _pixel_map(source_grid, target_grid)
+    _require_axis_aligned(image.reconstruction, source_grid, target_grid, mapping)
+    data = jnp.asarray(image.data, dtype=jnp.result_type(image.data, 1.0))
+    wx, wy = (
+        jnp.asarray(
+            _footprint_matrix(
+                n, positions, width, image.reconstruction, data.real.dtype
+            ),
+            dtype=data.dtype,
+        )
+        for n, positions, width in _axis_positions(source_grid, target_grid, mapping)
+    )
+    metadata = (
+        target_grid,
+        image.leading_axes,
+        Measure.integral(),
+        image.quantity,
+        image.reconstruction,
+    )
+    return Image.tree_unflatten(metadata, ((wy @ data @ wx.T) * area,))
+
+
 _RECONSTRUCTION_MARGIN = {
     "nearest": 0.0,
     "linear": 0.5,
     "cubic": 2.0,
+    "cubic_spline": 2.0,
     "band_limited": 2.0,
 }
 
@@ -814,12 +1076,15 @@ def reconstruction_margin(name: str) -> float:
 
     Within this distance of the source footprint the reconstruction mixes in
     the zero beyond the data: 0 for nearest, 0.5 for linear, 2 for the Keys
-    cubic and for band-limited interpolation. For the first three it is the
-    kernel's support, so a reconstruction outside it is exact; the
-    band-limited kernel has no finite support, and an edge rings with an
-    algebraic tail (resampling a constant field is off by about 1e-2 eight
-    pixels in), so for it the margin marks the support boundary, not an
-    accuracy bound.
+    cubic, the cubic spline and band-limited interpolation. For the first three
+    it is the kernel's support, so a reconstruction outside it is exact. The
+    cubic spline and the band-limited kernel have no finite support, so for
+    them the margin marks the support boundary, not an accuracy bound: a
+    band-limited edge rings with an algebraic tail (resampling a constant field
+    is off by about 1e-2 eight pixels in), and the coefficients of a cubic
+    spline depend on samples at every distance with a weight that falls by
+    about 0.268 per cell (its end condition moves a pixel by up to about 13
+    percent 2 to 3 cells from the table edge and under 0.1 percent beyond 8).
 
     This is the reach when the product is sampled at target centers. A read
     that may deposit instead (a cell integral onto pixels at least as large as
@@ -904,8 +1169,13 @@ def coverage(
     extent along it (so it holds under rotation and for non-square pixels).
     The deposit margin is ``max(m, (k - 1/2) g - 1/2)`` cells for a pixel of g
     cells and kernel half-support k in pixels (1/2 nearest, 1 linear, 2
-    cubic). A band-limited reconstruction has no finite reach, so its margin
-    marks the support boundary as in ``reconstruction_margin``.
+    cubic). The cubic spline and band-limited reconstructions have no finite
+    reach, so their margin marks the support boundary as in
+    ``reconstruction_margin``; they never deposit, so their margin is the
+    sampling margin for every measure. A density that ``on_grid`` reads by the
+    footprint integral of its reconstruction is read over the whole pixel, and
+    its margin is the sampling margin measured from the pixel corners, which is
+    what ``coverage`` tests.
 
     Args:
         source_grid: Grid of the source footprint.
@@ -995,6 +1265,14 @@ def resample(
     nonzero source pixel's stencil. Cropping loses flux in both forms.
     Use ``integrate_footprints`` to integrate a piecewise-constant field.
 
+    cubic_spline uses the not-a-knot cubic spline of the samples, restricted
+    to the footprint [-1/2, N-1/2] on each axis (see ``Image``). Density and
+    intensive values sample it at target centers. A cell integral is converted
+    to density samples (data / source_pixel_area), and the spline of those is
+    integrated over each target pixel's footprint, clipped at the boundary;
+    this one form holds at every pixel scale, with no switch to deposition.
+    Both bases and the composed map must be diagonal, as for band_limited.
+
     band_limited uses the interpolant of a zero-padded array:
     data are assumed zero outside the source array. Each padded axis has
     P=ceil(pad_factor*N) samples (default 2; 1 means no padding). Padding
@@ -1081,34 +1359,31 @@ def resample(
     area_ratio = target_grid.pixel_area / source_grid.pixel_area
     deposit = _deposits(source_grid, target_grid, image.measure, selected)
     data = jnp.asarray(image.data, dtype=jnp.result_type(image.data, 1.0))
+    if selected == "cubic_spline":
+        _require_axis_aligned(selected, source_grid, target_grid, mapping)
+        wx, wy = (
+            jnp.asarray(
+                _cubic_spline_matrix(n, positions, width, data.real.dtype, integral),
+                dtype=data.dtype,
+            )
+            for n, positions, width in _axis_positions(
+                source_grid, target_grid, mapping
+            )
+        )
+        return Image.tree_unflatten(metadata, (wy @ data @ wx.T,))
     if selected == "band_limited":
-        for matrix in (source_grid.basis, target_grid.basis, mapping):
-            if _traced(matrix) or isinstance(matrix, jax.core.Tracer):
-                continue  # a traced basis keeps the diagonal form it was built with
-            matrix = np.asarray(matrix)
-            tolerance = 32 * np.finfo(float).eps * np.max(np.abs(matrix))
-            if np.any(np.abs(matrix[[0, 1], [1, 0]]) > tolerance):
-                raise NotImplementedError(
-                    "band_limited reconstruction does not support rotated or sheared "
-                    "grid bases or composed maps"
-                )
+        _require_axis_aligned(selected, source_grid, target_grid, mapping)
         pad_factor = float(pad_factor)
         if not math.isfinite(pad_factor) or pad_factor < 1:
             raise ValueError("pad_factor must be finite and at least 1")
         matrices = []
-        for axis, source_center, target_center in (
-            (0, source_grid.center_x, target_grid.center_x),
-            (1, source_grid.center_y, target_grid.center_y),
+        for n_source, positions, width in _axis_positions(
+            source_grid, target_grid, mapping
         ):
-            ratio = mapping[axis, axis]
-            xp = jnp if traced else np
-            positions = (
-                xp.arange(target_grid.shape[1 - axis]) - target_center
-            ) * ratio + source_center
             matrix = _band_limited_matrix(
-                source_grid.shape[1 - axis],
+                n_source,
                 positions,
-                abs(ratio),
+                width,
                 pad_factor,
                 data.real.dtype,
                 integral,

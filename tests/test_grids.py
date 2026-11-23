@@ -701,10 +701,12 @@ def test_local_kernels_zero_outside_footprint():
     Basis: zero-extension stencils have finite support and cannot produce
     distant copies. Linear/cubic can spill just past a half-sample edge; at
     x=-0.75 a unit constant has values 1/4 and 13/64, respectively, not zero.
-    Binary-exact arithmetic.
+    The cubic spline is restricted to the footprint and reproduces the
+    constant inside it. Binary-exact arithmetic, except the spline interior
+    (a dense prefilter solve, 1e-14).
     """
     source = PixelGrid.regular((4, 4), 0.5, "arcsec", center=(0, 0))
-    for mode in ("nearest", "linear", "cubic"):
+    for mode in ("nearest", "linear", "cubic", "cubic_spline"):
         zero = Image(
             jnp.ones(source.shape), source, (), Measure.density("grid"), "flux", mode
         )
@@ -712,11 +714,15 @@ def test_local_kernels_zero_outside_footprint():
         actual = np.asarray(resample(zero, exterior).data)
         expected = np.zeros((12, 12))
         expected[4:8, 4:8] = 1
-        np.testing.assert_array_equal(actual, expected)
+        assert np.all(actual[expected == 0] == 0)
+        if mode == "cubic_spline":
+            np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-14)
+        else:
+            np.testing.assert_array_equal(actual, expected)
         edge = PixelGrid.regular((1, 1), 0.5, "arcsec", center=(0.75, -1))
         np.testing.assert_array_equal(
             resample(zero, edge).data,
-            {"nearest": 0, "linear": 1 / 4, "cubic": 13 / 64}[mode],
+            {"nearest": 0, "linear": 1 / 4, "cubic": 13 / 64, "cubic_spline": 0}[mode],
         )
 
 
@@ -836,6 +842,8 @@ def test_band_limited_zero_clipped_boxes():
         (Measure.intensive(), "band_limited"),
         (Measure.intensive(), "linear"),
         (Measure.integral(), "linear"),
+        (Measure.intensive(), "cubic_spline"),
+        (Measure.integral(), "cubic_spline"),
     ],
 )
 def test_traced_wavelength_resample_matches_host_and_differentiates(
@@ -920,7 +928,7 @@ def test_coverage_requires_whole_footprint_and_margin_matches_resample():
     assert not coverage(source, source, 0.5)[0].any()
     refined = PixelGrid.regular((32, 32), 0.5, "arcsec")
     for target in (shifted, refined):
-        for name in ("nearest", "linear", "cubic", "band_limited"):
+        for name in ("nearest", "linear", "cubic", "cubic_spline", "band_limited"):
             mask = coverage(source, target, reconstruction_margin(name))
             assert mask.any()
             actual = resample(ones, target, reconstruction=name).data
@@ -929,8 +937,9 @@ def test_coverage_requires_whole_footprint_and_margin_matches_resample():
                 continue
             np.testing.assert_allclose(actual[mask], 1.0, rtol=0, atol=1e-12)
     assert [
-        reconstruction_margin(n) for n in ("nearest", "linear", "cubic", "band_limited")
-    ] == [0.0, 0.5, 2.0, 2.0]
+        reconstruction_margin(n)
+        for n in ("nearest", "linear", "cubic", "cubic_spline", "band_limited")
+    ] == [0.0, 0.5, 2.0, 2.0, 2.0]
     with pytest.raises(ValueError):
         reconstruction_margin("sinc")
 
