@@ -198,6 +198,83 @@ def test_record_interpolation_spaces():
             np.testing.assert_allclose(d_radius, 1e-300 * 150 * np.log(10), atol=0)
 
 
+def _short_record(rule, last, extent):
+    """A two-sample record ending at ``last`` in an array of half-width ``extent``."""
+    x = np.array([1.0, last])
+    ones = np.ones(2)
+    return PerformanceCurves(
+        x,
+        Frame(500, 6, "circumscribed"),
+        rule,
+        0.5 * ones,
+        ones,
+        1e-9 * ones,
+        1e-9 * ones,
+        1e-9 * ones,
+        1.0,
+        extent,
+        throughput_variance=0.25 * ones,
+        core_area_variance_lod2=ones,
+        leakage_fraction_variance=1e-18 * ones,
+        leakage_density_variance_lod2=1e-18 * ones,
+    )
+
+
+@pytest.mark.parametrize(
+    ("separation", "expected"),
+    [
+        (0.5, False),  # inside the first sample
+        (1.0, True),  # first sample
+        (3.0, True),  # between samples
+        (4.0, True),  # last sample, aperture 0.7 fits in 6
+        (4.0 + 1e-6, False),  # just past the last sample, inside the extent
+        (5.0, False),  # between the last sample and the extent
+        (5.4, False),  # aperture fits, samples do not reach
+        (7.0, False),  # past the extent
+    ],
+)
+def test_record_supported_ends_at_the_last_sample(separation, expected):
+    """Fails if a read past the samples but inside the array extent counts as data.
+
+    Basis: exact comparisons against the first sample, the last sample and
+    ``data_extent_lod - radius``; no numerical tolerance is involved.
+    """
+    record = _short_record(Circular(0.7), last=4.0, extent=6.0)
+    assert bool(record.supported(separation)) is expected
+    with jax.enable_x64():
+        assert bool(record.supported(jnp.asarray(separation))) is expected
+
+
+def test_record_supported_also_needs_the_aperture_inside_the_extent():
+    """Fails if the extent test is dropped when the samples run to the edge.
+
+    Basis: samples end at 4.0, the extent is 4.5 and the radius 0.7, so the
+    aperture fits up to separation 3.8 exactly (comparison, no tolerance).
+    """
+    record = _short_record(Circular(0.7), last=4.0, extent=4.5)
+    flags = np.asarray(record.supported(np.array([3.8, 3.8 + 1e-9, 4.0])))
+    np.testing.assert_array_equal(flags, [True, False, False])
+
+
+def test_profile_supported_spans_the_samples():
+    """Fails if a profile reports its end-segment continuation as data.
+
+    Basis: exact comparisons at the end samples; ``evaluate`` itself still
+    continues the segment linearly (rtol 1e-14, float64 arithmetic).
+    """
+    profile = SampledProfile(
+        np.array([1.0, 3.0]),
+        np.array([2.0, 4.0]),
+        quantity="uniform_sky_response",
+        frame=Frame(500, 6, "circumscribed"),
+        interpolation="linear",
+    )
+    np.testing.assert_array_equal(
+        profile.supported(np.array([0.9, 1.0, 3.0, 3.1])), [False, True, True, False]
+    )
+    np.testing.assert_allclose(profile.evaluate(4.0), 5.0, rtol=1e-14)
+
+
 def test_exact_binary_moments():
     """Fails if binary variance differs from integrated full-field flux.
 

@@ -1113,9 +1113,12 @@ def _evaluate_profile(x, values, fit, interpolation, separation_lod, *, exact_kn
 class SampledProfile(eqx.Module):
     """One radial quantity with shape-preserving interpolation in linear or log space.
 
-    Separations are in the supplied lambda/D frame. The two end segments
-    extrapolate linearly in the interpolation space. A single sample is constant.
-    Sample values can depend on a traced parameter such as stellar diameter.
+    Separations are in the supplied lambda/D frame. The data span the first to the
+    last sample (:meth:`supported`); ``evaluate`` continues the two end segments
+    linearly in the interpolation space beyond them, an interpolant and not data,
+    so gate on :meth:`supported` before treating a read as a measurement. A single
+    sample is constant. Sample values can depend on a traced parameter such as
+    stellar diameter.
 
     Attributes:
         separation_lod: Increasing sample separations in lambda/D.
@@ -1196,6 +1199,25 @@ class SampledProfile(eqx.Module):
             separation_lod,
             exact_knots=True,
         )
+
+    def supported(self, separation_lod):
+        """Report where the profile holds data: from its first to its last sample.
+
+        Beyond that span ``evaluate`` only continues the end segments.
+
+        Args:
+            separation_lod: Separations in lambda/D, scalar or array.
+
+        Returns:
+            Boolean array shaped like ``separation_lod``, True inside the samples.
+        """
+        return _within_samples(self.separation_lod, separation_lod)[1]
+
+
+def _within_samples(x, separation_lod):
+    xp = jnp if isinstance(separation_lod, (jax.Array, jax.core.Tracer)) else np
+    q = xp.asarray(separation_lod)
+    return q, (q >= x[0]) & (q <= x[-1])
 
 
 def ring_azimuth_samples(shape, center):
@@ -1304,8 +1326,9 @@ class PerformanceCurves(eqx.Module):
             stellar lod frame.
         interpolation: Immutable quantity-to-space mapping. PCHIP within the
             sampled interval and linear end-segment tails in that same space.
-            Exact zeros use a 1e-300 floor for log interpolation and remain zero
-            at their knots.
+            The tails only continue the interpolant; the record holds data where
+            :meth:`supported` is True. Exact zeros use a 1e-300 floor for log
+            interpolation and remain zero at their knots.
 
     Every field is a function of separation only. For a stellar map that is not
     rotationally symmetric (a 2D product) the leakage is therefore a reduction
@@ -1456,7 +1479,9 @@ class PerformanceCurves(eqx.Module):
             separation_lod: Separations in lambda/D, scalar or array.
 
         Returns:
-            Interpolated values, shaped like ``separation_lod``.
+            Interpolated values, shaped like ``separation_lod``. Outside the
+            samples these are end-segment continuations, not data: read them only
+            where :meth:`supported` is True.
         """
         if name not in self.interpolation:
             raise ValueError(f"quantity {name!r} is not present in this record")
@@ -1468,6 +1493,26 @@ class PerformanceCurves(eqx.Module):
             separation_lod,
             exact_knots=False,
         )
+
+    def supported(self, separation_lod):
+        """Report where the record holds data for this record's aperture rule.
+
+        True where the separation lies from the first to the last sample and the
+        aperture (separation plus ``rule.radius_lod``) fits inside
+        ``data_extent_lod``; a ``HalfMaximum`` rule has no fixed radius, so only
+        the separation is tested against the extent. The array extent alone is
+        not enough: the samples can end inside it, and past the last sample
+        ``evaluate`` only continues the end segment.
+
+        Args:
+            separation_lod: Separations in lambda/D, scalar or array.
+
+        Returns:
+            Boolean array shaped like ``separation_lod``.
+        """
+        q, inside = _within_samples(self.separation_lod, separation_lod)
+        radius = getattr(self.rule, "radius_lod", 0.0)
+        return inside & (q + radius <= self.data_extent_lod)
 
 
 def _iwa(separation, throughput):

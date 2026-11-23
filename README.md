@@ -102,7 +102,11 @@ image methods above. Summary curves are a separate characterization record,
 `PerformanceCurves`: throughput, core area, stellar leakage fraction, leakage
 density, raw contrast, `iwa_lod` and `data_extent_lod`. A provider that stores a
 record hands it out as data, and `record.evaluate("throughput", separation_lod)`
-is the one read. `HalfMaximum` and `Circular` are the aperture rules a record is
+is the one read. A record holds data from its first to its last sample and
+while the aperture fits inside `data_extent_lod`; `record.supported(separation_lod)`
+reports exactly that. Beyond the samples `evaluate` only continues the end
+segments of its interpolant, so a consumer gates on `supported` and treats the
+rest as unsupported, never as a measurement. `HalfMaximum` and `Circular` are the aperture rules a record is
 built for; import them from `optixstuff`.
 `MultiBandCoronagraph` selects the first declared bandpass covering the wavelength.
 Coronagraph and speckle timestamps use `time_d`, days from the scene epoch;
