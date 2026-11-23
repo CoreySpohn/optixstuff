@@ -100,9 +100,13 @@ class AbstractDetector(eqx.Module):
     Noise parameters are per pixel, QE and survival are fractions, and
     ``excess_noise_factor_sq`` is a variance multiplier, at least one.
     Pixel scale, shape and read overlap are static PyTree geometry fields;
-    ``grid`` is the PixelGrid they define. ``photon_counting`` is a static flag
-    that selects the Poisson form of ``log_prob``; it requires read noise 0 and
-    excess factor 1.
+    ``grid`` is the PixelGrid they define. Pixel scale and shape are static
+    because the detector grid, every resampling operator onto it and every
+    support mask are built from them on the host, so a fit cannot free them. An
+    astrometric plate-scale uncertainty is a scale on the sky-to-detector map,
+    not a free pixel scale. Every other measured field is an array leaf.
+    ``photon_counting`` is a static flag that selects the Poisson form of
+    ``log_prob``; it requires read noise 0 and excess factor 1.
     Subclasses supply QE; statistics and sampling share the electron contract.
 
     Attributes:
