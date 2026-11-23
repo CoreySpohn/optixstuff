@@ -255,6 +255,17 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
 class AbstractSceneCoronagraph(AbstractImagingCoronagraph):
     """Imaging model with a calibrated extended-scene redistribution operator."""
 
+    @property
+    @abc.abstractmethod
+    def scene_grid(self) -> PixelGrid:
+        """The grid of source cells ``render_scene`` reads, in lambda/D.
+
+        A scene on another grid is resampled onto this one, so a caller that
+        builds cell integrals here passes every source the operator models. It
+        may reach beyond the stored PSF grid (``ProductGrids.source_grid``) when
+        the source domain does.
+        """
+
     @abc.abstractmethod
     def render_scene(
         self, scene: Image, wavelength_nm, *, grid: PixelGrid
