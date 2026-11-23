@@ -1397,7 +1397,10 @@ class PerformanceCurves(eqx.Module):
         leakage_rule: The rule that produced the leakage fields (see below).
         stellar_diameters_lod: The K stellar diameters, in lambda/D of ``frame``,
             increasing, that the leakage fields are tabulated at, or None for one
-            profile of unknown diameter.
+            profile of unknown diameter. Between the K diameters the leakage
+            is interpolated; the accuracy there is limited by the spacing of the
+            table (see the architecture page), not by the read. A record of
+            None is read for any star without a check.
         interpolation: Immutable quantity-to-space mapping. PCHIP within the
             sampled interval and linear end-segment tails in that same space.
             The tails only continue the interpolant; the record holds data where

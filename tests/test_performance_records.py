@@ -797,9 +797,10 @@ def test_record_gradient_in_the_stellar_diameter():
 def test_record_diameters_are_in_the_planet_frame():
     """Fails if the diameter axis keeps the stellar frame's lambda/D.
 
-    A stellar map on a frame of twice the aperture has a lambda/D half as
-    large in arcsec, so a diameter of one tabulated unit there spans two of
-    the planet frame's units, to float rounding.
+    The stellar map's frame has half the planet frame's aperture (3 m against
+    6 m), so its lambda/D is twice as large in arcsec and a diameter of one
+    tabulated unit there spans two of the planet frame's units, to float
+    rounding.
     """
     with jax.enable_x64():
         source, *_ = _gaussian_source()

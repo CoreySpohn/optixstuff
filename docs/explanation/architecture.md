@@ -271,7 +271,7 @@ The leakage fields and `raw_contrast` carry one profile per stellar diameter of
 the product (`stellar_diameters_lod`, in the record's lambda/D, shape `(K, S)`),
 so a star's size is part of the read: `evaluate` interpolates the log profile
 between diameters with the cubic spline the image route applies to the stellar
-map, and raises outside the tabulated range. A record prepared from one stellar
+map, and raises outside the tabulated range. Accuracy between diameters: A product such as the shipped one tabulates 12 stellar diameters, 0, 0.001 and then each knot a factor of two above the last up to 1.0 lambda/D, so the leakage between two knots is an interpolation through a table that holds no map there. Against the image route, which applies the same rule to the stellar map, the curves route agrees to 0.14 percent at 0.045, 0.5 percent at 0.09, 3.8 percent at 0.18, 10 percent at 0.36 and 19 percent at 0.71 lambda/D (at the separations tested, 2.9 to 11 lambda/D); neither route is known to be right between knots at the larger diameters. A Sun at 10 pc is 0.032 lambda/D at 1 micron, inside the accurate region; a star beyond the last knot (1.0 lambda/D) raises. At the tabulated diameters the record equals the ring mean of that plane to 0.14 percent up to 0.126 lambda/D and 0.6 percent at 0.25 lambda/D and above. A record prepared from one stellar
 image holds one profile and serves only a star of that diameter.
 `bandpass` is a `optixstuff.spectral.Band` or `None` for unknown coverage;
 each child of a multiband model must declare its interval. The first child
