@@ -254,17 +254,15 @@ def test_rebin_image_metadata_and_axes():
         measure=Measure.integral(),
         quantity="photon",
         reconstruction="nearest",
-        outside="reflect",
     )
     out = rebin_bands(image, src, dst, axis=-3)
     np.testing.assert_array_equal(out.data, np.asarray(data).sum(axis=1, keepdims=True))
     assert out.grid == image.grid
     assert out.leading_axes == image.leading_axes
-    assert (out.measure, out.quantity, out.reconstruction, out.outside) == (
+    assert (out.measure, out.quantity, out.reconstruction) == (
         image.measure,
         image.quantity,
         image.reconstruction,
-        image.outside,
     )
     np.testing.assert_array_equal(
         rebin_bands(data, src, dst, axis=1),

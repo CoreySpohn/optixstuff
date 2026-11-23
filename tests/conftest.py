@@ -122,7 +122,6 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
-            outside="reflect",
         )
 
     def _native_source_psfs(self, x_lod, y_lod):
@@ -145,7 +144,6 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
-            outside="zero",
         )
 
         # The source domain is the disk inscribed in the native grid.

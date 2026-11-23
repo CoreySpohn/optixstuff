@@ -299,7 +299,6 @@ class LinearSpeckleField(AbstractSpeckleField):
             Measure.integral(),
             "stellar_flux_fraction",
             reconstruction="band_limited",
-            outside="zero",
         )
 
     def broadened(self, *, quadrature: Quadrature, time_d: ArrayLike = 0.0) -> Image:

@@ -23,10 +23,9 @@ def test_density_evaluates_centers_without_area_or_box_factors():
     """Fails if point samples are deposited, box-averaged or area-scaled.
 
     Local linear/Keys kernels reproduce an interior affine density exactly;
-    nearest chooses floor(p+1/2). DFT and reflected cosine modes have exact
-    trigonometric reconstructions. Absolute tolerance 2e-13 allows float64
-    kernel and matrix summation at density <10. Each kernel needs a distinct
-    stencil; two Fourier extensions exercise distinct reconstruction bases.
+    nearest chooses floor(p+1/2). DFT modes have exact trigonometric
+    reconstructions. Absolute tolerance 2e-13 allows float64 kernel and
+    matrix summation at density <10. Each kernel needs a distinct stencil.
     """
     source = PixelGrid.regular((8, 8), 0.5, "arcsec")
     x, y = source.coordinates()
@@ -48,22 +47,11 @@ def test_density_evaluates_centers_without_area_or_box_factors():
             np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
             assert result.measure == Measure.density("grid")
         sy, sx = np.indices(source.shape)
-        for outside in ("zero", "reflect"):
-            if outside == "zero":
-                data = 4 + np.cos(2 * np.pi * sx / 8) * np.cos(2 * np.pi * sy / 8)
-                expected = 4 + np.cos(2 * np.pi * px / 8) * np.cos(2 * np.pi * py / 8)
-            else:
-                data = 4 + np.cos(np.pi * (sx + 0.5) / 8) * np.cos(
-                    2 * np.pi * (sy + 0.5) / 8
-                )
-                expected = 4 + np.cos(np.pi * (px + 0.5) / 8) * np.cos(
-                    2 * np.pi * (py + 0.5) / 8
-                )
-            sampled = replace(
-                image, data=data, reconstruction="band_limited", outside=outside
-            )
-            result = resample(sampled, target, pad_factor=1)
-            np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
+        data = 4 + np.cos(2 * np.pi * sx / 8) * np.cos(2 * np.pi * sy / 8)
+        expected = 4 + np.cos(2 * np.pi * px / 8) * np.cos(2 * np.pi * py / 8)
+        sampled = replace(image, data=data, reconstruction="band_limited")
+        result = resample(sampled, target, pad_factor=1)
+        np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
 
 
 def test_transmission_support_moments_band_integrals_and_transforms():

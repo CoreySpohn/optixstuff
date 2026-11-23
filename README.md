@@ -106,8 +106,8 @@ uses `response.per_pixel()` and returns the excess
 `reference_wavelength_nm / wavelength_nm`.
 
 `realize(wavelength_nm=..., time_d=...)` returns an `Image` on the field's own
-grid, with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `reflect`
-metadata. Wavelength arrays, including quadrature nodes `(W, Q)`, become leading
+grid, with `Measure.integral()`, `stellar_flux_fraction` and `band_limited`
+metadata; the image is zero past its grid. Wavelength arrays, including quadrature nodes `(W, Q)`, become leading
 axes. Each native lambda/D coordinate uses the node wavelength: convert with
 `image.grid.to_arcsec(node_nm)` before resampling that node onto a detector.
 

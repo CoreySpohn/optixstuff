@@ -204,11 +204,10 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     assert image.grid.step == 0.37
     assert not hasattr(field, "pixel_scale_lod")
     assert image.leading_axes == ("band", "quadrature")
-    assert (image.measure, image.quantity, image.reconstruction, image.outside) == (
+    assert (image.measure, image.quantity, image.reconstruction) == (
         Measure.integral(),
         "stellar_flux_fraction",
         "band_limited",
-        "zero",
     )
     for wavelength in [500.0, 1000.0]:
         angular_grid = image.grid.to_arcsec(wavelength)
@@ -294,7 +293,7 @@ def test_exposure_average(linear_speckle):
     np.testing.assert_allclose(average.data, expected, rtol=32 * np.finfo(float).eps)
     assert average.grid == field.grid
     assert average.leading_axes == ("band", "quadrature")
-    assert average.reconstruction == "band_limited" and average.outside == "zero"
+    assert average.reconstruction == "band_limited"
     compiled = eqx.filter_jit(field.realize_average)(**keywords)
     np.testing.assert_allclose(compiled.data, expected, rtol=32 * np.finfo(float).eps)
     np.testing.assert_allclose(
