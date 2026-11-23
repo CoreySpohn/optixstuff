@@ -308,6 +308,21 @@ products, whose stored reference grid remains explicit.
 native lambda/D coordinates, dividing the nm weights by their per-band sum.
 The output retains flux-fraction units and the band axis. It cannot replace
 node-level resampling and spectral weighting for a fixed angular detector.
+
+A speckle field is a product too, and its grid usually covers less of the
+detector than the static coronagraph products. `Rates.supported` is the strict
+flag: True where every product the render reads covers the pixel, the speckle
+field included. `Rates.static_supported` is the same flag without the speckle
+field, so `static_supported & ~supported` marks the pixels that lack only the
+drift model; None means the record does not distinguish the two, and a reader
+falls back to `supported`. Terminal statistics read `supported` alone. A
+renderer may offer, on request, to keep the static light where only the field
+is missing; such a record carries both flags beside its values, and the excess
+it holds there is the field's stored samples, zero-filled, under the field's
+own reconstruction. For reconstructions of finite reach (nearest, linear and
+cubic) that excess is exactly zero beyond the field's footprint grown by the
+margin `coverage` uses; `cubic_spline` and `band_limited` fields carry no such
+bound.
 `realize_average(..., start_time_d=..., exposure_s=..., n_sub=8)` averages
 realized Images with the midpoint rule, retaining metadata.
 

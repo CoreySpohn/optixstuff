@@ -8,6 +8,7 @@ import pytest
 
 import optixstuff as ox
 from optixstuff import Detector, FramePlan, Rates
+from optixstuff.detector import _floored
 from optixstuff.spectral import Band, Quadrature
 
 
@@ -370,17 +371,26 @@ def test_unsupported_reads_are_nan_and_invalid_and_none_changes_nothing():
     """Fails if a read the data do not cover returns a number, or None alters one.
 
     Basis: exact. Finite nonzero rates with ``supported`` False give NaN S/N,
-    NaN time and ``valid`` False in that band only; the supported band and the
-    ``supported=None`` and all-True records reproduce the present values
-    bit for bit, through the photon and electron routes alike. The flag also
-    reaches the integrated, electron and nested variance records.
+    NaN time and ``valid`` False in that band only, also where
+    ``static_supported`` is True (a read that lacks only the speckle field);
+    the supported band and the ``supported=None`` and all-True records
+    reproduce the present values bit for bit, through the photon and electron
+    routes alike. Both flags also reach the integrated, electron, floored and
+    nested variance records unchanged. Fails for a statistic that reads the
+    weaker flag or a route that drops either flag.
     """
     bands = (Band(500.0, 550.0), Band(550.0, 600.0))
     detector, base = _detector(), _rates(bands)
+    strict, static = jnp.array([True, False]), jnp.array([True, True])
     flagged = eqx.tree_at(
-        lambda r: (r.supported, r.variance.supported),
+        lambda r: (
+            r.supported,
+            r.variance.supported,
+            r.static_supported,
+            r.variance.static_supported,
+        ),
         base,
-        (jnp.array([True, False]), jnp.array([True, False])),
+        (strict, strict, static, static),
         is_leaf=lambda x: x is None,
     )
     assert np.isfinite(np.asarray(base.planet)).all() and (base.planet > 0).all()
@@ -402,9 +412,11 @@ def test_unsupported_reads_are_nan_and_invalid_and_none_changes_nothing():
             got = ox.exposure_time(same, detector, 5.0, **kwargs)
             np.testing.assert_array_equal(got.time_s, want_time.time_s)
             np.testing.assert_array_equal(got.valid, want_time.valid)
-    for rates in (flagged, detector.electrons(flagged), flagged.integrate()):
-        assert rates.supported.tolist() == [True, False]
-        assert rates.variance.supported.tolist() == [True, False]
+    electrons = detector.electrons(flagged)
+    for rates in (flagged, electrons, flagged.integrate(), _floored(electrons)[0]):
+        for record in (rates, rates.variance):
+            assert record.supported.tolist() == [True, False]
+            assert record.static_supported.tolist() == [True, True]
     electrons = detector.electrons(flagged)
     got_snr = ox.snr(electrons, detector, 3600.0, **kwargs)
     got = ox.exposure_time(electrons, detector, 5.0, **kwargs)

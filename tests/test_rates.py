@@ -1,6 +1,7 @@
 """Code verification of spectral photon records and their dimensional weights."""
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -98,3 +99,40 @@ def test_aperture_fields_follow_integration():
         ox.Rates(quad, "photons")
     with pytest.raises(ValueError, match="supported"):
         ox.Rates(quad, "photon", supported=jnp.ones((3, 3), bool))
+
+
+def test_static_support_is_implied_by_support_and_skips_tracers():
+    """Fails if a record admits a strict flag wider than its static flag.
+
+    ``supported`` True where ``static_supported`` is False raises, and so does
+    ``supported=None`` beside a ``static_supported`` with a False entry; a
+    record whose flags satisfy the implication builds, and a constructor
+    mapped with ``vmap`` over both flags does not raise (tracers are not
+    checked). Truth: the stated implication; exact.
+    """
+    bands = (Band(400, 500), Band(600, 700))
+    planet = jnp.ones((2, 2, 3))
+    strict = np.zeros((2, 2, 3), bool)
+    static = np.ones((2, 2, 3), bool)
+    strict[0, 1, 2] = True
+    ok = ox.Rates(
+        bands, "photon", planet=planet, supported=strict, static_supported=static
+    )
+    assert ok.static_supported.dtype == bool
+    static[0, 1, 2] = False
+    with pytest.raises(ValueError, match="static_supported is False"):
+        ox.Rates(
+            bands, "photon", planet=planet, supported=strict, static_supported=static
+        )
+    with pytest.raises(ValueError, match="supported=None"):
+        ox.Rates(bands, "photon", planet=planet, static_supported=static)
+    with pytest.raises(ValueError, match="static_supported must have one leading"):
+        ox.Rates(
+            bands, "photon", planet=planet, static_supported=np.ones((3, 2, 3), bool)
+        )
+
+    def build(a, b):
+        return ox.Rates(bands, "photon", planet=planet, supported=a, static_supported=b)
+
+    mapped = jax.vmap(build)(jnp.stack([strict, ~static]), jnp.stack([static, static]))
+    assert mapped.static_supported.shape == (2, 2, 2, 3)

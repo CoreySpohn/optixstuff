@@ -4,7 +4,9 @@ from collections.abc import Sequence
 from typing import Literal
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -50,6 +52,16 @@ class Rates(eqx.Module):
     into NaN. None means every read is supported. ``integrate`` and the
     detector's ``electrons`` carry the flag through unchanged.
 
+    ``static_supported``, when set, is the same kind of flag for every product
+    except a speckle field: True where the static coronagraph products cover
+    the read, whether or not the drift model does. ``supported`` is the strict
+    one, so ``supported`` True implies ``static_supported`` True, and a read
+    that lacks only the speckle field is ``static_supported & ~supported``.
+    None means "not distinguished; read ``supported``". Terminal statistics
+    read only ``supported``. The constructor checks the implication on
+    concrete arrays (traced arrays are not checked) and refuses
+    ``supported=None`` beside a ``static_supported`` with a False entry.
+
     An absent source may be scalar zero. ``bands`` (static) names the leading
     axis and equals ``quadrature.bands`` for spectral records.
 
@@ -70,6 +82,8 @@ class Rates(eqx.Module):
         supported: Boolean flag, shape ``(W, *spatial)``, False where the
             coronagraph data do not cover the read, or None when all reads are
             supported.
+        static_supported: Boolean flag of the same shape for every product but
+            the speckle field, or None when the record does not distinguish.
     """
 
     planet: Array
@@ -84,6 +98,7 @@ class Rates(eqx.Module):
     n_pix: Array | None
     variance: "Rates | None"
     supported: Array | None
+    static_supported: Array | None
 
     def __init__(
         self,
@@ -99,6 +114,7 @@ class Rates(eqx.Module):
         n_pix: ArrayLike | None = None,
         variance: "Rates | None" = None,
         supported: ArrayLike | None = None,
+        static_supported: ArrayLike | None = None,
     ):
         """Store rates sampled on a Quadrature (per nm) or integrated over bands.
 
@@ -122,6 +138,8 @@ class Rates(eqx.Module):
                 is the sum of squared weights.
             supported: Boolean flag, False where the coronagraph data do not cover the
                 read; None means all reads are supported.
+            static_supported: Boolean flag, False where the products other than the
+                speckle field do not cover the read; None means not distinguished.
         """
         if isinstance(sampling, Quadrature):
             self.quadrature = sampling
@@ -139,6 +157,9 @@ class Rates(eqx.Module):
         self.n_pix = None if n_pix is None else jnp.asarray(n_pix)
         self.variance = variance
         self.supported = None if supported is None else jnp.asarray(supported, bool)
+        self.static_supported = (
+            None if static_supported is None else jnp.asarray(static_supported, bool)
+        )
 
     def __check_init__(self):
         """Require a known carrier, matching leading axes and a like variance."""
@@ -155,9 +176,11 @@ class Rates(eqx.Module):
                     if self.spectral
                     else f"{name} must have one leading entry per band"
                 )
-        flag = self.supported
-        if flag is not None and flag.ndim and flag.shape[:1] != leading[:1]:
-            raise ValueError("supported must have one leading entry per band")
+        for name in ("supported", "static_supported"):
+            flag = getattr(self, name)
+            if flag is not None and flag.ndim and flag.shape[:1] != leading[:1]:
+                raise ValueError(f"{name} must have one leading entry per band")
+        self._check_flags()
         other = self.variance
         if other is not None:
             if other.bands != self.bands:
@@ -166,6 +189,22 @@ class Rates(eqx.Module):
                 raise ValueError("mean and variance rates must have the same unit")
             if other.variance is not None:
                 raise ValueError("variance rates cannot carry their own variance")
+
+    def _check_flags(self):
+        """Require ``supported`` to imply ``static_supported`` on concrete flags."""
+        strict, static = self.supported, self.static_supported
+        if static is None or isinstance(static, jax.core.Tracer):
+            return
+        if strict is None:
+            if not np.all(np.asarray(static)):
+                raise ValueError(
+                    "supported=None beside a static_supported with a False entry"
+                )
+            return
+        if isinstance(strict, jax.core.Tracer):
+            return
+        if np.any(np.asarray(strict) & ~np.asarray(static)):
+            raise ValueError("supported is True where static_supported is False")
 
     @staticmethod
     def component_names() -> tuple[str, ...]:
@@ -206,7 +245,7 @@ class Rates(eqx.Module):
 
         Dimensional weights are in nm, so photon/s/nm becomes photon/s.
         Scalar absent terms broadcast to the shape shared by the sources.
-        The carrier, ``n_pix`` and ``supported`` are kept; ``variance`` is
+        The carrier, ``n_pix`` and both support flags are kept; ``variance`` is
         integrated too.
 
         Returns:
@@ -222,6 +261,7 @@ class Rates(eqx.Module):
             n_pix=self.n_pix,
             variance=None if self.variance is None else self.variance.integrate(),
             supported=self.supported,
+            static_supported=self.static_supported,
             **{
                 name: quadrature.integrate(jnp.broadcast_to(getattr(self, name), shape))
                 for name in _COMPONENTS

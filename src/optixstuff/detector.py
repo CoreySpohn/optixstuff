@@ -71,6 +71,7 @@ def _floored(rates):
         n_pix=rates.n_pix,
         variance=variance,
         supported=rates.supported,
+        static_supported=rates.static_supported,
     )
     return floored, bad
 
@@ -188,7 +189,7 @@ class AbstractDetector(eqx.Module):
         library. Inputs have shape ``(W, Q, *spatial)``; outputs have shape
         ``(W, *spatial)``, including scalar-zero absent contributions.
         QE is evaluated at every node before dimensional integration.
-        An aperture's ``n_pix`` and the ``supported`` flag are kept and its
+        An aperture's ``n_pix`` and both support flags are kept and its
         ``variance`` rates are converted the same way.
 
         Args:
@@ -213,6 +214,7 @@ class AbstractDetector(eqx.Module):
             n_pix=rates.n_pix,
             variance=None if rates.variance is None else self.electrons(rates.variance),
             supported=rates.supported,
+            static_supported=rates.static_supported,
             **{
                 name: quadrature.integrate(
                     yield_fraction * jnp.broadcast_to(getattr(rates, name), shape)
