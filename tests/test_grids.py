@@ -1183,3 +1183,125 @@ def test_coverage_read_keywords_validate():
         coverage(grid, grid, measure=Measure.integral())
     with pytest.raises(ValueError, match="margin"):
         coverage(grid, grid, 0.5, reconstruction="linear", measure=Measure.integral())
+
+
+def _d_mask(n):
+    """A D-shaped data mask: a disk cut by a vertical chord, on n unit cells."""
+    yy, xx = np.indices((n, n)) - (n - 1) / 2
+    return (np.hypot(xx, yy) <= 0.42 * n) & (xx >= -0.2 * n)
+
+
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+@pytest.mark.parametrize("width", [0.25, 0.7, 2.5, 4.0])
+def test_coverage_with_a_data_mask_reads_the_unmasked_field(width, rec):
+    """Fails if a masked product is called covered where its read reaches no data.
+
+    A smooth field and the same field zero-filled off a D-shaped mask, on 48
+    unit cells, read onto a detector of 0.25, 0.7, 2.5 and 4 cells per pixel
+    (offset 0.37 pixel), linear and cubic. Truth: the read of the unmasked
+    field. Wherever ``coverage(valid=...)`` is True the two reads agree to 64
+    eps of the field maximum (the same samples through the same read; a
+    masked cell enters with weight zero). Every covered pixel is also covered
+    without the mask, and at least one pixel the unmasked ``coverage`` admits
+    is refused.
+    """
+    from optixstuff.grids import coverage
+
+    n = 48
+    grid = PixelGrid.focal(n, 1.0, _READ_FRAME)
+    _, field = _smooth_field(n, n)
+    mask = _d_mask(n)
+    shape = (int(np.ceil(60 / width)),) * 2
+    detector = PixelGrid(
+        shape,
+        (shape[1] - 1) / 2 + 0.37,
+        (shape[0] - 1) / 2 - 0.23,
+        ((width, 0.0), (0.0, width)),
+        "lod",
+        _READ_FRAME,
+    )
+
+    def read(data):
+        image = Image(jnp.asarray(data), grid, (), Measure.integral(), "x", rec)
+        return np.asarray(resample(image, detector).data)
+
+    keywords = dict(reconstruction=rec, measure=Measure.integral())
+    covered = np.asarray(coverage(grid, detector, valid=mask, **keywords))
+    unmasked = np.asarray(coverage(grid, detector, **keywords))
+    assert covered.any() and (unmasked & ~covered).any()
+    assert not (covered & ~unmasked).any()
+    full, masked = read(field), read(np.where(mask, field, 0.0))
+    scale = np.abs(full).max()
+    assert np.abs(masked - full)[covered].max() <= 64 * np.finfo(float).eps * scale
+
+
+def test_coverage_data_mask_contract():
+    """Fails if the mask changes coverage without missing data or admits a bad read.
+
+    Truth: the stated rule, exact. ``valid=None`` and an all-True mask give the
+    unmasked coverage; one missing cell refuses the detector pixel over it and
+    every pixel whose grown footprint reaches it, and no other; a JAX mask
+    under ``jit`` gives the host answer; ``cubic_spline`` and ``band_limited``
+    with a mask, a mask without ``reconstruction``, and a mask of the wrong
+    shape raise. A bare speckle field holds data in every cell.
+    """
+    from optixstuff import AbstractSpeckleField
+    from optixstuff.grids import coverage
+
+    n = 24
+    grid = PixelGrid.focal(n, 1.0, _READ_FRAME)
+    detector = PixelGrid.focal(16, 1.25, _READ_FRAME)
+    keywords = dict(reconstruction="linear", measure=Measure.integral())
+    plain = np.asarray(coverage(grid, detector, **keywords))
+    every = np.ones((n, n), bool)
+    np.testing.assert_array_equal(
+        coverage(grid, detector, valid=every, **keywords), plain
+    )
+    np.testing.assert_array_equal(
+        coverage(grid, detector, valid=None, **keywords), plain
+    )
+
+    hole = every.copy()
+    hole[11, 14] = False
+    holed = np.asarray(coverage(grid, detector, valid=hole, **keywords))
+    # Linear deposit at 1.25 cells per pixel: margin max(0.5, 0.125) cells.
+    rows, columns = np.indices(detector.shape)
+    x = (columns - detector.center_x) * 1.25 + grid.center_x
+    y = (rows - detector.center_y) * 1.25 + grid.center_y
+    reach = 1.25 / 2 + 0.5 + 0.5
+    touches = (np.abs(x - 14) < reach) & (np.abs(y - 11) < reach)
+    assert touches.sum() >= 4
+    np.testing.assert_array_equal(holed, plain & ~touches)
+
+    traced = jax.jit(lambda v: coverage(grid, detector, valid=v, **keywords))(
+        jnp.asarray(hole)
+    )
+    np.testing.assert_array_equal(np.asarray(traced), holed)
+
+    for rec in ("cubic_spline", "band_limited"):
+        with pytest.raises(ValueError, match="no finite reach"):
+            coverage(
+                grid,
+                detector,
+                valid=every,
+                reconstruction=rec,
+                measure=Measure.integral(),
+            )
+    with pytest.raises(ValueError, match="requires reconstruction"):
+        coverage(grid, detector, valid=every)
+    with pytest.raises(ValueError, match="shape"):
+        coverage(grid, detector, valid=every[:-1], **keywords)
+
+    native = grid
+
+    class Bare(AbstractSpeckleField):
+        grid: PixelGrid = native
+        epoch_d: float = 0.0
+
+        def spectral_breaks_nm(self):
+            return np.empty(0)
+
+        def realize(self, *, wavelength_nm, time_d=0.0):
+            return Image(jnp.zeros((n, n)), native, (), Measure.integral(), "x")
+
+    assert Bare().data_mask() is None

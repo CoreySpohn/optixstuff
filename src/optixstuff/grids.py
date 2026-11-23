@@ -1177,6 +1177,27 @@ def _read_margins(source_grid, target_grid, reconstruction, measure, mapping):
     return margins[0], margins[1]
 
 
+# Reconstructions whose read depends on samples at every distance.
+_NO_FINITE_REACH = frozenset({"cubic_spline", "band_limited"})
+
+
+def _all_valid(xp, valid, first_x, last_x, first_y, last_y):
+    """Whether every cell of each inclusive index box is inside and valid.
+
+    A summed-area table of ``valid`` counts the valid cells of each box,
+    clipped to the array; the box is all valid when that count equals its
+    unclipped area, so cells beyond the array count as missing.
+    """
+    ny, nx = valid.shape
+    counts = xp.cumsum(xp.cumsum(xp.asarray(valid, dtype=xp.int32), axis=0), axis=1)
+    table = xp.pad(counts, ((1, 0), (1, 0)))
+    x0, x1 = (xp.clip(i, 0, nx).astype(xp.int32) for i in (first_x, last_x + 1))
+    y0, y1 = (xp.clip(i, 0, ny).astype(xp.int32) for i in (first_y, last_y + 1))
+    count = table[y1, x1] - table[y0, x1] - table[y1, x0] + table[y0, x0]
+    area = (last_x - first_x + 1) * (last_y - first_y + 1)
+    return count == area
+
+
 def coverage(
     source_grid: PixelGrid,
     target_grid: PixelGrid,
@@ -1184,6 +1205,7 @@ def coverage(
     *,
     reconstruction: str | None = None,
     measure: Measure | None = None,
+    valid=None,
 ):
     """Boolean (ny, nx) of target pixels wholly inside the source footprint.
 
@@ -1216,6 +1238,16 @@ def coverage(
     wide. An intensive map is sampled at the pixel centers, and its margin is
     the sampling margin.
 
+    ``valid`` narrows the footprint to the source cells that hold data, for a
+    product whose array is wider than its data (zero-filled where ``valid`` is
+    False). A target pixel is then covered only when, in addition, no cell
+    without data lies within the margin of its footprint: the bounding box of
+    its four mapped corners, grown by the margin on each source axis, touches
+    only cells where ``valid`` is True. For nearest, linear and cubic, whose
+    kernels have finite reach, the read of a covered pixel is then the read of
+    the unmasked product. ``cubic_spline`` and ``band_limited`` have no finite
+    reach, so a mask cannot bound their read, and ``valid`` raises for them.
+
     Args:
         source_grid: Grid of the source footprint.
         target_grid: Grid whose pixels are tested.
@@ -1225,6 +1257,9 @@ def coverage(
         reconstruction: Reconstruction of the read, given with ``measure``.
         measure: Measure of the product that is read, given with
             ``reconstruction``.
+        valid: Optional boolean of ``source_grid.shape``, True where a source
+            cell holds data; a host or JAX array. Requires ``reconstruction``
+            and ``measure``. None means every cell holds data.
 
     Returns:
         Boolean array of shape ``target_grid.shape``, True where a target pixel is
@@ -1232,7 +1267,9 @@ def coverage(
 
     Raises:
         ValueError: If only one of ``reconstruction`` and ``measure`` is given,
-            or either is given with a nonzero ``margin``.
+            or either is given with a nonzero ``margin``; if ``valid`` is given
+            without them, with a reconstruction of no finite reach, or with a
+            shape other than the source grid's.
     """
     if (reconstruction is None) != (measure is None):
         raise ValueError("pass reconstruction and measure together")
@@ -1240,6 +1277,17 @@ def coverage(
         raise ValueError(
             "margin must be zero when reconstruction and measure are given"
         )
+    if valid is not None:
+        if reconstruction is None:
+            raise ValueError("valid requires reconstruction and measure")
+        if reconstruction in _NO_FINITE_REACH:
+            raise ValueError(
+                f"{reconstruction} has no finite reach, so a data mask cannot "
+                "bound its read; use a reconstruction of finite reach (nearest, "
+                "linear or cubic) for a masked product"
+            )
+        if tuple(np.shape(valid)) != tuple(source_grid.shape):
+            raise ValueError("valid must have the source grid's shape")
     mapping = _pixel_map(source_grid, target_grid)
     if reconstruction is None:
         margin_x = margin_y = margin
@@ -1248,6 +1296,10 @@ def coverage(
             source_grid, target_grid, reconstruction, measure, mapping
         )
     traced = _traced(source_grid.basis, target_grid.basis, mapping)
+    if valid is not None and not isinstance(valid, np.ndarray):
+        traced = traced or _traced(valid)
+        if not traced:
+            valid = np.asarray(valid)
     xp = jnp if traced else np
     rows, columns = xp.indices(target_grid.shape)
     dx = columns - target_grid.center_x
@@ -1255,6 +1307,7 @@ def coverage(
     ny, nx = source_grid.shape
     tolerance = 1e-9
     covered = xp.ones(target_grid.shape, dtype=bool)
+    xs, ys = [], []
     for corner_x in (-0.5, 0.5):
         for corner_y in (-0.5, 0.5):
             u, v = dx + corner_x, dy + corner_y
@@ -1267,7 +1320,18 @@ def coverage(
                 & (y >= -0.5 + margin_y - tolerance)
                 & (y <= ny - 0.5 - margin_y + tolerance)
             )
-    return covered
+            xs.append(x)
+            ys.append(y)
+    if valid is None:
+        return covered
+    # Cells whose footprint [j - 1/2, j + 1/2] meets the grown bounding box,
+    # with the same slack as the corner test.
+    xs, ys = xp.stack(xs), xp.stack(ys)
+    first_x = xp.floor(xs.min(axis=0) - margin_x + tolerance - 0.5) + 1
+    last_x = xp.ceil(xs.max(axis=0) + margin_x - tolerance + 0.5) - 1
+    first_y = xp.floor(ys.min(axis=0) - margin_y + tolerance - 0.5) + 1
+    last_y = xp.ceil(ys.max(axis=0) + margin_y - tolerance + 0.5) - 1
+    return covered & _all_valid(xp, valid, first_x, last_x, first_y, last_y)
 
 
 def resample(

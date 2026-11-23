@@ -116,7 +116,11 @@ it holds there is the field's stored samples, zero-filled, under the field's
 own reconstruction. For reconstructions of finite reach (nearest, linear and
 cubic) that excess is exactly zero beyond the field's footprint grown by the
 margin `coverage` uses; `cubic_spline` and `band_limited` fields carry no such
-bound.
+bound. A field whose array is wider than its data (values on a list of pixels,
+zero elsewhere) says so through `data_mask()`, and
+`coverage(..., valid=mask, reconstruction=..., measure=...)` then refuses every
+pixel whose read reaches a cell without data. A mask is accepted only for
+reconstructions of finite reach.
 
 The coronagraph slot is the image capability only: a frame, a bandpass and the
 image methods above. Summary curves are a separate characterization record,

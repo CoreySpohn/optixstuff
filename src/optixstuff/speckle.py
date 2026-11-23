@@ -114,6 +114,21 @@ class AbstractSpeckleField(eqx.Module):
     grid: AbstractVar[PixelGrid]
     epoch_d: AbstractVar[float]
 
+    def data_mask(self) -> Array | None:
+        """Cells of ``grid`` that hold data, or None when every cell does.
+
+        A field whose array is wider than its data (data on a list of pixels,
+        scattered into a zero array) returns a boolean of ``grid.shape``,
+        True where it holds data; its ``realize`` is 0.0 where the mask is
+        False. The mask may be a JAX array. A consumer passes it to
+        ``optixstuff.grids.coverage`` as ``valid``, so the pixels whose read
+        reaches a cell without data are not supported.
+
+        Returns:
+            None by default: every cell of ``grid`` holds data.
+        """
+        return None
+
     @abc.abstractmethod
     def spectral_breaks_nm(self) -> np.ndarray:
         """Return the host wavelength breaks [nm] for this model.
