@@ -124,9 +124,9 @@ class Hosts:
 
 @pytest.fixture(scope="module")
 def hosts():
+    """The host tables, built in float64; each test enters float64 itself."""
     with jax.enable_x64():
-        yield Hosts()
-    jax.clear_caches()
+        return Hosts()
 
 
 def test_accuracy_ladder_on_a_half_width_band(hosts):
@@ -143,28 +143,30 @@ def test_accuracy_ladder_on_a_half_width_band(hosts):
     knots declared the same integral is exact (floating-point, 1e-12;
     measured 3e-16).
     """
-    heat = [
-        hosts.error(
-            order, hosts.integrand(lambda w: thermal(w, 600.0), None), "response"
-        )
-        for order in (4, 6, 8)
-    ]
-    zodi = [
-        hosts.error(
-            order,
-            hosts.integrand(lambda w: (CENTER_NM / w) ** 3, "zodi"),
-            "response",
-            "zodi",
-        )
-        for order in (4, 6, 8)
-    ]
-    star = hosts.integrand(contrast, "star")
-    sampled = [hosts.error(order, star, "response") for order in (4, 6, 8)]
+    with jax.enable_x64():
+        heat = [
+            hosts.error(
+                order, hosts.integrand(lambda w: thermal(w, 600.0), None), "response"
+            )
+            for order in (4, 6, 8)
+        ]
+        zodi = [
+            hosts.error(
+                order,
+                hosts.integrand(lambda w: (CENTER_NM / w) ** 3, "zodi"),
+                "response",
+                "zodi",
+            )
+            for order in (4, 6, 8)
+        ]
+        star = hosts.integrand(contrast, "star")
+        sampled = [hosts.error(order, star, "response") for order in (4, 6, 8)]
+        exact = hosts.error(4, star, "response", "star")
     assert heat[0] < 2e-2 and heat[1] < 1e-5 and heat[2] < 3e-10
     assert heat[1] < heat[0] / 30 and heat[2] < heat[1] / 30
     assert zodi[0] < 3e-9 and zodi[1] < 5e-14 and zodi[2] < 1e-14
     assert min(sampled) > 5e-3
-    assert hosts.error(4, star, "response", "star") < 1e-12
+    assert exact < 1e-12
 
 
 SEPARATION_BAND = Band(540.0, 660.0)
@@ -205,24 +207,29 @@ def test_order_rule_resolves_a_sliding_response_on_a_smooth_source():
         value = airy_pixel(separations, nodes) @ (weights * thermal(nodes, 5800.0))
         return np.max(np.abs(value / truth - 1))
 
-    onsets, rule_orders = [], []
-    for cycles in (0.5, 1.0, 2.0, 4.0, 6.0):
-        separations = np.linspace(cycles - 0.1, cycles + 0.1, 9) / CYCLES_PER_LOD
-        truth = airy_pixel(separations, fine) @ (fine_weights * thermal(fine, 5800.0))
-        errors = {
-            order: worst(
-                Quadrature.build((SEPARATION_BAND,), order=order), separations, truth
+    with jax.enable_x64():
+        onsets, rule_orders = [], []
+        for cycles in (0.5, 1.0, 2.0, 4.0, 6.0):
+            separations = np.linspace(cycles - 0.1, cycles + 0.1, 9) / CYCLES_PER_LOD
+            truth = airy_pixel(separations, fine) @ (
+                fine_weights * thermal(fine, 5800.0)
             )
-            for order in range(4, 25)
-        }
-        onsets.append(min(order for order, error in errors.items() if error < 1e-4))
-        rule = Quadrature.build(
-            (SEPARATION_BAND,), order=4, field_lod=cycles / CYCLES_PER_LOD
-        )
-        rule_orders.append(rule.pieces[0][0][2])
-        assert worst(rule, separations, truth) < 1e-6
-        if cycles == 2.0:
-            assert errors[4] > 1e-2
+            errors = {
+                order: worst(
+                    Quadrature.build((SEPARATION_BAND,), order=order),
+                    separations,
+                    truth,
+                )
+                for order in range(4, 25)
+            }
+            onsets.append(min(order for order, error in errors.items() if error < 1e-4))
+            rule = Quadrature.build(
+                (SEPARATION_BAND,), order=4, field_lod=cycles / CYCLES_PER_LOD
+            )
+            rule_orders.append(rule.pieces[0][0][2])
+            assert worst(rule, separations, truth) < 1e-6
+            if cycles == 2.0:
+                assert errors[4] > 1e-2
     assert onsets == [4, 6, 8, 12, 16]
     assert rule_orders == [6, 8, 10, 16, 22]
 
