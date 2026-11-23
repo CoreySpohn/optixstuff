@@ -1,15 +1,15 @@
-"""Wavelength bands and quadrature with named weights for rough host spectra.
+"""Wavelength bands and the band quadrature rule.
 
-Build quadrature on the host from band edges, declared breaks and the rough
-spectra its weights absorb. Evaluate the smooth remainder at its nodes and
-reduce the values with JAX transformations.
+Build quadrature on the host from band edges, declared breaks and the field
+the response is read over. Evaluate integrands at its nodes and reduce the
+values with JAX transformations.
 """
 
 import hashlib
 import math
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
-from itertools import pairwise, product
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from itertools import pairwise
 from operator import index
 from typing import Protocol, Self, runtime_checkable
 
@@ -17,14 +17,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import ArrayLike
 from numpy.polynomial.legendre import leggauss
 
 from optixstuff.grids import Image
 
 __all__ = [
     "Band",
-    "Probe",
     "Quadrature",
     "SpectralBreaks",
     "Transmission",
@@ -369,195 +367,120 @@ class Transmission:
         return result
 
 
-_REFERENCE_ORDER = 8
-_REFERENCE_PANELS = 16
-_ENVELOPE_SAFETY = 1.1
-# A weight below zero by more than round-off of the largest one is a real negative.
-_NEGATIVE_WEIGHT_RTOL = 1e-12
+NODES_PER_CYCLE = 3
+"""Nodes ``Quadrature.build`` adds to a piece per chromatic cycle it holds."""
 
 
-@dataclass(frozen=True)
-class Probe:
-    """Smooth integrand family whose worst quadrature error the build stores.
-
-    ``fn(wavelength_nm, **parameters)`` returns the factor a consumer will
-    evaluate at the nodes and sum with the named weights: a contrast for
-    star weights, a thermal photon spectrum for response weights. Each entry
-    of ``ranges`` is the admissible ``(low, high)`` interval of one traced
-    parameter, sampled at ``samples`` evenly spaced values; several ranges
-    form a grid. The error at one parameter value can vanish while the error
-    nearby is large, so the stored figure is the maximum over the ranges.
-
-    Attributes:
-        fn: Function ``fn(wavelength_nm, **parameters)`` returning the smooth
-            factor a consumer evaluates at the nodes.
-        weights: Name of the weight row the factor is summed with.
-        ranges: Admissible ``(low, high)`` interval of each traced parameter.
-        samples: Number of evenly spaced values sampled per parameter range.
-    """
-
-    fn: Callable[..., ArrayLike]
-    weights: str = "response"
-    ranges: Mapping[str, tuple[float, float]] = field(default_factory=dict)
-    samples: int = 17
-
-    def parameter_grid(self) -> list[dict[str, float]]:
-        """Return every sampled parameter combination, one dict per call.
-
-        Returns:
-            One dict of parameter values per sampled combination.
-        """
-        if index(self.samples) < 2:
-            raise ValueError("samples must be at least 2")
-        axes = []
-        for name, (low, high) in self.ranges.items():
-            if not (np.isfinite(low) and np.isfinite(high) and low <= high):
-                raise ValueError(f"range of {name} must be finite with low <= high")
-            axes.append(np.linspace(low, high, index(self.samples)))
-        return [
-            dict(zip(self.ranges, map(float, point), strict=True))
-            for point in product(*axes)
+def _field_radii(bands, models, field_lod):
+    """Field radius [lambda/D] of each band: supplied, or the largest declared."""
+    if field_lod is None:
+        declared = [
+            model.spectral_field_lod
+            for model in models
+            if callable(getattr(model, "spectral_field_lod", None))
         ]
+        radii = [max((float(fn(b)) for fn in declared), default=0.0) for b in bands]
+        radii = np.asarray(radii, dtype=float)
+    else:
+        radii = np.asarray(field_lod, dtype=float)
+        if radii.ndim == 0:
+            radii = np.full(len(bands), float(radii))
+        if radii.shape != (len(bands),):
+            raise ValueError("field_lod must be a number or one value per band")
+    if not np.all(np.isfinite(radii)) or np.any(radii < 0):
+        raise ValueError("field_lod must be finite and nonnegative")
+    return radii
 
 
-def _host_values(fn, wavelength_nm, label, *, nonnegative=True, **parameters):
-    """Evaluate a host callable in float64, shaped like the wavelengths."""
-    with jax.enable_x64():
-        values = np.asarray(fn(wavelength_nm, **parameters), dtype=float)
-    values = np.broadcast_to(values, wavelength_nm.shape)
-    if not np.all(np.isfinite(values)) or (nonnegative and np.any(values < 0)):
-        requirement = "finite and nonnegative" if nonnegative else "finite"
-        raise ValueError(f"{label} must be {requirement} across every band")
-    return values
-
-
-def _reference_rule(edges, knots, order):
-    """Composite Gauss-Legendre rule resolving every knot inside each panel.
-
-    Returns wavelengths [nm], weights [nm] and the panel index of each point.
-    """
-    nodes, weights = leggauss(order)
-    waves, widths, owners = [], [], []
-    for i, (lo, hi) in enumerate(pairwise(edges)):
-        inside = knots[(knots > lo) & (knots < hi)]
-        cells = np.union1d(np.linspace(lo, hi, _REFERENCE_PANELS + 1), inside)
-        cells[0], cells[-1] = lo, hi
-        lengths = np.diff(cells)
-        waves.append((cells[:-1, None] + lengths[:, None] * (nodes + 1) / 2).ravel())
-        widths.append((lengths[:, None] * weights / 2).ravel())
-        owners.append(np.full(waves[-1].size, i))
-    return np.concatenate(waves), np.concatenate(widths), np.concatenate(owners)
-
-
-def _gauss_nodes(t, measure, order):
-    """Gauss nodes on [-1, 1] of a discrete measure, by the Stieltjes recurrence.
-
-    The monic orthogonal polynomials are rescaled at each step, which leaves
-    the recurrence coefficients unchanged and keeps high orders in range.
-    A measure that vanishes everywhere falls back to Gauss-Legendre nodes.
-    """
-    if not np.any(measure > 0):
-        return leggauss(order)[0]
-    alpha, beta = np.zeros(order), np.zeros(order)
-    previous, current, previous_norm = np.zeros_like(t), np.ones_like(t), 1.0
-    for k in range(order):
-        norm = np.sum(measure * current**2)
-        if not norm > 0:
-            raise ValueError("the node measure supports fewer points than order")
-        alpha[k] = np.sum(measure * t * current**2) / norm
-        beta[k] = norm / previous_norm
-        following = (t - alpha[k]) * current - (beta[k] if k else 0.0) * previous
-        scale = np.max(np.abs(following)) or 1.0
-        previous, current = current / scale, following / scale
-        previous_norm = norm / scale**2
-    off_diagonal = np.sqrt(beta[1:])
-    jacobi = np.diag(alpha) + np.diag(off_diagonal, 1) + np.diag(off_diagonal, -1)
-    return np.linalg.eigvalsh(jacobi)
-
-
-def _lagrange_basis(nodes, t):
-    """Lagrange cardinal polynomials of the nodes at t, shape (n, t.size)."""
-    basis = np.ones((nodes.size, t.size))
-    for i, node in enumerate(nodes):
-        for other in np.delete(nodes, i):
-            basis[i] *= (t - other) / (node - other)
-    return basis
+def _piece_order(order, cycles):
+    """Nodes of a piece: ``order`` without cycles, else raised to an even count."""
+    if cycles == 0:
+        return order
+    return max(order, 2 * math.ceil((order + NODES_PER_CYCLE * cycles) / 2))
 
 
 class Quadrature(eqx.Module):
-    """Shared wavelength nodes of shape (W, Q) with a named set of weight rows.
+    """Shared wavelength nodes of shape (W, Q) with one row of plain weights.
 
-    ``weights("response")`` is always present: summed with values at the
-    nodes it integrates the instrument response times those values over each
-    band, in value units times nm. With no response supplied the response is
-    one and these are plain Gauss-Legendre weights that sum to the band width.
-    Each further name belongs to one rough host spectrum (a tabulated star,
-    a zodiacal table): ``weights(name)`` integrates response times that
-    spectrum times the values, so the spectrum is never sampled at the nodes
-    and its lines cost no nodes. The values are the smooth remainder, for
-    example a planet contrast under ``"star"``.
+    Summed with values at the nodes, ``weights_nm`` integrate those values
+    over each band, in value units times nm: each piece of a band carries
+    Gauss-Legendre weights that sum to its width. The rule never depends on a
+    source spectrum. A rough tabulated spectrum sampled at the nodes is
+    integrated only as well as its samples represent it; declare its knots as
+    breaks for an exact integral.
+
+    ``pieces`` records the layout of a built rule: for each band a tuple of
+    ``(low_nm, high_nm, order)``, one entry per piece between declared breaks.
+    It is ``None`` for a rule constructed by hand. ``pieces`` and ``bands``
+    are static, so ``layout_digest`` can be read inside a traced program.
 
     The record is built on the host; nodes and weights are JAX leaves. Build
-    with x64 enabled for float64 leaves. Padding has zero weight under every
-    name and sits at the band center. A monochromatic channel carries one
-    integrated rate with unit weight.
+    with x64 enabled for float64 leaves. Padding has zero weight and sits at
+    the band center. A monochromatic channel carries one integrated rate with
+    unit weight.
 
     Attributes:
         bands: Wavelength bands, one per row.
         nodes_nm: Node wavelengths in nm, shape (W, Q).
-        weight_table: Named weight rows, each of shape (W, Q), in host-spectrum
-            units times nm.
-        envelope_error: Named relative quadrature errors of the probes, each of
-            shape (W,).
+        weights_nm: Quadrature weights in nm, shape (W, Q); zero on padding.
+        pieces: Per band, the ``(low_nm, high_nm, order)`` of each piece, or
+            None for a rule constructed by hand.
     """
 
     bands: tuple[Band, ...] = eqx.field(static=True)
     nodes_nm: jax.Array
-    weight_table: dict[str, jax.Array]
-    envelope_error: dict[str, jax.Array]
+    weights_nm: jax.Array
+    pieces: tuple[tuple[tuple[float, float, int], ...], ...] | None = eqx.field(
+        static=True
+    )
 
-    def __init__(self, bands, nodes_nm, weights, envelope_error=None):
-        """Store nodes with one weight array, or a mapping of named arrays.
-
-        A bare array is the ``"response"`` weights. ``envelope_error`` maps a
-        probe name to relative errors of shape (W,).
+    def __init__(self, bands, nodes_nm, weights_nm, pieces=None):
+        """Store nodes, weights and, for a built rule, the piece layout.
 
         Args:
             bands: Wavelength bands, one per row of nodes.
             nodes_nm: Node wavelengths in nm, shape (W, Q).
-            weights: Weights of shape (W, Q) for the ``"response"`` name, or a mapping
-                of names to such arrays.
-            envelope_error: Mapping of probe names to relative errors of shape (W,).
+            weights_nm: Weights in nm, shape (W, Q).
+            pieces: Per band, the ``(low_nm, high_nm, order)`` of each piece, or
+                None for a rule constructed by hand.
         """
         self.bands = tuple(bands)
         self.nodes_nm = jnp.asarray(nodes_nm)
-        if not isinstance(weights, Mapping):
-            weights = {"response": weights}
-        self.weight_table = {
-            str(name): jnp.asarray(weights[name]) for name in sorted(weights)
-        }
-        errors = envelope_error or {}
-        self.envelope_error = {
-            str(name): jnp.asarray(errors[name]) for name in sorted(errors)
-        }
+        self.weights_nm = jnp.asarray(weights_nm)
+        self.pieces = (
+            None
+            if pieces is None
+            else tuple(
+                tuple((float(lo), float(hi), index(n)) for lo, hi, n in row)
+                for row in pieces
+            )
+        )
 
     def __check_init__(self):
-        """Validate the rectangular node table and the sign of every weight."""
+        """Validate the rectangular tables, the weight signs and the layout."""
         shape = self.nodes_nm.shape
-        if "response" not in self.weight_table:
-            raise ValueError("the weight table must contain 'response'")
         if self.nodes_nm.ndim != 2 or shape[0] != len(self.bands) or not shape[1]:
             raise ValueError(
                 "each band must have a nonempty row of nodes, shape (W, Q)"
             )
-        for name, table in self.weight_table.items():
-            if table.shape != shape:
-                raise ValueError(f"{name} weights must match nodes_nm, shape (W, Q)")
-            if not isinstance(table, jax.core.Tracer) and bool(jnp.any(table < 0)):
-                raise ValueError(f"{name} weights must be nonnegative")
-        for name, error in self.envelope_error.items():
-            if error.shape != shape[:1]:
-                raise ValueError(f"{name} envelope error must have shape (W,)")
+        if self.weights_nm.shape != shape:
+            raise ValueError("weights_nm must match nodes_nm, shape (W, Q)")
+        if not isinstance(self.weights_nm, jax.core.Tracer) and bool(
+            jnp.any(self.weights_nm < 0)
+        ):
+            raise ValueError("weights must be nonnegative")
+        if self.pieces is not None and len(self.pieces) != len(self.bands):
+            raise ValueError("pieces must hold one row per band")
+        # A rule constructed by hand has no layout to check.
+        for band, row in zip(self.bands, self.pieces or (), strict=False):
+            edges = [lo for lo, _, _ in row] + [row[-1][1]] if row else []
+            joined = all(a[1] == b[0] for a, b in pairwise(row))
+            if not edges or (edges[0], edges[-1]) != (band.low_nm, band.high_nm):
+                raise ValueError("the pieces of a band must span it")
+            if not joined or any(n < 1 for *_, n in row):
+                raise ValueError("pieces must be contiguous with positive orders")
+            if sum(n for *_, n in row) > shape[1]:
+                raise ValueError("the pieces of a band hold more nodes than Q")
 
     @classmethod
     def build(
@@ -566,58 +489,41 @@ class Quadrature(eqx.Module):
         *models: SpectralBreaks,
         order: int = 4,
         breaks_nm=(),
-        response: Callable[[ArrayLike], ArrayLike] | None = None,
-        spectra: Mapping[str, Callable[[ArrayLike], ArrayLike]] | None = None,
-        probes: Mapping[str, Probe] | None = None,
+        field_lod=0.0,
     ) -> Self:
-        """Build an order-point rule on each panel between declared breaks.
+        """Build a Gauss-Legendre rule on each piece between declared breaks.
 
         Everything here is concrete host data.
 
         Declared breaks, from ``models`` and ``breaks_nm``, split a band into
-        panels with ``order`` nodes each. Declare a break for any factor that
-        is evaluated at the nodes and has a kink or a feature narrower than
-        about the band width over ``order``; such a feature is otherwise
-        integrated to a few percent at any practical order.
+        pieces. Declare a break for any factor that is evaluated at the nodes
+        and has a kink or a feature narrower than about the band width over
+        ``order``; such a feature is otherwise integrated to a few percent at
+        any practical order.
 
-        ``response`` and each entry of ``spectra`` are callables of wavelength
-        [nm] returning finite nonnegative values. They are absorbed into the
-        weights instead of being sampled at the nodes, so their own
-        ``spectral_breaks_nm()`` knots, when they declare any, refine only
-        the reference rule that computes the weights and add no nodes. The
-        nodes are the Gauss nodes of the response times the first spectrum
-        (of the response alone without spectra), found by the Stieltjes
-        recurrence on that reference rule. The weights of that first spectrum
-        are then exact for polynomials up to degree ``2 * order - 1``, and
-        every other name is exact up to degree ``order - 1``.
-
-        Guidance on ``order``: 4 serves contrast-form terms under the star
-        weights. Flux-form terms under the response weights, such as thermal
-        emission, need 6 to 8 in bands 20 percent or wider.
-
-        ``probes`` names integrand families whose error is stored in
-        ``envelope_error``: the largest relative difference from the
-        reference rule over each probe's parameter ranges, times a safety
-        factor of 1.1, with shape (W,).
+        The node count of a piece is set by the response it is read through.
+        A pixel at separation s (in lambda/D at the band center c) sees the
+        diffraction pattern slide across a piece from a to b by
+        ``cycles = s * c * (1 / a - 1 / b)`` chromatic cycles. With
+        ``field_lod`` the largest separation read, a piece that holds no
+        cycles gets exactly ``order`` nodes; otherwise it gets
+        ``max(order, 2 * ceil((order + NODES_PER_CYCLE * cycles) / 2))``.
+        A ``field_lod`` of zero, the default, is right for a response read at
+        one band-center separation for every node, and gives ``order`` nodes
+        per piece.
 
         Args:
             bands: Wavelength bands to integrate over.
             *models: Models whose ``spectral_breaks_nm()`` are declared as breaks.
-            order: Number of nodes per panel.
+            order: Nodes per piece that holds no chromatic cycles.
             breaks_nm: Extra break wavelengths in nm.
-            response: Function of wavelength in nm giving the instrument response, or
-                None for a response of one.
-            spectra: Named functions of wavelength in nm for rough host spectra that
-                the weights absorb.
-            probes: Named integrand families whose quadrature error is stored.
+            field_lod: Largest separation, in lambda/D at the band center, at which
+                the response is read: a number, one value per band, or None for
+                the largest value a model declares through
+                ``spectral_field_lod(band)`` (zero when none does).
 
         Returns:
-            The Quadrature holding nodes, named weights and probe errors.
-
-        Raises:
-            ValueError: If any weight is negative, which happens when the
-                node spectrum is so steep that the nodes crowd one end of a
-                panel. Lower the order or declare a break.
+            The Quadrature holding nodes, weights and the piece layout.
         """
         order = index(order)
         if order < 1:
@@ -625,123 +531,37 @@ class Quadrature(eqx.Module):
         bands = tuple(bands)
         if not bands:
             raise ValueError("at least one band is required")
-        spectra = dict(spectra or {})
-        probes = dict(probes or {})
-        if "response" in spectra:
-            raise ValueError("'response' names the response weights, not a spectrum")
-        hosts = {"response": response, **spectra}
-        for name, probe in probes.items():
-            if probe.weights not in hosts:
-                raise ValueError(f"probe {name} names unknown weights {probe.weights}")
         breaks = np.union1d(spectral_breaks(*models), _break_array(breaks_nm))
-        band_edges = []
-        for band in bands:
+        radii = _field_radii(bands, models, field_lod)
+        legendre = {}
+        pieces, rows = [], []
+        for band, radius in zip(bands, radii, strict=True):
             if band.width_nm == 0:
                 raise ValueError("use Quadrature.monochromatic for a zero-width band")
             start = np.searchsorted(breaks, band.low_nm, side="right")
             stop = np.searchsorted(breaks, band.high_nm, side="left")
-            band_edges.append(
-                np.concatenate(([band.low_nm], breaks[start:stop], [band.high_nm]))
-            )
-
-        weighted = response is not None or bool(spectra)
-        references = []
-        if weighted or probes:
-            knots = spectral_breaks(
-                *(h for h in hosts.values() if isinstance(h, SpectralBreaks))
-            )
-            references = [
-                _reference_rule(edges, knots, max(_REFERENCE_ORDER, order + 2))
-                for edges in band_edges
-            ]
-            fine = np.concatenate([wave for wave, _, _ in references])
-            factors = {
-                name: np.ones_like(fine)
-                if host is None
-                else _host_values(host, fine, f"the {name} host")
-                for name, host in hosts.items()
-            }
-            splits = np.cumsum([wave.size for wave, _, _ in references])[:-1]
-            # Per band and name: reference weight times response times spectrum.
-            measures = [
-                {
-                    name: width
-                    * factors["response"][part]
-                    * (1.0 if name == "response" else factors[name][part])
-                    for name in hosts
-                }
-                for (_, width, _), part in zip(
-                    references,
-                    np.split(np.arange(fine.size), splits),
-                    strict=True,
-                )
-            ]
-
-        node_name = next(iter(spectra), "response")
-        legendre_nodes, legendre_weights = leggauss(order)
-        rows = []
-        for i, edges in enumerate(band_edges):
-            lengths = np.diff(edges)
-            if not weighted:
-                wave = edges[:-1, None] + lengths[:, None] * ((legendre_nodes + 1) / 2)
-                weight = lengths[:, None] * legendre_weights / 2
-                rows.append((wave.ravel(), {"response": weight.ravel()}))
-                continue
-            fine_wave, _, owner = references[i]
-            wave = np.empty((lengths.size, order))
-            table = {name: np.empty((lengths.size, order)) for name in hosts}
-            for p, (lo, length) in enumerate(zip(edges[:-1], lengths, strict=True)):
-                cell = owner == p
-                t = 2 * (fine_wave[cell] - lo) / length - 1
-                nodes = _gauss_nodes(t, measures[i][node_name][cell], order)
-                basis = _lagrange_basis(nodes, t)
-                wave[p] = lo + length * (nodes + 1) / 2
-                for name in hosts:
-                    table[name][p] = basis @ measures[i][name][cell]
-            for name, values in table.items():
-                floor = -_NEGATIVE_WEIGHT_RTOL * np.max(np.abs(values))
-                if np.any(values < floor):
-                    raise ValueError(
-                        f"{name} weights are negative in band {i} at order {order}; "
-                        "lower the order or declare a break"
-                    )
-                table[name] = np.maximum(values, 0.0).ravel()
-            rows.append((wave.ravel(), table))
+            edges = np.concatenate(([band.low_nm], breaks[start:stop], [band.high_nm]))
+            layout, waves, weights = [], [], []
+            for lo, hi in pairwise(edges):
+                cycles = radius * band.center_nm * (1 / lo - 1 / hi)
+                n = _piece_order(order, cycles)
+                if n not in legendre:
+                    legendre[n] = leggauss(n)
+                nodes, unit = legendre[n]
+                length = hi - lo
+                waves.append(lo + length * ((nodes + 1) / 2))
+                weights.append(length * unit / 2)
+                layout.append((lo, hi, n))
+            pieces.append(tuple(layout))
+            rows.append((np.concatenate(waves), np.concatenate(weights)))
 
         q = max(wave.size for wave, _ in rows)
         waves = np.array([[band.center_nm] * q for band in bands])
-        weights = {name: np.zeros_like(waves) for name in rows[0][1]}
-        for i, (wave, table) in enumerate(rows):
+        weights = np.zeros_like(waves)
+        for i, (wave, weight) in enumerate(rows):
             waves[i, : wave.size] = wave
-            for name, values in table.items():
-                weights[name][i, : wave.size] = values
-
-        errors = {}
-        for name, probe in probes.items():
-            worst = np.zeros(len(bands))
-            for parameters in probe.parameter_grid():
-                for i, (wave, table) in enumerate(rows):
-                    label = f"probe {name}"
-                    exact = np.sum(
-                        measures[i][probe.weights]
-                        * _host_values(
-                            probe.fn,
-                            references[i][0],
-                            label,
-                            nonnegative=False,
-                            **parameters,
-                        )
-                    )
-                    value = np.sum(
-                        table[probe.weights]
-                        * _host_values(
-                            probe.fn, wave, label, nonnegative=False, **parameters
-                        )
-                    )
-                    error = abs(value - exact) / (abs(exact) or 1.0)
-                    worst[i] = max(worst[i], error)
-            errors[name] = _ENVELOPE_SAFETY * worst
-        return cls(bands, waves, weights, errors)
+            weights[i, : wave.size] = weight
+        return cls(bands, waves, weights, pieces)
 
     @classmethod
     def monochromatic(cls, wavelength_nm: float) -> Self:
@@ -756,35 +576,27 @@ class Quadrature(eqx.Module):
         band = Band(wavelength_nm, wavelength_nm)
         return cls((band,), [[band.low_nm]], [[1.0]])
 
-    @property
-    def names(self) -> tuple[str, ...]:
-        """Names of the stored weight rows, sorted; always includes 'response'."""
-        return tuple(self.weight_table)
-
     def weights(self, name: str = "response") -> jax.Array:
-        """Return the (W, Q) weights of one name, in host-spectrum units times nm.
+        """Return the (W, Q) weights in nm.
 
         Args:
-            name: Name of the weight row.
+            name: The row name; ``"response"`` is the only row.
 
         Returns:
-            Weights of shape (W, Q), in host-spectrum units times nm.
+            Weights of shape (W, Q), in nm.
         """
-        try:
-            return self.weight_table[name]
-        except KeyError:
-            raise KeyError(
-                f"no weights named {name!r}; this rule holds {self.names}"
-            ) from None
+        if name != "response":
+            raise KeyError(f"no weights named {name!r}; the only row is 'response'")
+        return self.weights_nm
 
     @property
     def active(self) -> jax.Array:
         """Boolean (W, Q) mask of real nodes; False marks zero-weight padding."""
-        return jnp.any(jnp.stack([w != 0 for w in self.weight_table.values()]), axis=0)
+        return self.weights_nm != 0
 
     @property
     def digest(self) -> str:
-        """Hex digest of the bands, nodes and named weights, for cache keys.
+        """Hex digest of the bands, nodes and weights, for cache keys.
 
         Host-side only: the leaves must be concrete.
         """
@@ -792,20 +604,28 @@ class Quadrature(eqx.Module):
         for band in self.bands:
             state.update(np.array([band.low_nm, band.high_nm]).tobytes())
         state.update(np.asarray(self.nodes_nm, dtype=float).tobytes())
-        for name, table in self.weight_table.items():
-            state.update(name.encode())
-            state.update(np.asarray(table, dtype=float).tobytes())
+        state.update(np.asarray(self.weights_nm, dtype=float).tobytes())
         return state.hexdigest()[:16]
 
-    def integrate(self, values: jax.Array, weights: str = "response") -> jax.Array:
-        """Sum values of shape (W, Q, ...) with the named weights into (W, ...).
+    @property
+    def layout_digest(self) -> str | None:
+        """Hex digest of the bands and pieces, or None for a hand-made rule.
 
-        The values exclude whatever the named weights absorbed: the response
-        always, and the host spectrum of that name.
+        Computed from static fields only, so it is available inside a traced
+        program.
+        """
+        if self.pieces is None:
+            return None
+        bands = tuple((band.low_nm, band.high_nm) for band in self.bands)
+        return hashlib.sha256(repr((bands, self.pieces)).encode()).hexdigest()[:16]
+
+    def integrate(self, values: jax.Array) -> jax.Array:
+        """Sum values of shape (W, Q, ...) with the weights into (W, ...).
+
+        Values on padding are ignored, including NaN.
 
         Args:
             values: Values at the nodes, shape (W, Q, ...).
-            weights: Name of the weight row.
 
         Returns:
             The integral over each band, shape (W, ...).
@@ -813,27 +633,25 @@ class Quadrature(eqx.Module):
         values = jnp.asarray(values)
         if values.shape[:2] != self.nodes_nm.shape:
             raise ValueError("values must have leading shape (W, Q)")
-        table = self.weights(weights)
-        active = (table != 0).reshape(table.shape + (1,) * (values.ndim - 2))
-        return jnp.einsum("wq,wq...->w...", table, jnp.where(active, values, 0))
+        active = self.active.reshape(self.active.shape + (1,) * (values.ndim - 2))
+        values = jnp.where(active, values, 0)
+        return jnp.einsum("wq,wq...->w...", self.weights_nm, values)
 
-    def mean(self, values: jax.Array, weights: str = "response") -> jax.Array:
+    def mean(self, values: jax.Array) -> jax.Array:
         """Return the weighted mean over each positive-width band.
 
-        The integral is divided by the sum of the named weights, which is the
-        band width for a unit response.
+        The integral is divided by the sum of the weights, the band width.
 
         Args:
             values: Values at the nodes, shape (W, Q, ...).
-            weights: Name of the weight row.
 
         Returns:
             The weighted mean over each band, shape (W, ...).
         """
         if any(band.width_nm == 0 for band in self.bands):
             raise ValueError("a monochromatic integrated rate has no band-width mean")
-        integral = self.integrate(values, weights)
-        total = self.weights(weights).sum(-1)
+        integral = self.integrate(values)
+        total = self.weights_nm.sum(-1)
         return integral / total.reshape((-1,) + (1,) * (integral.ndim - 1))
 
     def band(self, i: int) -> Self:
@@ -848,6 +666,6 @@ class Quadrature(eqx.Module):
         return type(self)(
             (self.bands[i],),
             self.nodes_nm[i][None],
-            {name: table[i][None] for name, table in self.weight_table.items()},
-            {name: error[i][None] for name, error in self.envelope_error.items()},
+            self.weights_nm[i][None],
+            None if self.pieces is None else (self.pieces[i],),
         )

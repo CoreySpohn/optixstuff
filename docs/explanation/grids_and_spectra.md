@@ -25,36 +25,43 @@ breaks before applying Gauss-Legendre integration. The first two axes of
 the samples index bands and nodes. Integration preserves all trailing axes.
 `rule.band(i)` selects a single band while retaining the band axis.
 
-A rough spectrum that every term shares, such as a tabulated star, is better
-absorbed into the weights than sampled at the nodes. Pass the instrument
-response as `response=` and each such spectrum by name in `spectra=`. The
-nodes become the Gauss nodes of the response times the first spectrum, and
-the rule carries one weight row per name next to the `"response"` row that
-is always present.
+Every node carries one plain weight, and the rule never depends on a source
+spectrum. A rough tabulated spectrum, such as a stellar atmosphere model, is
+integrated only as well as its samples at the nodes represent it: its lines
+are narrower than any affordable node spacing, so more nodes do not converge.
+Pass the table as a model, so its knots become breaks, when such an integral
+must be exact. A factor that is evaluated at the nodes and has a feature
+narrower than about the band width over the order also needs a declared break.
+
+The node count of a piece follows the response it is read through. A pixel at
+separation s, in lambda/D at the band center c, sees a diffraction pattern
+slide across a piece from a to b by `s * c * (1 / a - 1 / b)` chromatic
+cycles. `field_lod` is the largest separation at which the response is read.
+A piece that holds no cycles keeps exactly `order` nodes; otherwise it gets
+`max(order, 2 * ceil((order + 3 * cycles) / 2))` nodes. The default of zero
+suits a response read at one band-center separation for every node, such as
+a performance curve. An image out to the corner of a 128 by 128 detector at
+0.25 lambda/D reads separations up to 22.6 lambda/D:
 
 ```python
-from optixstuff.spectral import Band, Quadrature, Transmission
+import math
 
-star = Transmission([400, 500, 520, 700], [0.6, 1.0, 0.7, 0.8])
-rule = Quadrature.build(
-    (Band(450, 650),),
-    order=4,
-    response=Transmission([450, 470, 630, 650], [0, 1, 1, 0]),
-    spectra={"star": star},
-)
-contrast = 1e-10 * (rule.nodes_nm / 550.0) ** -4
-planet_rate = rule.integrate(contrast, "star")
-star_rate = rule.weights("star").sum(-1)
+from optixstuff.spectral import Band, Quadrature
+
+band = Band(540, 660)
+curves = Quadrature.build((band,), order=4)
+image = Quadrature.build((band,), order=4, field_lod=16 * math.sqrt(2))
+assert curves.pieces == (((540.0, 660.0, 4),),)
+assert image.pieces == (((540.0, 660.0, 18),),)
 ```
 
-The values passed to `integrate` are the smooth remainder: the contrast
-above, never the star again. Order 4 serves contrast-form terms. A
-flux-form term under the response weights, such as thermal emission, needs
-order 6 to 8 in bands 20 percent or wider. A `Probe` passed in `probes=`
-stores the worst relative error of an integrand family over the admissible
-range of its parameters in `rule.envelope_error`. A factor that is evaluated
-at the nodes and has a feature narrower than about the band width over the
-order still needs a declared break.
+`rule.pieces` records the edges and the order of every piece, and
+`rule.layout_digest` identifies the bands and pieces; both are static, so
+they can be read inside a traced program. `field_lod` also takes one value per
+band, or `None` for the largest value that a model declares through
+`spectral_field_lod(band)`. Order 4 serves smooth integrands. A steep
+flux-form term, such as thermal emission on the Wien side, needs order 6 to 8
+in bands 20 percent or wider.
 
 `Quadrature.monochromatic(wavelength_nm)` represents an already integrated
 rate at one wavelength. Its single node has unit weight. A mean density
