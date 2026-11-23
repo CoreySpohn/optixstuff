@@ -192,3 +192,77 @@ centers, and leading array dimensions are supported. Construct overlap
 weights once on the host and reuse them with traced image values. To
 collect several grids, pass a sequence of target grids. The result has a
 final cell axis in grid order, with each grid flattened in row-major order.
+
+## Reconstructions and the pixel read
+
+An `Image` names the reconstruction that fills the space between its sample
+centers. The table lists each name, its margin in source cells (the value of
+`reconstruction_margin`), whether its reach is finite, and how `on_grid` reads a
+density image that declares it.
+
+| Name | Kernel | Margin | Finite reach | `on_grid` read of a density |
+|---|---|---|---|---|
+| `nearest` | value of the cell | 0 | yes | midpoint cell integral, then `resample` |
+| `linear` | tent | 0.5 | yes | midpoint cell integral, then `resample` |
+| `cubic` | Keys cubic convolution, a = -1/2 | 2 | yes | midpoint cell integral, then `resample` |
+| `cubic_spline` | not-a-knot cubic B-spline | 2 | no | integral of the spline over each pixel |
+| `band_limited` | zero-padded Fourier interpolant | 2 | no | midpoint cell integral, then `resample` |
+
+For a kernel of finite reach the margin is exact: a pixel whose footprint lies
+that far inside the table never reads the zero beyond it. The cubic spline and
+the band-limited interpolant have no finite reach, so for them the margin marks
+the support boundary and is not an accuracy bound. `coverage` returns these
+margins from the pixel corners.
+
+### The cubic spline
+
+A table that holds the intensity at each cell center, times the cell area, is a
+set of point samples. A detector pixel measures the integral of the intensity
+over its footprint, and the stored sample is not that integral, not even on the
+native pitch. `on_grid` therefore reads a density that declares `cubic_spline`
+as the integral of the reconstructed density over each target pixel, in one
+form at every pitch, and returns a cell integral in the area the density is per
+(grid units squared of the native grid, or steradians). The read is two matrix
+products per image, one per axis, each built from the closed-form antiderivative
+of the B-spline with the prefilter folded in. It needs axis-aligned grids and
+raises `NotImplementedError` for a rotated or sheared target. `resample` keeps
+its own contract for the same image: it samples the spline at the target centers
+and returns a density.
+
+The spline interpolates the samples, with coefficients that are a linear map of
+the table alone: the not-a-knot end condition makes the third derivative
+continuous at the second and the second-to-last sample. It reproduces cubic
+polynomials over the whole footprint. It suits products that are band-limited
+at the table pitch, including tables cut off inside a bright field, such as a
+coronagraph stellar map. On a pupil-limited speckle field with power up to the
+band edge, read between 3 and 26 lambda/D from a table at 0.25 lambda/D, the
+read is wrong by about 0.05 percent of the pixel value at the median and 0.3
+percent at the 95th percentile, over pixel pitches from 0.125 to 0.75 lambda/D.
+In float32 the matrices are built in float64 and cast, and the read moves by
+less than 1e-6 of the pixel value.
+
+Its limits:
+
+- Every coefficient depends on every sample, with a weight that falls by about
+  0.268 per cell, so pixels near the table edge depend on the end condition. On
+  a public stellar map tabulated at 0.25 lambda/D, replacing the not-a-knot
+  condition by a mirror or a zero closure changes a pixel by at most the
+  amounts below (over pitches from 0.125 to 0.5 lambda/D; the largest values
+  are at 0.125), and the sum over the supported pixels by up to 1.5e-4.
+
+  | Distance from the table edge | Largest change |
+  |---|---|
+  | 2 to 3 cells | 13 percent |
+  | 3 to 4 cells | 6.2 percent |
+  | 4 to 6 cells | 4.6 percent |
+  | 6 to 8 cells | 0.55 percent |
+  | 8 to 12 cells | 0.09 percent |
+
+- A hard edge rings. Across a step the spline overshoots by up to 8 percent of
+  the step and, beyond 2 cells, is less accurate than the Keys cubic, which is
+  exact there. A product with a hard edge or a zero-filled data mask declares
+  `linear` or `cubic`, never `cubic_spline`: zero-filling a stellar map beyond a
+  straight mask edge moves the spline read by 2.7 percent 2 to 3 cells from the
+  mask and by 0.8 percent 3 to 4 cells from it, where the Keys read is unchanged.
+- Like any cubic it can undershoot below zero next to a steep wall. A consumer
+  that needs a positive value applies its own floor.
