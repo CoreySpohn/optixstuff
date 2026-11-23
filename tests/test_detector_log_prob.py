@@ -141,25 +141,134 @@ def test_impossible_observation_is_minus_inf():
     assert out[0, 0, 0] == -jnp.inf
 
 
-def test_poisson_negative_mean_is_outside_the_law():
-    """Fails if a negative Poisson mean scores a zero count as finite.
+# The rate floor that draw and log_prob share: 1e-4 of the frame peak.
+FLOOR_DETECTORS = {
+    "poisson": lambda: ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(1, 2)),
+    "gaussian": lambda: ox.Detector(
+        pixel_scale_arcsec=0.01,
+        shape=(1, 2),
+        dark_current_e_per_pixel_s=0.2,
+        read_noise_e_rms=1.5,
+        excess_noise_factor_sq=1.4,
+    ),
+}
 
-    The pmf of zero counts is exp(-mean), so a negative mean would score above
-    one (log above zero) and reward a model that drives a pixel negative.
+
+def _frame(negative, peak=1.0):
+    """A frame of two pixels: a positive peak and one negative component."""
+    return ox.Rates(
+        BANDS,
+        "electron",
+        planet=jnp.asarray([[[peak, 0.0]]]),
+        star_leakage=jnp.asarray([[[0.0, negative]]]),
+    )
+
+
+@pytest.mark.parametrize("name", FLOOR_DETECTORS)
+def test_log_prob_and_draw_share_the_rate_floor(name):
+    """Fails if the likelihood and the draws treat a negative rate differently.
+
+    Exact. A total rate below zero by half the tolerance (1e-4 of the frame
+    peak) is a rate of zero for both: ``log_prob`` equals its value at a rate
+    of zero and the draw succeeds. Twice the tolerance scores ``-inf``, with a
+    finite gradient, and the draw raises. A Poisson mean below zero must
+    never score a zero count above one (log above zero), which would reward a
+    model that drives a pixel negative. At a rate of exactly zero the floor
+    passes the full gradient (float64, 1e-6 against a rate of 1e-12), so a
+    fit started at zero flux is not slowed by half.
     """
-    det = ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(1, 3))
-    rates = _rates([[[-0.5, 0.0, 0.5]]])
-    out = det.log_prob(jnp.zeros((1, 1, 3)), rates, PLAN)
-    mean = 0.5 * PLAN.frame_time_s * PLAN.n_frames
-    assert out[0, 0, 0] == -jnp.inf
-    assert out[0, 0, 1] == 0.0
-    np.testing.assert_allclose(out[0, 0, 2], -mean, rtol=1e-6)
+    det = FLOOR_DETECTORS[name]()
+    observed = jnp.asarray([[[3.0, 0.0]]])
+    zero = det.log_prob(observed, _frame(0.0), PLAN)
+    inside = det.log_prob(observed, _frame(-0.5e-4), PLAN)
+    np.testing.assert_array_equal(inside, zero)
+    det.draw(jax.random.key(0), _frame(-0.5e-4), PLAN).block_until_ready()
+    beyond = det.log_prob(observed, _frame(-2e-4), PLAN)
+    assert beyond[0, 0, 1] == -jnp.inf and beyond[0, 0, 0] == zero[0, 0, 0]
+    with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
+        det.draw(jax.random.key(0), _frame(-2e-4), PLAN).block_until_ready()
 
     def score(r):
-        return det.log_prob(jnp.zeros((1, 1, 1)), _rates(r), PLAN).sum()
+        return det.log_prob(observed, _frame(r), PLAN)[0, 0, 1]
 
-    grad = jax.grad(score)(jnp.array([[[-0.5]]]))
-    assert jnp.all(jnp.isfinite(grad))
+    assert jnp.isfinite(jax.grad(score)(jnp.asarray(-2e-4)))
+    with jax.enable_x64():
+        at_zero, above = (jax.grad(score)(jnp.asarray(r)) for r in (0.0, 1e-12))
+    np.testing.assert_allclose(at_zero, above, rtol=1e-6)
+
+
+def _saturated_edge(hostile):
+    """Electron rates of a band whose first node-effective value is negative.
+
+    The node values and weights of a saturated absorption edge (the first
+    node at -0.076 of the band mean), read through a smooth response in the
+    first pixel and, when ``hostile``, a response on the negative node only
+    in the second.
+    """
+    band = Band(500.0, 555.0)
+    nodes = (
+        band.low_nm + band.width_nm * (np.polynomial.legendre.leggauss(4)[0] + 1) / 2
+    )
+    rule = ox.Quadrature((band,), [nodes], [[9.6, 17.9, 17.9, 9.6]])
+    values = jnp.asarray([-0.076, 0.663, 1.385, 1.227])
+    smooth = jnp.asarray([1.0, 0.9, 0.8, 0.7])
+    second = jnp.asarray([1.0, 0.0, 0.0, 0.0]) if hostile else smooth
+    response = jnp.stack([smooth, second], -1)  # (Q, pixels)
+    photons = ox.Rates(
+        rule, "photon", star_leakage=(values[:, None] * response)[None, :, None]
+    )
+    return FLOOR_DETECTORS["poisson"]().electrons(photons)
+
+
+@pytest.mark.parametrize("x64", [False, True])
+def test_draw_floors_round_off_and_raises_beyond_it(x64):
+    """Fails if a draw samples a negative rate or refuses integration error.
+
+    Exact, in float32 and float64. A saturated edge read through a smooth
+    response passes; a response that sees only the negative node raises,
+    under ``filter_jit``, ``vmap`` and ``grad``. A total at half the
+    tolerance is drawn as exactly zero by both detectors, and twice it
+    raises. A pixel where a ringing planet is the only light, at -2e-7 of the
+    frame peak (the reconstruction ringing measured on the synthetic YIP
+    fixture of the consumer suite), passes. Mutation: a tolerance relative to
+    the pixel's own light raises on that pixel.
+    """
+    key = jax.random.key(0)
+    ideal = FLOOR_DETECTORS["poisson"]()
+    with jax.enable_x64(x64):
+        assert _frame(0.0).planet.dtype == (jnp.float64 if x64 else jnp.float32)
+        ideal.draw(key, _saturated_edge(False), PLAN).block_until_ready()
+        hostile = _saturated_edge(True)
+        for draw in (
+            eqx.filter_jit(ideal.draw),
+            lambda k, r, p: jax.vmap(lambda k: ideal.draw(k, r, p))(
+                jax.random.split(k, 2)
+            ),
+        ):
+            with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
+                draw(key, hostile, PLAN).block_until_ready()
+
+        def fit(scale):
+            rates = eqx.tree_at(
+                lambda r: r.star_leakage, hostile, hostile.star_leakage * scale
+            )
+            frame = jax.lax.stop_gradient(ideal.draw(key, rates, PLAN))
+            return ideal.log_prob(frame.astype(float), rates, PLAN).sum()
+
+        with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
+            jax.grad(fit)(jnp.asarray(1.0)).block_until_ready()
+        ringing = ox.Rates(
+            BANDS,
+            "electron",
+            planet=jnp.asarray([[[0.0, -2e-7]]]),
+            star_leakage=jnp.asarray([[[1.0, 0.0]]]),
+        )
+        ideal.draw(key, ringing, PLAN).block_until_ready()
+        for det in (ideal, ox.Detector(pixel_scale_arcsec=0.01, shape=(1, 2))):
+            drawn = det.draw(key, _frame(-0.5e-4), PLAN)
+            assert drawn[0, 0, 1] == 0
+            with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
+                det.draw(key, _frame(-2e-4), PLAN).block_until_ready()
 
 
 def test_photon_counting_contract():

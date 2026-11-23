@@ -251,3 +251,37 @@ class Rates(eqx.Module):
         empty = cls(sampling, carrier)
         zero = jnp.zeros((*empty._leading_shape, *spatial_shape), dtype=dtype)
         return cls(sampling, carrier, **dict.fromkeys(_COMPONENTS, zero))
+
+
+RATE_FLOOR_RTOL = 1e-4
+"""Largest negative rate, relative to the frame peak, that is drawn as zero."""
+
+
+def floor_rate(rate: ArrayLike, scale: ArrayLike) -> tuple[Array, Array]:
+    """Clip a rate at zero and flag a value too negative to be integration error.
+
+    A band rate is a sum of node values, and a node value may be negative
+    without harm: a reconstruction or a source reduction rings, and the total
+    of a well-resolved band stays within its integration error of the truth. A
+    negative total within ``RATE_FLOOR_RTOL`` of ``scale`` is that error and is
+    returned as zero. A more negative total means the band rule under-resolves
+    the scene; it is flagged, and also returned as zero.
+
+    ``scale`` is the largest summed absolute component rate of the frame (for a
+    scalar read, that read's own sum), so the tolerance is the per-pixel
+    accuracy the stack claims, 1e-4 of the frame peak. The detector draws raise
+    on a flagged rate and ``log_prob`` scores it as ``-inf``.
+
+    Args:
+        rate: Total rate, any shape.
+        scale: Frame peak of the summed absolute component rates, broadcast
+            against ``rate``.
+
+    Returns:
+        The rate clipped at zero, and a boolean that is True where the rate is
+        below ``-RATE_FLOOR_RTOL * scale``.
+    """
+    rate = jnp.asarray(rate)
+    bad = rate < -RATE_FLOOR_RTOL * jnp.asarray(scale)
+    # A where, not a maximum: the gradient at a rate of exactly zero is one.
+    return jnp.where(rate < 0, jnp.zeros_like(rate), rate), bad

@@ -114,16 +114,29 @@ Combine all source contributions before drawing once, so the detector
 noise is paid once for each band and pixel. QE and survival never act
 again on electron rates.
 
+A band rate is a sum of node values, and integration or reconstruction error
+can leave a total slightly below zero where the true rate is near zero.
+`optixstuff.rates.floor_rate` treats a negative total within
+`RATE_FLOOR_RTOL = 1e-4` of the frame peak (the largest summed absolute
+component rate over the band's pixels) as that error and draws it as zero. A
+more negative total means the band rule under-resolves the scene, and `draw`
+raises, also under `jit`, `vmap` and `grad`, because a Poisson draw of a
+negative mean returns -1 without notice. The remedy is a break at the edge
+(`breaks_nm`) or a higher `order`.
+
 ## Likelihood and Fisher information
 
 `log_prob(observed, electrons, plan)` is the elementwise log density of an
 observed frame. A detector with `photon_counting=True` scores the Poisson pmf
 of the mean. Every other detector scores the Gaussian with the mean and
 variance of `mean_and_variance`, the moment-matched approximation of `draw`.
-There is no floor on the mean: where it is not positive, the Poisson form is
-`-inf` for a positive count (with a zero gradient) and the Gaussian form is
-`-inf` where the variance is not positive and the observation differs from the
-mean. A fit that walks a rate negative meets a wall, not a penalty.
+The total rate passes through the same floor as `draw`: a total within the
+tolerance below zero is scored as a rate of zero, and a more negative one is
+`-inf` in both forms, so a sampler rejects that proposal rather than stopping.
+Where the mean is zero the Poisson form is `-inf` for a positive count (with a
+zero gradient), and the Gaussian form is `-inf` where the variance is not
+positive and the observation differs from the mean. A fit that walks a rate
+negative meets a wall, not a penalty.
 
 `fisher_root(electrons, plan)` returns a vector `r` whose Jacobian gives the
 expected information of that likelihood. For parameters `theta` that enter

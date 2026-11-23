@@ -14,7 +14,7 @@ from jaxtyping import Array
 
 from optixstuff.exposure import FramePlan
 from optixstuff.grids import PixelGrid
-from optixstuff.rates import Rates
+from optixstuff.rates import RATE_FLOOR_RTOL, Rates, floor_rate
 
 
 def _check_range(name, value, low, high=float("inf")):
@@ -41,12 +41,57 @@ def _check_electrons(rates):
         raise ValueError(f"rates must be in electron/s; got {rates.unit}")
 
 
+def _floored_total(rates):
+    """Total rate floored at zero against its frame peak, and the flag beyond it.
+
+    The frame peak is the largest summed absolute component rate over the
+    spatial axes of each band; a read with no spatial axes is its own frame.
+    """
+    total = rates.total()
+    magnitude = jnp.broadcast_to(
+        sum(jnp.abs(getattr(rates, name)) for name in rates.component_names()),
+        total.shape,
+    )
+    spatial = tuple(range(1, total.ndim))
+    scale = jnp.max(magnitude, axis=spatial, keepdims=True) if spatial else magnitude
+    return floor_rate(total, scale)
+
+
+def _floored(rates):
+    """Rates whose totals are floored, and the flag of a total beyond the floor."""
+    total, bad = _floored_total(rates)
+    variance = rates.variance
+    if variance is not None:
+        variance, bad_variance = _floored(variance)
+        bad = bad | bad_variance
+    floored = Rates(
+        rates.bands,
+        rates.carrier,
+        planet=total,
+        n_pix=rates.n_pix,
+        variance=variance,
+        supported=rates.supported,
+    )
+    return floored, bad
+
+
 def _per_pixel_rate(rates):
-    """Total electron/s of per-pixel rates, the only kind draw can sample."""
+    """Total electron/s of per-pixel rates, the only kind draw can sample.
+
+    The total is floored at zero; a total below the floor raises, because a
+    Poisson draw of a negative mean returns -1 without notice.
+    """
     _check_electrons(rates)
     if rates.n_pix is not None or rates.variance is not None:
         raise ValueError("draw samples per-pixel rates, not a weighted aperture")
-    return rates.total()
+    rate, bad = _floored_total(rates)
+    return eqx.error_if(
+        rate,
+        bad,
+        f"a band rate is negative by more than {RATE_FLOOR_RTOL:g} of the frame "
+        "peak: the band rule under-resolves the scene. Declare a break at the "
+        "edge with breaks_nm, or raise order.",
+    )
 
 
 class AbstractDetector(eqx.Module):
@@ -242,10 +287,9 @@ class AbstractDetector(eqx.Module):
         * ``photon_counting`` true (always for ``IdealDetector``): the Poisson
           pmf of the mean ``lambda``, ``y log(lambda) - lambda - log(y!)``. The
           observation must be integer counts; a non-integer value is outside the
-          contract and is scored through ``gammaln`` without notice. There is no
-          floor: a negative mean is outside the law and gives ``-inf`` for
-          every ``y``, and a zero mean gives ``-inf`` for ``y > 0`` and 0 for
-          ``y = 0``, each with a zero gradient (a wall, not a penalty).
+          contract and is scored through ``gammaln`` without notice. A zero mean
+          gives ``-inf`` for ``y > 0`` and 0 for ``y = 0``, with a zero gradient
+          (a wall, not a penalty).
         * Otherwise, for every read noise including zero: the Gaussian density
           with the mean and variance of ``mean_and_variance``,
           ``-(y - m)^2 / (2 v) - log(2 pi v) / 2``. This is the moment-matched
@@ -253,6 +297,11 @@ class AbstractDetector(eqx.Module):
           two moments of ``draw`` are exact) and is not exact at low counts.
           A zero variance gives 0 where ``y`` equals the mean and ``-inf``
           elsewhere.
+
+        The total rate passes through ``floor_rate``, as in ``draw``: a negative
+        total within ``RATE_FLOOR_RTOL`` of the frame peak is scored as a rate
+        of zero, and a more negative one gives ``-inf`` in both forms, so a
+        sampler rejects such a proposal instead of stopping.
 
         Args:
             observed: Observed frame in electrons, broadcast against the mean.
@@ -262,7 +311,8 @@ class AbstractDetector(eqx.Module):
         Returns:
             Log density of ``observed``, with the broadcast shape.
         """
-        mean, variance = self.mean_and_variance(rates, plan)
+        floored, bad = _floored(rates)
+        mean, variance = self.mean_and_variance(floored, plan)
         observed = jnp.asarray(observed, dtype=mean.dtype)
         if self.photon_counting:
             # Safe values keep the gradient finite where the mean is zero.
@@ -274,13 +324,14 @@ class AbstractDetector(eqx.Module):
                 jnp.where(observed == 0, 0.0, -jnp.inf),
             )
             density = count_term - mean - jsp.gammaln(observed + 1.0)
-            return jnp.where(mean < 0, -jnp.inf, density)
+            return jnp.where(bad | (mean < 0), -jnp.inf, density)
         positive = variance > 0
         safe_variance = jnp.where(positive, variance, 1.0)
         gauss = -0.5 * (observed - mean) ** 2 / safe_variance - 0.5 * jnp.log(
             2.0 * jnp.pi * safe_variance
         )
-        return jnp.where(positive, gauss, jnp.where(observed == mean, 0.0, -jnp.inf))
+        density = jnp.where(positive, gauss, jnp.where(observed == mean, 0.0, -jnp.inf))
+        return jnp.where(bad, -jnp.inf, density)
 
     def fisher_root(self, rates: Rates, plan: FramePlan) -> Array:
         """Return a vector ``r`` whose Jacobian gives the Fisher information.
@@ -348,6 +399,10 @@ class AbstractDetector(eqx.Module):
         it omits saturation, thresholds, gain-register location effects,
         interpixel correlations, and digitization. It is not a full sensor
         response model. Yield has already been applied by ``electrons``.
+
+        The total source rate passes through ``floor_rate``: a negative total
+        within ``RATE_FLOOR_RTOL`` of the frame peak is drawn as zero, and a
+        more negative one raises, also under ``jit``, ``vmap`` and ``grad``.
 
         Args:
             key: JAX PRNG key.
@@ -440,6 +495,9 @@ class IdealDetector(AbstractDetector):
 
     def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Draw only Poisson source electrons of shape ``(W, *spatial)``.
+
+        The total rate is floored as in ``AbstractDetector.draw``, and a total
+        below the floor raises.
 
         Args:
             key: JAX PRNG key.
