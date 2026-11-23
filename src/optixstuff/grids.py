@@ -1204,12 +1204,14 @@ def coverage(
     reach, so their margin marks the support boundary as in
     ``reconstruction_margin``; they never deposit, so their margin is the
     sampling margin for every measure. ``on_grid`` reads every density by the
-    footprint integral of its reconstruction, over the whole pixel, so pass
-    the native density measure for that read: its margin is the sampling
-    margin measured from the pixel corners, which is what ``coverage`` tests.
-    The integral measure of the ``on_grid`` output gives the deposit rule for
+    footprint integral of its reconstruction, over the whole pixel (a
+    band-limited one through the box integral of ``resample``), so pass the
+    native density measure for that read: its margin is the sampling margin
+    measured from the pixel corners, which is what ``coverage`` tests. The
+    integral measure of the ``on_grid`` output gives the deposit rule for
     nearest, linear and cubic, which is never too small and may be a ring too
-    wide.
+    wide. An intensive map is sampled at the pixel centers, and its margin is
+    the sampling margin.
 
     Args:
         source_grid: Grid of the source footprint.

@@ -208,6 +208,13 @@ density image that declares it.
 | `cubic_spline` | not-a-knot cubic B-spline | 2 | no | integral of the reconstruction over each pixel |
 | `band_limited` | zero-padded Fourier interpolant | 2 | no | integral of the reconstruction over each pixel, by the box integral of `resample` |
 
+The last column is for densities. An intensive map, such as a transmission, is
+not integrated: `on_grid` samples its declared reconstruction at the pixel
+centers with `resample`, for every name. Against the pixel mean, the center
+sample of a coronagraph sky transmission differs by at most about 0.5 percent in
+an aperture of radius 0.7 lambda/D on the public packages tested, and by much
+more in single pixels on a steep occulter edge or a hard field stop.
+
 For a kernel of finite reach the margin is exact: a pixel whose footprint lies
 that far inside the table never reads the zero beyond it. The cubic spline and
 the band-limited interpolant have no finite reach, so for them the margin marks

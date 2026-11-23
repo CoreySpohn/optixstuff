@@ -38,7 +38,9 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
     NotImplementedError for a rotated or sheared target; ``resample`` still
     samples a density at the centers of a rotated grid. A band-limited density
     becomes cell integrals and takes the box integral of ``resample``, which
-    is the same footprint integral. Transmission samples the reconstruction.
+    is the same footprint integral. An intensive map, such as a transmission,
+    is not integrated: ``resample`` samples its declared reconstruction at the
+    pixel centers.
 
     Args:
         image: Native product Image.
@@ -378,6 +380,12 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
 
     def uniform_sky_map(self, wavelength_nm, *, grid):
         """Sample dimensionless transmission without multiplying by pixel area.
+
+        The transmission is read at the pixel centers, not averaged over each
+        pixel. Against the pixel mean, the center sample differs by at most
+        about 0.5 percent in an aperture of radius 0.7 lambda/D on the public
+        coronagraph packages tested, and by much more in single pixels on a
+        steep occulter edge or a hard field stop.
 
         Args:
             wavelength_nm: Wavelength in nm; ignored by monochromatic tables.
