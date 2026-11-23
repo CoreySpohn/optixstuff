@@ -222,3 +222,66 @@ def test_documented_host_surface_is_exported():
     assert "performance_curves" in ox.__all__
     assert ox.performance_curves is performance_curves
     assert callable(on_grid)
+
+
+def _arcsec_per_lod(wavelength_nm, diameter_m):
+    return wavelength_nm * 1e-9 / diameter_m * 180.0 / np.pi * 3600.0
+
+
+def test_instrument_declares_the_detector_half_diagonal_as_its_field():
+    """Fails if the declared field is not the detector half-diagonal in lambda/D.
+
+    Truth: arithmetic from the detector geometry, written out here. A 96 by 128
+    detector with 0.2 lambda/D pixels at 550 nm on a 6 m aperture has a
+    half-diagonal of 0.2 * 80 = 16 lambda/D at 550 nm, and the same angle is
+    16 * 550 / 450 lambda/D at the center of a 450 nm band. The result holds
+    with a coronagraph (its frame) and without one (the primary). Tolerance 1e-12
+    relative, basis floating-point arithmetic on a few products. The half-width
+    (12.8 lambda/D at 550 nm) is 20 percent smaller, far outside it.
+    """
+    from conftest import table_coronagraph
+
+    from optixstuff.spectral import Band
+
+    diameter = 6.0
+    scale = 0.2 * _arcsec_per_lod(550.0, diameter)
+    detector = ox.IdealDetector(pixel_scale_arcsec=scale, shape=(96, 128))
+    primary = ox.SimplePrimary(
+        circumscribed_diameter_m=diameter, collecting_area_m2=28.0
+    )
+    elements = (ox.ConstantThroughput(throughput=1.0),)
+    bare = ox.Instrument(primary, elements, None, detector)
+    framed = ox.Instrument(primary, elements, table_coronagraph(diameter), detector)
+    for instrument in (bare, framed):
+        for center, expected in ((550.0, 16.0), (450.0, 16.0 * 550.0 / 450.0)):
+            band = Band(0.9 * center, 1.1 * center)
+            np.testing.assert_allclose(
+                instrument.spectral_field_lod(band), expected, rtol=1e-12
+            )
+
+
+def test_quadrature_build_takes_the_instrument_field_when_asked():
+    """Fails if the declared field misses the node count or leaks into the default.
+
+    Truth: the same build with the declared value passed as a number, which is
+    an identical layout (exact). ``field_lod=None`` reads the instrument and the
+    default of zero does not, so the default layout keeps ``order`` nodes per
+    piece (exact), and the declared field adds nodes to a band it slides across.
+    """
+    from optixstuff.spectral import Band, Quadrature
+
+    detector = ox.IdealDetector(
+        pixel_scale_arcsec=0.2 * _arcsec_per_lod(550.0, 6.0), shape=(96, 128)
+    )
+    primary = ox.SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+    instrument = ox.Instrument(
+        primary, (ox.ConstantThroughput(throughput=1.0),), None, detector
+    )
+    band = Band(495.0, 605.0)
+    declared = Quadrature.build((band,), instrument, field_lod=None)
+    explicit = Quadrature.build(
+        (band,), instrument, field_lod=instrument.spectral_field_lod(band)
+    )
+    assert declared.pieces == explicit.pieces
+    assert declared.nodes_nm.shape[1] > 4
+    assert Quadrature.build((band,), instrument).nodes_nm.shape == (1, 4)

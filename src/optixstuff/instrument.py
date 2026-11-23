@@ -16,6 +16,7 @@ from optixstuff._repr import indent
 from optixstuff.coronagraph import AbstractCoronagraph
 from optixstuff.detector import AbstractDetector
 from optixstuff.disperser import AbstractDisperser
+from optixstuff.grids import Frame
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
 )
@@ -186,6 +187,35 @@ class Instrument(eqx.Module):
             self.detector,
             *(model for model in optional if model is not None),
         )
+
+    def spectral_field_lod(self, band) -> float:
+        """Field radius the detector spans, in lambda/D at the center of ``band``.
+
+        The half-diagonal of the detector: the largest separation from the
+        detector center at which any pixel reads the diffraction pattern. A
+        pattern at that separation slides across a band by more chromatic cycles
+        than one nearer the center, so ``Quadrature.build`` gives the band more
+        nodes the larger this is. The detector is fixed in angle, so the value
+        is converted at the band center; it is larger for a bluer band. An
+        instrument that reads a smaller field overrides this method, or the
+        caller passes ``field_lod`` to ``Quadrature.build``.
+
+        Args:
+            band: The wavelength band whose center sets the lambda/D scale.
+
+        Returns:
+            The detector half-diagonal in lambda/D at the band center.
+        """
+        ny, nx = self.detector.shape
+        half_diagonal_arcsec = (
+            0.5 * math.hypot(ny, nx) * self.detector.pixel_scale_arcsec
+        )
+        if self.coronagraph is None:
+            diameter_m = float(self.primary.diameter("circumscribed"))
+            frame = Frame(band.center_nm, diameter_m, "circumscribed")
+        else:
+            frame = self.coronagraph.frame
+        return half_diagonal_arcsec / float(frame.lod_to_arcsec(band.center_nm))
 
     def system_throughput(self, wavelength_nm: float) -> float:
         """Total throughput of all attenuating elements.
