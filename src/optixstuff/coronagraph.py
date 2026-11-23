@@ -36,11 +36,17 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
     (grid units squared of the native grid, or steradians). For nearest,
     linear, cubic and cubic_spline this read is axis-aligned only and raises
     NotImplementedError for a rotated or sheared target; ``resample`` still
-    samples a density at the centers of a rotated grid. A band-limited density
-    becomes cell integrals and takes the box integral of ``resample``, which
-    is the same footprint integral. An intensive map, such as a transmission,
-    is not integrated: ``resample`` samples its declared reconstruction at the
-    pixel centers.
+    samples a density at the centers of a rotated grid. The nearest, linear
+    and cubic reads integrate the zero-extended kernel sum and are not clipped
+    to the table: a grid that covers the table collects the table sum, and
+    pixels within the kernel's reach beyond the table receive light (a linear
+    read at the native pitch puts up to 1/8 of an edge sample in the next
+    pixel out); ``coverage`` supports none of those pixels. The cubic_spline
+    and band-limited reads are restricted to the table footprint. A
+    band-limited density becomes cell integrals and takes the box integral of
+    ``resample``, which is the same footprint integral. An intensive map, such
+    as a transmission, is not integrated: ``resample`` samples its declared
+    reconstruction at the pixel centers.
 
     Args:
         image: Native product Image.

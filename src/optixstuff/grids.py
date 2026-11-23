@@ -644,8 +644,11 @@ class Image(GridArray):
     """Image samples with their spatial measure and numerator unit.
 
     Reconstruction specifies nearest, linear, Keys cubic, cubic spline, or
-    band-limited interpolation. Values beyond the array are zero: an image ends
-    where its data end.
+    band-limited interpolation. Samples beyond the array are zero: an image ends
+    where its data end. The local kernels (nearest, linear and cubic) sum those
+    zero-extended samples and are not clipped, so their reconstruction reaches
+    past the array by the kernel's reach; ``cubic_spline`` and ``band_limited``
+    are restricted to the footprint ``[-1/2, N - 1/2]`` of each axis.
 
     ``cubic_spline`` is the interpolating cubic B-spline of the samples with the
     not-a-knot end condition: the coefficients are a linear map of the samples

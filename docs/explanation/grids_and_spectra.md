@@ -215,6 +215,14 @@ sample of a coronagraph sky transmission differs by at most about 0.5 percent in
 an aperture of radius 0.7 lambda/D on the public packages tested, and by much
 more in single pixels on a steep occulter edge or a hard field stop.
 
+Samples beyond the table are zero. The `nearest`, `linear` and `cubic` reads
+integrate the zero-extended kernel sum and are not clipped to the table, so a
+grid that covers the table collects the table sum, and pixels within the
+kernel's reach beyond the table receive light: at the native pitch a linear
+read puts up to 1/8 of an edge sample in the next pixel out. `coverage`
+supports none of those pixels. The `cubic_spline` and `band_limited` reads are
+restricted to the table footprint.
+
 For a kernel of finite reach the margin is exact: a pixel whose footprint lies
 that far inside the table never reads the zero beyond it. The cubic spline and
 the band-limited interpolant have no finite reach, so for them the margin marks
