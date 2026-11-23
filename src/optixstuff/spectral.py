@@ -403,6 +403,41 @@ def _piece_order(order, cycles):
     return max(order, 2 * math.ceil((order + NODES_PER_CYCLE * cycles) / 2))
 
 
+_BREAK_MERGE_NM = 1e-9
+
+
+def _is_traced(quadrature):
+    return any(
+        isinstance(x, jax.core.Tracer)
+        for x in (quadrature.nodes_nm, quadrature.weights_nm)
+    )
+
+
+def _merge_breaks(declared, extra):
+    """Sorted breaks of both sources; breaks closer than 1e-9 nm merge.
+
+    Within a run of breaks each closer than the tolerance to the next, a
+    declared break is kept over an extra one, and among several declared
+    breaks the smallest is kept, so two breaks that differ by rounding never
+    make a piece of zero width.
+    """
+    values = np.concatenate([declared, extra])
+    is_declared = np.concatenate(
+        [np.ones(declared.size, bool), np.zeros(extra.size, bool)]
+    )
+    order = np.argsort(values, kind="stable")
+    values, is_declared = values[order], is_declared[order]
+    kept = []
+    start = 0
+    for i in range(1, values.size + 1):
+        if i == values.size or values[i] - values[i - 1] >= _BREAK_MERGE_NM:
+            cluster = slice(start, i)
+            first = start + int(np.argmax(is_declared[cluster]))
+            kept.append(values[first])
+            start = i
+    return np.asarray(kept, dtype=float)
+
+
 class Quadrature(eqx.Module):
     """Shared wavelength nodes of shape (W, Q) with one row of plain weights.
 
@@ -500,10 +535,13 @@ class Quadrature(eqx.Module):
         Everything here is concrete host data.
 
         Declared breaks, from ``models`` and ``breaks_nm``, split a band into
-        pieces. Declare a break for any factor that is evaluated at the nodes
-        and has a kink or a feature narrower than about the band width over
-        ``order``; such a feature is otherwise integrated to a few percent at
-        any practical order.
+        pieces. Breaks closer than 1e-9 nm are one break (the model's knot is
+        kept over the one in ``breaks_nm``, and the smallest of several model
+        knots), and a break within 1e-9 nm of a band edge is dropped. Declare a
+        break for any factor that is evaluated at the nodes and has a kink or a
+        feature narrower than about the band width over ``order``; such a
+        feature is otherwise integrated to a few percent at any practical
+        order.
 
         The node count of a piece is set by the response it is read through.
         A pixel at separation s (in lambda/D at the band center c) sees the
@@ -535,16 +573,18 @@ class Quadrature(eqx.Module):
         bands = tuple(bands)
         if not bands:
             raise ValueError("at least one band is required")
-        breaks = np.union1d(spectral_breaks(*models), _break_array(breaks_nm))
+        breaks = _merge_breaks(spectral_breaks(*models), _break_array(breaks_nm))
         radii = _field_radii(bands, models, field_lod)
         legendre = {}
         pieces, rows = [], []
         for band, radius in zip(bands, radii, strict=True):
             if band.width_nm == 0:
                 raise ValueError("use Quadrature.monochromatic for a zero-width band")
-            start = np.searchsorted(breaks, band.low_nm, side="right")
-            stop = np.searchsorted(breaks, band.high_nm, side="left")
-            edges = np.concatenate(([band.low_nm], breaks[start:stop], [band.high_nm]))
+            inside = breaks[
+                (breaks - band.low_nm >= _BREAK_MERGE_NM)
+                & (band.high_nm - breaks >= _BREAK_MERGE_NM)
+            ]
+            edges = np.concatenate(([band.low_nm], inside, [band.high_nm]))
             layout, waves, weights = [], [], []
             for lo, hi in pairwise(edges):
                 cycles = radius * band.center_nm * (1 / lo - 1 / hi)
@@ -930,8 +970,21 @@ class Reduction(eqx.Module):
         knots = _knot_array(knots_nm)
         if knot_digest is None:
             knot_digest = digest_knots(knots, f"degree {degree}")
-        for band, row in zip(quadrature.bands, quadrature.pieces, strict=True):
-            for lo, hi, _ in row:
+        all_nodes = np.asarray(quadrature.nodes_nm, dtype=float)
+        for w, (band, row) in enumerate(
+            zip(quadrature.bands, quadrature.pieces, strict=True)
+        ):
+            first = 0
+            for lo, hi, n in row:
+                piece_nodes = all_nodes[w, first : first + n]
+                first += n
+                if hi - lo < _BREAK_MERGE_NM or np.any(np.diff(piece_nodes) <= 0):
+                    raise ValueError(
+                        f"band {band.low_nm:g} to {band.high_nm:g} nm: the piece "
+                        f"{lo!r} to {hi!r} nm is narrower than {_BREAK_MERGE_NM:g} "
+                        "nm or its nodes are not distinct, so the operator would "
+                        "be NaN. Merge breaks that differ by rounding."
+                    )
                 if lo < knots[0] or hi > knots[-1]:
                     word, end = (
                         ("begins", knots[0]) if lo < knots[0] else ("ends", knots[-1])
@@ -944,6 +997,7 @@ class Reduction(eqx.Module):
                     )
         key = (
             quadrature.layout_digest,
+            quadrature.digest,
             knot_digest,
             degree,
             interpolant is not None,
@@ -1124,6 +1178,17 @@ class Resolution(eqx.Module):
         if isinstance(quadratures, Quadrature):
             quadratures = (quadratures,)
         quadratures = tuple(quadratures)
+        seen = {}
+        for quadrature in quadratures:
+            layout = quadrature.layout_digest
+            if layout is None or _is_traced(quadrature):
+                continue
+            if seen.setdefault(layout, quadrature.digest) != quadrature.digest:
+                raise ValueError(
+                    "two quadratures share a layout but differ in nodes or "
+                    "weights; a rule is found by the layout, so build one "
+                    "Resolution for each"
+                )
         rules = {}
         for table in tables:
             name = type(table).__name__
@@ -1159,6 +1224,22 @@ class Resolution(eqx.Module):
                     raise ValueError(f"{name}: {error}") from None
         return cls(quadratures, tuple(rules), tuple(rules.values()))
 
+    def _check_nodes(self, quadrature, layout):
+        """Refuse a concrete quadrature that is not the one the rule was built for."""
+        if _is_traced(quadrature):
+            return
+        for built in self.quadratures:
+            if (
+                built.layout_digest == layout
+                and not _is_traced(built)
+                and built.digest != quadrature.digest
+            ):
+                raise LookupError(
+                    "this quadrature has the layout of the one the rule was "
+                    "built for but other nodes or weights; build the "
+                    "Resolution again over it"
+                )
+
     def rule(self, quadrature: Quadrature, table: SpectralTable) -> Reduction:
         """Return the rule of a table on a quadrature, found by static digests.
 
@@ -1187,6 +1268,7 @@ class Resolution(eqx.Module):
             )
         for key, rule in zip(self.keys, self.rules, strict=True):
             if key == (layout, digest):
+                self._check_nodes(quadrature, layout)
                 return rule
         raise LookupError(
             f"no rule for {name} on this quadrature: build the Resolution with "

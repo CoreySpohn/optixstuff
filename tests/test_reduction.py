@@ -22,11 +22,13 @@ from scipy.special import j1
 
 from optixstuff import Exposure
 from optixstuff.spectral import (
+    _RULE_CACHE,
     Band,
     Quadrature,
     Reduction,
     Resolution,
     SpectralTable,
+    _build_arrays,
     digest_knots,
 )
 
@@ -517,3 +519,147 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     np.testing.assert_allclose(
         band_sums(exact_rule, node_values, cubic(band))[0], truth, rtol=1e-12
     )
+
+
+class _Declares:
+    """A model that declares fixed spectral breaks."""
+
+    def __init__(self, *breaks_nm):
+        self.breaks_nm = np.asarray(breaks_nm)
+
+    def spectral_breaks_nm(self):
+        return self.breaks_nm
+
+
+def _reduce(rule, knots):
+    return Reduction.build(
+        rule, knots, degree=1, interpolant=lambda v, w: jnp.interp(w, knots, v)
+    )
+
+
+def test_breaks_that_differ_by_rounding_are_one_break_and_the_reduction_is_finite():
+    """Fails if breaks that differ by rounding make a piece of zero width.
+
+    A caller break at 950.0 beside a model knot one ulp below it must give the
+    pieces, nodes and weights of the build with only one of them, to rounding,
+    and keep the model knot; of two model knots the smaller is kept. A break
+    one ulp inside either edge of a band is dropped. Every reduction is finite.
+    Truth: the build with a single break, or with none for the edge cases.
+    Tolerance 1e-12 relative, basis the ulp-sized shift of one piece edge; a
+    piece of 1e-13 nm gives NaN blocks.
+    """
+    near = float(np.nextafter(950.0, 0.0))
+    band, knots = Band(900.0, 1000.0), np.linspace(890.0, 1010.0, 41)
+    with jax.enable_x64():
+        merged = Quadrature.build((band,), _Declares(near), breaks_nm=[950.0])
+        reverse = Quadrature.build((band,), _Declares(950.0), breaks_nm=[near])
+        both = Quadrature.build((band,), _Declares(950.0, near))
+        for single, kept in (
+            (Quadrature.build((band,), breaks_nm=[950.0]), near),
+            (Quadrature.build((band,), _Declares(near)), near),
+        ):
+            assert len(merged.pieces[0]) == len(single.pieces[0]) == 2
+            np.testing.assert_allclose(merged.nodes_nm, single.nodes_nm, rtol=1e-12)
+            np.testing.assert_allclose(merged.weights_nm, single.weights_nm, rtol=1e-12)
+            assert merged.pieces[0][0][1] == kept
+        assert reverse.pieces[0][0][1] == 950.0
+        assert both.pieces[0][0][1] == near
+        edge_band = Band(900.0, 950.0)
+        edges = (float(np.nextafter(950.0, 0.0)), float(np.nextafter(900.0, 1000.0)))
+        trimmed = Quadrature.build((edge_band,), breaks_nm=edges)
+        plain = Quadrature.build((edge_band,))
+        assert trimmed.pieces == plain.pieces == (((900.0, 950.0, 4),),)
+        np.testing.assert_array_equal(trimmed.nodes_nm, plain.nodes_nm)
+        for rule in (merged, reverse, both, trimmed):
+            assert np.isfinite(np.asarray(_reduce(rule, knots).blocks)).all()
+            assert (np.asarray(rule.weights_nm)[:, :4] > 0).all()
+
+
+def test_reduction_refuses_a_piece_that_is_too_narrow_or_has_equal_nodes():
+    """Fails if a hand-built rule with a degenerate piece reduces to NaN blocks.
+
+    A piece of zero width and a piece one ulp wide (nodes that coincide in
+    floating point) are both refused with a message that names the cause.
+    """
+    band, knots = Band(900.0, 1000.0), np.linspace(890.0, 1010.0, 41)
+    near = float(np.nextafter(950.0, 0.0))
+    with jax.enable_x64():
+        for edge, nodes in (
+            (950.0, [925.0, 950.0, 975.0]),
+            (near, [925.0, 950.0, 975.0]),
+        ):
+            rule = Quadrature(
+                (band,),
+                [nodes],
+                [[25.0, 1e-13, 75.0]],
+                pieces=[[(900.0, edge, 1), (edge, 950.0, 1), (950.0, 1000.0, 1)]],
+            )
+            with pytest.raises(ValueError, match="narrower than"):
+                _reduce(rule, knots)
+        coincident = Quadrature(
+            (band,),
+            [[925.0, 950.0, 950.0, 975.0]],
+            [[50.0, 25.0, 25.0, 50.0]],
+            pieces=[[(900.0, 950.0, 1), (950.0, 1000.0, 3)]],
+        )
+        with pytest.raises(ValueError, match="not distinct"):
+            _reduce(coincident, knots)
+
+
+def test_reduction_cache_separates_rules_with_equal_pieces_and_other_weights():
+    """Fails if a rule with the pieces of another but other weights reuses its operator.
+
+    Two quadratures with equal pieces and weights that differ by 1e-3 on one
+    node are built in one process, in both orders. Each reduction must equal
+    ``_build_arrays`` called directly on that rule (no cache), to rounding
+    (1e-14 relative to the block scale), and the two must differ by more than
+    1e-4 of it. The node-effective values divide by the weights, so the second
+    build gets the first rule's operator when the cache key ignores them.
+    """
+    band, knots = Band(500.0, 560.0), np.linspace(490.0, 570.0, 33)
+    interpolant = lambda v, w: jnp.interp(w, knots, v)  # noqa: E731
+    with jax.enable_x64():
+        base = Quadrature.build((band,), breaks_nm=[530.0], order=3)
+        weights = np.asarray(base.weights_nm).copy()
+        weights[0, 1] += 1e-3
+        other = Quadrature((band,), base.nodes_nm, weights, base.pieces)
+        assert other.layout_digest == base.layout_digest
+        truth = {
+            name: np.asarray(_build_arrays(rule, knots, 1, interpolant)[2]["blocks"])
+            for name, rule in (("base", base), ("other", other))
+        }
+        scale = np.abs(truth["base"]).max()
+        assert np.abs(truth["base"] - truth["other"]).max() > 1e-6 * scale
+        for order in (("base", "other"), ("other", "base")):
+            rules = {"base": base, "other": other}
+            _RULE_CACHE.clear()
+            for name in order:
+                reduction = Reduction.build(
+                    rules[name], knots, degree=1, interpolant=interpolant
+                )
+                np.testing.assert_allclose(
+                    reduction.blocks, truth[name], rtol=0, atol=1e-14 * scale
+                )
+
+
+def test_resolution_refuses_a_quadrature_with_the_layout_and_other_weights(phoenix):
+    """Fails if a rule built for one rule is read by a layout twin with other weights.
+
+    A quadrature with the pieces of the built one and a weight changed by 1e-3
+    is refused by ``Resolution.rule`` when both are concrete, and two such
+    quadratures are refused together by ``Resolution.build``. The rule found
+    for the built quadrature itself is unchanged.
+    """
+    knots = np.linspace(490.0, 570.0, 33)
+    table = Tabulated(knots, np.linspace(1.0, 2.0, knots.size))
+    with jax.enable_x64():
+        base = Quadrature.build((Band(500.0, 560.0),), breaks_nm=[530.0], order=3)
+        weights = np.asarray(base.weights_nm).copy()
+        weights[0, 1] += 1e-3
+        other = Quadrature((base.bands[0],), base.nodes_nm, weights, base.pieces)
+        resolution = Resolution.build(base, table)
+        assert resolution.rule(base, table).kind == "table"
+        with pytest.raises(LookupError, match="other nodes or weights"):
+            resolution.rule(other, table)
+        with pytest.raises(ValueError, match="share a layout"):
+            Resolution.build((base, other), table)
