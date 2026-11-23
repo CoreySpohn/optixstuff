@@ -8,6 +8,7 @@ over the nodes is visible; a flat response would check only the total.
 The ``phoenix`` fixture (conftest) is a public PHOENIX stellar spectrum.
 """
 
+import re
 from itertools import pairwise
 
 import equinox as eqx
@@ -292,8 +293,10 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
     Exact (the refusal). A piece wholly beyond the last knot, a piece that
     straddles it and a band starting below the first knot each raise and name
     the table end; through ``Resolution.build`` the message also names the
-    table. Mutation: a build that zero-fills beyond the table returns a value
-    and fails here. The same band ended at the table end gives the exact
+    table. At the boundary, a band one ULP inside the last knot builds and one
+    ULP beyond it is refused, with enough digits that the two ends differ in
+    the message. Mutation: a build that zero-fills beyond the table returns a
+    value and fails here. The same band ended at the table end gives the exact
     per-cell integral (floating-point, 1e-12).
     """
     knots, values = phoenix
@@ -306,11 +309,19 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
             (Band(530.0, 560.0), ()),
         ):
             rule = Quadrature.build((band,), order=4, breaks_nm=breaks)
-            named = f"{knots[0]:.10g}" if band.low_nm < knots[0] else f"{end:.10g}"
-            with pytest.raises(ValueError, match=f"at {named} nm"):
+            named = float(knots[0] if band.low_nm < knots[0] else end)
+            with pytest.raises(ValueError, match=re.escape(f"at {named!r} nm")):
                 Reduction.build(rule, knots, degree=1)
             with pytest.raises(ValueError, match="Tabulated: band"):
                 Resolution.build(rule, table)
+        inside = float(np.nextafter(end, -np.inf))
+        rule = Quadrature.build((Band(650.0, inside),), order=4)
+        Reduction.build(rule, knots, degree=1)
+        beyond = float(np.nextafter(end, np.inf))
+        rule = Quadrature.build((Band(650.0, beyond),), order=4)
+        message = f"to {beyond!r} nm leaves the table, which ends at {float(end)!r}"
+        with pytest.raises(ValueError, match=re.escape(message)):
+            Reduction.build(rule, knots, degree=1)
         ended = Band(650.0, end)
         rule, resolution = build((ended,), table, order=4)
         node_values = resolution.rule(rule, table).apply(table.values)

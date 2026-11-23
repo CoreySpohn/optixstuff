@@ -988,11 +988,12 @@ class Reduction(eqx.Module):
                     word, end = (
                         ("begins", knots[0]) if lo < knots[0] else ("ends", knots[-1])
                     )
+                    # Shortest round-trip digits, so a one-ULP overrun reads as one.
                     raise ValueError(
-                        f"band {band.low_nm:g} to {band.high_nm:g} nm: the piece "
-                        f"{lo:g} to {hi:g} nm leaves the table, which {word} at "
-                        f"{end:.10g} nm. End the band at the table end, or load "
-                        "the table over the band."
+                        f"band {float(band.low_nm)!r} to {float(band.high_nm)!r} "
+                        f"nm: the piece {float(lo)!r} to {float(hi)!r} nm leaves "
+                        f"the table, which {word} at {float(end)!r} nm. End the "
+                        "band at the table end, or load the table over the band."
                     )
         key = (
             quadrature.layout_digest,
