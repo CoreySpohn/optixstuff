@@ -30,13 +30,15 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
     Resample using the product's frame; reconcile different lod frames via sky.
 
     Measured cell integrals with piecewise-constant reconstruction collect by
-    footprint. Point densities declaring ``cubic_spline`` are read as the
-    integral of that reconstruction over each pixel's footprint, at every
-    pitch including the native one, and return a cell integral in the area the
-    density is per (grid units squared of the native grid, or steradians); this
-    read is axis-aligned only and raises NotImplementedError for a rotated or
-    sheared target. Other densities become cell integrals by the midpoint rule
-    and are resampled. Transmission samples the reconstruction.
+    footprint. A point density is read as the integral of its declared
+    reconstruction over each pixel's footprint, at every pitch including the
+    native one, and returns a cell integral in the area the density is per
+    (grid units squared of the native grid, or steradians). For nearest,
+    linear, cubic and cubic_spline this read is axis-aligned only and raises
+    NotImplementedError for a rotated or sheared target; ``resample`` still
+    samples a density at the centers of a rotated grid. A band-limited density
+    becomes cell integrals and takes the box integral of ``resample``, which
+    is the same footprint integral. Transmission samples the reconstruction.
 
     Args:
         image: Native product Image.

@@ -1,13 +1,15 @@
-"""The pixel read of point-sampled densities: footprint integral of a cubic spline.
+"""The pixel read of point-sampled densities: footprint integral of the reconstruction.
 
-A table stores the intensity at cell centers. ``on_grid`` reads a density that
-declares ``cubic_spline`` as the integral of that reconstruction over each target
-pixel. The truths here are analytic: algebra on polynomials, the closed-form
-pixel integral of a square-pupil PSF, a closed-form dark-hole speckle model, and
-a pupil-limited speckle field integrated by converged Gauss-Legendre quadrature.
-Each model is tabulated as a producer does: 256 by 256 cells of 0.25 lambda/D,
-the density at each cell center.
+A table stores the intensity at cell centers. ``on_grid`` reads a density as the
+integral of its declared reconstruction over each target pixel; most tests here
+use ``cubic_spline``. The truths are analytic: algebra on polynomials, the
+closed-form pixel integral of a square-pupil PSF, a closed-form dark-hole
+speckle model, and a pupil-limited speckle field integrated by converged
+Gauss-Legendre quadrature. Each model is tabulated as a producer does: 256
+by 256 cells of 0.25 lambda/D, the density at each cell center.
 """
+
+import itertools
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +17,7 @@ import numpy as np
 import pytest
 from hwoutils.constants import arcsec2rad
 from scipy import special
+from scipy.interpolate import make_interp_spline
 
 from optixstuff.coronagraph import on_grid
 from optixstuff.grids import (
@@ -22,7 +25,7 @@ from optixstuff.grids import (
     Image,
     Measure,
     PixelGrid,
-    _footprint_integral,
+    SkyOrientation,
     _footprint_matrix,
     coverage,
     resample,
@@ -238,19 +241,20 @@ def _relative_errors(read, truth, mask):
 # Algebra ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("reconstruction", ["cubic_spline", "linear", "cubic"])
+@pytest.mark.parametrize(
+    "reconstruction", ["cubic_spline", "linear", "cubic", "nearest"]
+)
 def test_constant_and_ramp_integrate_exactly(reconstruction):
     """Fails if a constant or a ramp is not integrated exactly over a pixel.
 
     Truth: algebra. A constant c and the ramp a + b x + e y reconstruct exactly
     (every kernel here reproduces linear functions; the not-a-knot spline
     reproduces cubics over the whole footprint), so each supported pixel
-    integrates to its value at the pixel center times the pixel area. A grid
-    covering the table collects the sum of the table (partition of unity for
-    the local kernels; for the spline the ramp integrates to N times its mean
-    over the footprint). Tolerance: floating point, 1e-12 relative. The local
-    kernels are read through the private helper: ``on_grid`` sends only
-    ``cubic_spline`` to it.
+    integrates to its value at the pixel center times the pixel area (nearest
+    reproduces only the constant). A grid covering the table collects the sum
+    of the table (partition of unity for the local kernels; for the spline the
+    ramp integrates to N times its mean over the footprint). Tolerance:
+    floating point, 1e-12 relative.
     """
     n, step = 24, 0.5
     source = PixelGrid.regular((n, n), step, "arcsec")
@@ -262,14 +266,20 @@ def test_constant_and_ramp_integrate_exactly(reconstruction):
         coverage(source, target, reconstruction=reconstruction, measure=DENSITY)
     )
     assert supported.sum() > 100
-    for field in (lambda u, v: 3.7 + 0 * u, lambda u, v: 2.0 + 0.3 * u - 0.45 * v):
+    fields = [lambda u, v: 3.7 + 0 * u, lambda u, v: 2.0 + 0.3 * u - 0.45 * v]
+    for index, field in enumerate(fields):
         image = Image(field(x, y), source, (), DENSITY, "flux", reconstruction)
-        read = np.asarray(_footprint_integral(image, source, target).data)
+        read = on_grid(image, target)
+        assert read.measure == Measure.integral()
         expected = np.asarray(field(tx, ty)) * target.pixel_area
-        np.testing.assert_allclose(
-            read[supported], expected[supported], rtol=1e-12, atol=0
-        )
-        total = _footprint_integral(image, source, covering).data.sum()
+        if reconstruction != "nearest" or index == 0:
+            np.testing.assert_allclose(
+                np.asarray(read.data)[supported],
+                expected[supported],
+                rtol=1e-12,
+                atol=0,
+            )
+        total = on_grid(image, covering).data.sum()
         np.testing.assert_allclose(
             total, image.integrated().data.sum(), rtol=1e-12, atol=0
         )
@@ -444,19 +454,23 @@ def test_margin_is_two_cells_from_the_pixel_corners(pitch):
             assert bool(_covered(target)[0, 0]) is expected, (inset, side)
 
 
-def test_full_band_speckle_truth():
+@pytest.mark.parametrize(
+    "seed", [0, 1, 2], ids=["realization-a", "realization-b", "realization-c"]
+)
+def test_full_band_speckle_truth(seed):
     """Fails if the read is less accurate than the docs state on realistic power.
 
     Truth: a pupil-limited speckle field with power up to the band edge (exact
     through its pupil samples), integrated over each pixel by converged
-    Gauss-Legendre quadrature; seed 0, three hole and three bright realizations.
+    Gauss-Legendre quadrature. Three named realizations (seeds 0, 1 and 2), each
+    with three hole and three bright fields.
     Pixels about every 0.5 lambda/D along each axis (every pixel at 0.5 and
     0.75) in the hole (3 to 26 lambda/D), pitches 0.125 to 0.75 lambda/D.
     Tolerance: spike, twice the largest measured with another seed (7.3e-4 and
     3.6e-3): median below 1.5e-3 and 95th percentile below 7e-3. Measured here
-    2.8e-4 to 7.2e-4 and 1.0e-3 to 3.5e-3.
+    2.8e-4 to 7.2e-4 and 1.0e-3 to 3.7e-3 over the three.
     """
-    model = PupilSpeckle()
+    model = PupilSpeckle(seed)
     image = _density(_table(model))
     for pitch, offset in (
         (0.125, 0.0),
@@ -554,7 +568,7 @@ def test_closure_near_the_table_edge(dark_hole_cases):
         assert error < 2e-2
 
 
-@pytest.mark.parametrize("reconstruction", ["linear", "cubic"])
+@pytest.mark.parametrize("reconstruction", ["nearest", "linear", "cubic"])
 @pytest.mark.parametrize("pitch", [0.25, 0.5, 0.75])
 def test_local_footprint_reads_have_finite_reach(reconstruction, pitch):
     """Fails if a local kernel's footprint read reaches past its sampling margin.
@@ -564,8 +578,7 @@ def test_local_footprint_reads_have_finite_reach(reconstruction, pitch):
     original table (density measure) reads exactly the same value from both.
     The count of changed values must be zero. Integrating first and depositing
     (the present read of a cell integral) changes values there for cubic at
-    0.5 and 0.75 lambda/D and for linear at 0.75. Read through the private
-    helper: ``on_grid`` sends only ``cubic_spline`` to it.
+    0.5 and 0.75 lambda/D and for linear at 0.75.
     """
     rng = np.random.default_rng(0)
     n, ring = 48, 2
@@ -581,9 +594,7 @@ def test_local_footprint_reads_have_finite_reach(reconstruction, pitch):
         (size, size), pitch, "lod", center=(center, center), frame=FRAME
     )
     reads = [
-        np.asarray(
-            _footprint_integral(_density(data, reconstruction, grid), grid, target).data
-        )
+        np.asarray(on_grid(_density(data, reconstruction, grid), target).data)
         for data, grid in ((table, small), (wide, large))
     ]
     supported = np.asarray(
@@ -601,7 +612,9 @@ def test_absolute_scale_of_the_read():
     of a different pitch, is L times the target pixel's solid angle (for
     ``density("sr")``) or area (for ``density("grid")``) at every supported
     pixel, with an integral measure. The steradian is typed here from the
-    arcsecond. Tolerance: floating point, 1e-12 relative.
+    arcsecond. ``resample`` of a uniform cubic_spline cell integral gives the
+    value times the ratio of the pixel areas, at pixels 0.6, 1 and 3.4 times
+    the cell. Tolerance: floating point, 1e-12 relative.
     """
     source = PixelGrid.regular((40, 40), 0.004, "arcsec")
     target = PixelGrid.regular((23, 23), 0.0061, "arcsec", center=(11.3, 10.8))
@@ -624,6 +637,27 @@ def test_absolute_scale_of_the_read():
         np.testing.assert_allclose(
             np.asarray(read.data)[supported], 2.5e-3 * area, rtol=1e-12, atol=0
         )
+    # resample of a cubic_spline cell integral: a uniform 3 per cell becomes 3
+    # times the ratio of the pixel areas.
+    cells = Image(
+        jnp.full((40, 40), 3.0), source, (), Measure.integral(), "ph", "cubic_spline"
+    )
+    for ratio in (0.6, 1.0, 3.4):
+        grid = PixelGrid.regular((9, 9), 0.004 * ratio, "arcsec", center=(4.3, 3.8))
+        read = resample(cells, grid)
+        assert read.measure == Measure.integral()
+        supported = np.asarray(
+            coverage(
+                source,
+                grid,
+                reconstruction="cubic_spline",
+                measure=Measure.integral(),
+            )
+        )
+        assert supported.sum() > 20
+        np.testing.assert_allclose(
+            np.asarray(read.data)[supported], 3.0 * ratio**2, rtol=1e-12, atol=0
+        )
 
 
 def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
@@ -633,8 +667,8 @@ def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
     target centers and keeps the density measure: a linear ramp read on a grid
     rotated by 30 degrees (linear) and a cubic polynomial read on an aligned
     grid (cubic_spline) return the polynomial at the centers, to 1e-12
-    relative. ``on_grid`` of a cubic_spline density on a rotated grid raises,
-    because its footprint read is axis-aligned only.
+    relative. ``on_grid`` of a cubic_spline or linear density on a rotated grid
+    raises, because the footprint read is axis-aligned only.
     """
     source = PixelGrid.regular((40, 40), 0.5, "arcsec")
     x, y = source.coordinates()
@@ -661,6 +695,167 @@ def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
         np.testing.assert_allclose(
             sampled.data, field(*grid.coordinates()), rtol=1e-12, atol=0
         )
-    image = Image(cubic(x, y), source, (), DENSITY, "flux", "cubic_spline")
-    with pytest.raises(NotImplementedError, match="rotated"):
-        on_grid(image, rotated)
+    for reconstruction in ("cubic_spline", "linear"):
+        image = Image(cubic(x, y), source, (), DENSITY, "flux", reconstruction)
+        with pytest.raises(NotImplementedError, match="rotated"):
+            on_grid(image, rotated)
+
+
+def _box(t):
+    return ((t >= -0.5) & (t < 0.5)).astype(float)
+
+
+def _tent(t):
+    return np.clip(1 - np.abs(t), 0, None)
+
+
+def _keys(t):
+    a = np.abs(t)
+    inner = 1.5 * a**3 - 2.5 * a**2 + 1
+    outer = -0.5 * a**3 + 2.5 * a**2 - 4 * a + 2
+    return np.where(a <= 1, inner, np.where(a <= 2, outer, 0.0))
+
+
+def _reference_axis(reconstruction, samples, low, high):
+    """Integral of one axis's reconstruction over each [low, high], in cells.
+
+    Gauss-Legendre with 8 nodes on every piece between half-integers, where the
+    reconstruction is a polynomial of degree at most 3, so the rule is exact.
+    The spline comes from scipy's not-a-knot interpolant, restricted to the
+    footprint.
+    """
+    n = samples.size
+    if reconstruction == "cubic_spline":
+        spline = make_interp_spline(np.arange(n), samples, k=3)
+        low, high = np.clip(low, -0.5, n - 0.5), np.clip(high, -0.5, n - 0.5)
+
+        def field(t):
+            return spline(t)
+
+    else:
+        kernel = {"nearest": _box, "linear": _tent, "cubic": _keys}[reconstruction]
+
+        def field(t):
+            return kernel(t[..., None] - np.arange(n)) @ samples
+
+    nodes, weights = np.polynomial.legendre.leggauss(8)
+    out = np.zeros(low.size)
+    for i, (a, b) in enumerate(zip(low, high, strict=True)):
+        cuts = np.arange(np.ceil(2 * a), np.floor(2 * b) + 1) / 2
+        edges = np.unique(np.concatenate([[a], cuts, [b]]))
+        for left, right in itertools.pairwise(edges):
+            half = (right - left) / 2
+            out[i] += half * weights @ field((left + right) / 2 + half * nodes)
+    return out
+
+
+@pytest.mark.parametrize(
+    "reconstruction", ["nearest", "linear", "cubic", "cubic_spline"]
+)
+def test_every_density_is_read_by_its_footprint_integral(reconstruction):
+    """Fails if ``on_grid`` reads a declared density any other way.
+
+    Truth: the integral of the declared reconstruction over each pixel, built in
+    the test from the kernel (box, tent, Keys cubic) or from scipy's not-a-knot
+    spline, by Gauss-Legendre exact on each polynomial piece. The table is
+    separable, so a pixel is the product of two one-dimensional integrals.
+    Pitches 0.25 (aligned, equal to the cell), 0.15 and 0.6 lambda/D (offset).
+    Tolerance: floating point, 1e-12 of the largest pixel. The midpoint read it
+    replaces (cell integral, then sample or deposit) differs by percent at one
+    of these pitches for each of nearest, linear and cubic.
+    """
+    rng = np.random.default_rng(0)
+    n = 40
+    rows, columns = rng.random(n), rng.random(n)
+    grid = PixelGrid.regular((n, n), CELL, "lod", frame=FRAME)
+    image = _density(np.outer(rows, columns), reconstruction, grid)
+    for pitch, offset in ((0.25, 0.0), (0.15, 0.031), (0.6, 0.13)):
+        target, centers = _target(pitch, offset, half_width=n * CELL / 2 + 1.0)
+        read = np.asarray(on_grid(image, target).data)
+        positions = centers / CELL + (n - 1) / 2
+        width = pitch / CELL
+        axis = _reference_axis(
+            reconstruction, columns, positions - width / 2, positions + width / 2
+        )
+        y_axis = _reference_axis(
+            reconstruction, rows, positions - width / 2, positions + width / 2
+        )
+        truth = np.outer(y_axis, axis) * CELL**2
+        np.testing.assert_allclose(read, truth, rtol=0, atol=1e-12 * truth.max())
+
+
+def test_non_square_table_and_anisotropic_flipped_pixels():
+    """Fails if the read mixes the axes of a non-square table or pixel.
+
+    Truth: algebra. A separable cubic q(y) p(x) with different coefficients on
+    a 36 by 52 table of 0.22 by 0.3 arcsec cells, read onto pixels of 0.37 by
+    0.29 arcsec, and the same with the x axis flipped, is the product of the
+    exact one-dimensional integrals at every supported pixel. Tolerance: 1e-10
+    relative, as for the square cubic test.
+    """
+
+    def p(t):
+        return 1.0 + 0.05 * t - 4e-3 * t**2 + 3e-4 * t**3
+
+    def p_integral(t):
+        return t + 0.025 * t**2 - 4e-3 / 3 * t**3 + 7.5e-5 * t**4
+
+    def q(t):
+        return 0.7 - 0.03 * t + 2e-3 * t**2 - 5e-4 * t**3
+
+    def q_integral(t):
+        return 0.7 * t - 0.015 * t**2 + 2e-3 / 3 * t**3 - 1.25e-4 * t**4
+
+    source = PixelGrid((36, 52), 25.5, 17.5, ((0.3, 0.0), (0.0, 0.22)), "arcsec")
+    x, y = source.coordinates()
+    image = Image(q(y) * p(x), source, (), DENSITY, "flux", "cubic_spline")
+    for sign in (1.0, -1.0):
+        target = PixelGrid(
+            (22, 35), 17.2, 10.9, ((0.37 * sign, 0.0), (0.0, 0.29)), "arcsec"
+        )
+        read = np.asarray(on_grid(image, target).data)
+        tx, ty = (np.asarray(v) for v in target.coordinates())
+        expected = (q_integral(ty + 0.145) - q_integral(ty - 0.145)) * (
+            p_integral(tx + 0.185) - p_integral(tx - 0.185)
+        )
+        supported = np.asarray(
+            coverage(source, target, reconstruction="cubic_spline", measure=DENSITY)
+        )
+        assert supported.sum() > 300
+        np.testing.assert_allclose(read[supported], expected[supported], rtol=1e-10)
+
+
+def test_traced_orientation_that_differs_raises():
+    """Fails if a rotation hidden behind a traced angle is read as axis-aligned.
+
+    The footprint read and the cubic_spline branch of ``resample`` are
+    axis-aligned only. Under ``jit`` a target whose orientation angle is traced
+    and differs from the source's may hold any rotation, so both raise rather
+    than return the unrotated read. A target that shares the source's
+    orientation still reads under a traced pixel scale.
+    """
+    orientation = SkyOrientation(0.0)
+    source = PixelGrid.regular((40, 40), 0.5, "arcsec", orientation=orientation)
+    x, y = source.coordinates()
+    data = 1.0 + 0.01 * x - 0.02 * y
+
+    def target(angle):
+        return PixelGrid.regular(
+            (12, 12), 0.7, "arcsec", orientation=SkyOrientation(angle)
+        )
+
+    for reconstruction in ("cubic_spline", "linear"):
+        image = Image(data, source, (), DENSITY, "flux", reconstruction)
+        with pytest.raises(NotImplementedError, match="orientation"):
+            jax.jit(lambda angle, image=image: on_grid(image, target(angle)).data)(30.0)
+    image = Image(data, source, (), DENSITY, "flux", "cubic_spline")
+    with pytest.raises(NotImplementedError, match="orientation"):
+        jax.jit(lambda angle: resample(image, target(angle)).data)(30.0)
+
+    def scaled(step):
+        grid = PixelGrid(
+            (12, 12), 5.5, 5.5, ((step, 0.0), (0.0, step)), "arcsec", None, orientation
+        )
+        return on_grid(image, grid).data
+
+    np.testing.assert_allclose(jax.jit(scaled)(0.7), scaled(0.7), rtol=1e-12, atol=0)

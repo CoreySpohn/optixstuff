@@ -815,6 +815,11 @@ def _band_limited_matrix(n_source, positions, width, pad_factor, dtype, integrat
     return (evaluate @ analyze) / n_padded
 
 
+def _box_antiderivative(t, xp):
+    """Integral of the nearest (unit box) kernel from -inf to t, piecewise in t."""
+    return xp.where(t < -0.5, 0.0, xp.where(t < 0.5, t + 0.5, 1.0))
+
+
 def _hat_antiderivative(t, xp):
     """Integral of the linear kernel from -inf to t, piecewise in t."""
     return xp.where(
@@ -904,6 +909,7 @@ def _bspline_antiderivative(t, xp):
 # absolute value, so their derivative at a knot (a pixel edge on a sample) is
 # the kernel value there.
 _LOCAL_ANTIDERIVATIVE = {
+    "nearest": _box_antiderivative,
     "linear": _hat_antiderivative,
     "cubic": _keys_antiderivative,
 }
@@ -987,7 +993,23 @@ def _footprint_matrix(n_source, positions, width, reconstruction, dtype):
 
 
 def _require_axis_aligned(name, source_grid, target_grid, mapping):
-    """Raise for a rotated or sheared basis or map; traced matrices are skipped."""
+    """Raise for a rotated or sheared basis or map.
+
+    A traced basis keeps the diagonal form it was built with, so a map traced
+    only through the bases is accepted. Two different orientations with a
+    traced angle may hold any rotation, which cannot be checked on the host,
+    so they raise.
+    """
+    source, target = source_grid.orientation, target_grid.orientation
+    if (
+        source is not None
+        and not _same_orientation(source, target)
+        and _traced(source.pa_y_deg, target.pa_y_deg)
+    ):
+        raise NotImplementedError(
+            f"{name} reconstruction does not support a traced orientation angle "
+            "that differs between the grids; give both grids one orientation"
+        )
     for matrix in (source_grid.basis, target_grid.basis, mapping):
         if _traced(matrix) or isinstance(matrix, jax.core.Tracer):
             continue  # a traced basis keeps the diagonal form it was built with
@@ -1018,13 +1040,19 @@ def _axis_positions(source_grid, target_grid, mapping):
 
 
 # Density images whose ``on_grid`` read is the footprint integral of the
-# declared reconstruction. Adding "linear" and "cubic" moves those products
-# to the same read; ``_footprint_matrix`` already holds their kernels.
-_FOOTPRINT_READS = frozenset({"cubic_spline"})
+# declared reconstruction. A band-limited density is absent because its
+# present read (cell integrals, then the box integral of ``resample``) is
+# already the footprint integral of its reconstruction.
+_FOOTPRINT_READS = frozenset({"nearest", "linear", "cubic", "cubic_spline"})
 
 
 def _reads_footprint(measure, reconstruction):
-    """Whether ``on_grid`` integrates the reconstruction over each pixel."""
+    """Whether ``on_grid`` integrates the reconstruction over each pixel.
+
+    The one predicate for the read and its margin: ``on_grid`` routes by it
+    and ``_read_margins`` gives such a read the sampling margin, measured from
+    the pixel corners.
+    """
     return measure.kind == "density" and reconstruction in _FOOTPRINT_READS
 
 
@@ -1129,7 +1157,10 @@ def _read_margins(source_grid, target_grid, reconstruction, measure, mapping):
     """
     _validate_reconstruction(reconstruction)
     sampling = _RECONSTRUCTION_MARGIN[reconstruction]
-    if reconstruction not in _DEPOSIT_HALF_SUPPORT:
+    if (
+        _reads_footprint(measure, reconstruction)
+        or reconstruction not in _DEPOSIT_HALF_SUPPORT
+    ):
         return sampling, sampling
     deposit = _deposits(source_grid, target_grid, measure, reconstruction)
     traced = _traced(deposit, mapping)
@@ -1172,10 +1203,13 @@ def coverage(
     cubic). The cubic spline and band-limited reconstructions have no finite
     reach, so their margin marks the support boundary as in
     ``reconstruction_margin``; they never deposit, so their margin is the
-    sampling margin for every measure. A density that ``on_grid`` reads by the
-    footprint integral of its reconstruction is read over the whole pixel, and
-    its margin is the sampling margin measured from the pixel corners, which is
-    what ``coverage`` tests.
+    sampling margin for every measure. ``on_grid`` reads every density by the
+    footprint integral of its reconstruction, over the whole pixel, so pass
+    the native density measure for that read: its margin is the sampling
+    margin measured from the pixel corners, which is what ``coverage`` tests.
+    The integral measure of the ``on_grid`` output gives the deposit rule for
+    nearest, linear and cubic, which is never too small and may be a ring too
+    wide.
 
     Args:
         source_grid: Grid of the source footprint.
