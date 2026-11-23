@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 import os
 from dataclasses import replace
+from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +28,20 @@ if importlib.util.find_spec("hwoutils.internal_refs") is not None:
 settings.register_profile("quick", max_examples=25, deadline=None)
 settings.register_profile("nightly", max_examples=200, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
+
+
+@pytest.fixture(scope="session")
+def phoenix():
+    """A rough stellar spectrum: knots [nm] and photon flux density, peak one.
+
+    The public PHOENIX-ACES 5800 K, log g 4.5, solar-metallicity spectrum
+    (Husser et al. 2013, A&A 553, A6) as tabulated by
+    ``skyscapes.io.from_phoenix``, cut to 535 to 665 nm (2972 knots, linear
+    between them) and divided by its maximum.
+    """
+    path = Path(__file__).parent / "data" / "phoenix_5800K_logg4.5_535_665nm.npz"
+    with np.load(path) as data:
+        return data["wavelength_nm"], data["photon_flux_density"]
 
 
 # Small analytic optics with independent pixel-centre coordinates.

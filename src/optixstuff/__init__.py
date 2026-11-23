@@ -45,7 +45,7 @@ from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.psflet_pack import PsfletPack, load_psflet_pack, save_psflet_pack
 from optixstuff.rates import Rates
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
-from optixstuff.spectral import Band, Quadrature
+from optixstuff.spectral import Band, Quadrature, Reduction, Resolution
 
 __all__ = [
     "DEFAULT_APERTURE_RULE",
@@ -82,6 +82,8 @@ __all__ = [
     "PsfletPack",
     "Quadrature",
     "Rates",
+    "Reduction",
+    "Resolution",
     "SampledProfile",
     "SceneRender",
     "SegmentedPrimary",

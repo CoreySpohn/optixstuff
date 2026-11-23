@@ -3,7 +3,7 @@
 import equinox as eqx
 import jax.numpy as jnp
 
-from optixstuff.spectral import Quadrature
+from optixstuff.spectral import Quadrature, Resolution
 
 
 def _band_shape(first, second):
@@ -107,6 +107,12 @@ class Exposure(eqx.Module):
     The roll, the observation time and the quadrature nodes and weights are array
     leaves, so an exposure can be an argument of JIT, vmap and grad.
 
+    ``resolution`` holds the operators that turn each tabulated source of the
+    scene into node-effective values on ``quadrature``; it is empty for a scene
+    with no table. The build reads the knot grids of those tables, and
+    ``reads`` names them, so a fit refuses to free a leaf the operators were
+    built from.
+
     Attributes:
         time_d: Observation time in days from the scene epoch. The local-zodi
             sightline is derived from it, the scene's epoch and the target's
@@ -116,9 +122,25 @@ class Exposure(eqx.Module):
         quadrature: Per-band wavelength nodes and weights.
         plan: Whole-frame integration plan; None when only expected rates
             are wanted.
+        resolution: Operators of the scene's tabulated sources on
+            ``quadrature``; empty when the scene has none.
+        reads: Paths, relative to the scene, of the knot leaves the build read.
+            Changing one of them leaves the exposure stale; rebuild it.
     """
 
     time_d: jnp.ndarray | float
     roll_deg: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
     quadrature: Quadrature
     plan: FramePlan | None = None
+    resolution: Resolution = eqx.field(default_factory=Resolution)
+    reads: tuple[str, ...] = eqx.field(static=True, default=())
+
+    def __check_init__(self):
+        """Require path strings and a resolution built for this quadrature."""
+        if not isinstance(self.reads, tuple) or not all(
+            isinstance(path, str) for path in self.reads
+        ):
+            raise TypeError("reads must be a tuple of path strings")
+        built = self.resolution.quadratures
+        if built and built[0].layout_digest != self.quadrature.layout_digest:
+            raise ValueError("the resolution was built for another quadrature")

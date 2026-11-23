@@ -14,7 +14,7 @@ import pytest
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
 
-from optixstuff.spectral import Band, Quadrature, Transmission
+from optixstuff.spectral import Band, Quadrature, Reduction, Transmission
 
 LO_NM, HI_NM, CENTER_NM = 375.0, 625.0, 500.0
 BAND = Band(LO_NM, HI_NM)
@@ -225,6 +225,61 @@ def test_order_rule_resolves_a_sliding_response_on_a_smooth_source():
             assert errors[4] > 1e-2
     assert onsets == [4, 6, 8, 12, 16]
     assert rule_orders == [6, 8, 10, 16, 22]
+
+
+def test_order_rule_on_a_rough_source_through_the_reduction(phoenix):
+    """Fails if the rule's order loses a rough star read through the reduction.
+
+    The ladder above on the PHOENIX 5800 K table, linear between its 0.04 nm
+    knots, reduced to node-effective values by ``Reduction`` (the fine kind:
+    the table at ``fine_nm``). Truth is a 16-point rule on the table cells
+    split at 200 uniform cells. The reduction is exact to degree Q - 1 in the
+    response for a rough source, against 2Q - 1 for a smooth one, so it needs
+    about one more node per cycle. Spike basis: the first order below 1e-4 is
+    5, 7, 10, 16 and 23 at 0.5, 1, 2, 4 and 6 cycles (pinned; an even-order
+    scan gives 8 at one cycle); the rule's order gives 5.0e-6, 3.6e-6,
+    1.9e-5, 3.8e-5 and 1.4e-4, bounded at 5e-4 (three times the worst). The
+    smooth-source bound of 1e-6 must fail at every cycle count, which keeps
+    the two rows from being merged.
+    """
+    knots, table = phoenix
+    x, w = leggauss(16)
+    edges = np.union1d(
+        np.linspace(SEPARATION_BAND.low_nm, SEPARATION_BAND.high_nm, 201),
+        knots[(knots > SEPARATION_BAND.low_nm) & (knots < SEPARATION_BAND.high_nm)],
+    )
+    length = np.diff(edges)[:, None]
+    fine = (edges[:-1, None] + length * (x + 1) / 2).ravel()
+    fine_weights = (length * w / 2).ravel()
+    reduced = {}
+    with jax.enable_x64():
+        for order in range(4, 25):
+            rule = Quadrature.build((SEPARATION_BAND,), order=order)
+            reduction = Reduction.build(rule, knots, degree=1)
+            at_fine = np.interp(np.asarray(reduction.fine_nm), knots, table)
+            reduced[order] = (rule, np.asarray(reduction.apply(at_fine))[0])
+
+    def worst(order, separations, truth):
+        rule, node_values = reduced[order]
+        nodes, weights = np.asarray(rule.nodes_nm[0]), np.asarray(rule.weights()[0])
+        value = airy_pixel(separations, nodes) @ (weights * node_values)
+        return np.max(np.abs(value / truth - 1))
+
+    onsets, at_rule = [], []
+    for cycles in (0.5, 1.0, 2.0, 4.0, 6.0):
+        separations = np.linspace(cycles - 0.1, cycles + 0.1, 9) / CYCLES_PER_LOD
+        truth = airy_pixel(separations, fine) @ (
+            fine_weights * np.interp(fine, knots, table)
+        )
+        errors = {order: worst(order, separations, truth) for order in reduced}
+        onsets.append(min(order for order, error in errors.items() if error < 1e-4))
+        rule = Quadrature.build(
+            (SEPARATION_BAND,), order=4, field_lod=cycles / CYCLES_PER_LOD
+        )
+        at_rule.append(errors[rule.pieces[0][0][2]])
+    assert onsets == [5, 7, 10, 16, 23]
+    assert max(at_rule) < 5e-4
+    assert min(at_rule) > 1e-6
 
 
 @pytest.mark.parametrize("order", [1, 3, 4])

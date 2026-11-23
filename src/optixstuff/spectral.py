@@ -24,8 +24,12 @@ from optixstuff.grids import Image
 __all__ = [
     "Band",
     "Quadrature",
+    "Reduction",
+    "Resolution",
     "SpectralBreaks",
+    "SpectralTable",
     "Transmission",
+    "digest_knots",
     "rebin_bands",
     "spectral_breaks",
     "trapezoid_weights",
@@ -668,4 +672,524 @@ class Quadrature(eqx.Module):
             self.nodes_nm[i][None],
             self.weights_nm[i][None],
             None if self.pieces is None else (self.pieces[i],),
+        )
+
+
+def digest_knots(knots_nm, method: str) -> str:
+    """Return the knot digest of a tabulated spectrum: its method and its knots.
+
+    The digest has the form ``"<method>:<hash>"``. A table computes it once, on
+    the host, from its concrete knots and the name of its interpolation, and
+    keeps it as a static field, so a rule can be looked up for the table inside
+    a traced program. ``Resolution.build`` recomputes the hash from the knots
+    to catch a digest that no longer matches them.
+
+    Args:
+        knots_nm: Concrete, strictly increasing table wavelengths in nm.
+        method: Name of the interpolation between the knots, such as
+            ``"linear"`` or ``"cubic"``; it must not contain a colon.
+
+    Returns:
+        The digest string.
+    """
+    if ":" in method:
+        raise ValueError("the interpolation method name must not contain ':'")
+    return f"{method}:{_knot_hash(_knot_array(knots_nm))}"
+
+
+def _knot_array(knots_nm):
+    if isinstance(knots_nm, jax.core.Tracer):
+        raise TypeError(
+            "the knots of a spectral table must be concrete; construct the "
+            "table on the host, outside any traced function"
+        )
+    knots = np.asarray(knots_nm, dtype=float)
+    if (
+        knots.ndim != 1
+        or knots.size < 2
+        or not np.all(np.isfinite(knots))
+        or np.any(np.diff(knots) <= 0)
+    ):
+        raise ValueError(
+            "the knots of a spectral table must be a finite, strictly "
+            "increasing 1D array of at least two wavelengths"
+        )
+    return knots
+
+
+def _knot_hash(knots):
+    return hashlib.sha256(knots.tobytes()).hexdigest()[:16]
+
+
+@runtime_checkable
+class SpectralTable(Protocol):
+    """A tabulated source spectrum that a ``Reduction`` integrates exactly.
+
+    The table is linear in its values through its own interpolant, so the
+    integral of the source against each node's Lagrange polynomial is a fixed
+    linear map of the values. The protocol carries what the host build needs:
+
+    - ``spectral_breaks_nm()``: the concrete knots. The first and the last are
+      the ends of the interval on which the table is defined.
+    - ``knot_digest``: a static ``digest_knots(knots, method)`` computed at
+      construction from the knots as the table stores them, or None for a
+      table constructed under a trace (no rule can be built for it). It is
+      computed once, so a knot leaf replaced afterwards leaves it stale;
+      ``Resolution.build`` catches that.
+    - ``spectral_degree``: the polynomial degree of the source between knots
+      (1 for a linear table, 3 for a cubic one, the sum for a product).
+
+    Optionally, ``spectral_interpolant()`` returns the table's own
+    interpolation as a function ``f(values, wavelength_nm)``, linear in the
+    values of shape (T,). With it the build returns the ``"table"`` kind, which
+    acts on the values; without it the ``"fine"`` kind, which acts on the
+    source evaluated at ``Reduction.fine_nm``.
+
+    Attributes:
+        knot_digest: Static digest of the knots and the interpolation method,
+            or None for a table constructed under a trace.
+        spectral_degree: Polynomial degree of the source between knots.
+    """
+
+    knot_digest: str | None
+    spectral_degree: int
+
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the concrete knots [nm] of the table.
+
+        Returns:
+            Strictly increasing knot wavelengths in nm.
+        """
+        ...
+
+
+def _lagrange(nodes, points):
+    """Lagrange basis of the nodes at the points, shape (nodes, points)."""
+    basis = np.ones((nodes.size, points.size))
+    for i, node in enumerate(nodes):
+        for other in np.delete(nodes, i):
+            basis[i] *= (points - other) / (node - other)
+    return basis
+
+
+def _cells_rule(edges, n):
+    """Gauss-Legendre points and weights with n points on every cell of edges."""
+    x, w = leggauss(n)
+    length = np.diff(edges)[:, None]
+    points = edges[:-1, None] + length * (x + 1) / 2
+    return points.ravel(), (length * w / 2).ravel()
+
+
+def _compose(interpolant, size, moments, points):
+    """Per-piece matrices (moment @ interpolation) by transposing the interpolant.
+
+    ``moments`` (P, Q, M) and ``points`` (P, M) are padded to common sizes.
+    Returns, for each piece, the first table column it reads and its float64
+    block over the columns from there to the last it reads.
+    """
+
+    def rows(moment, wave):
+        transpose = jax.linear_transpose(
+            lambda values: moment @ interpolant(values, wave), jnp.zeros(size)
+        )
+        return jax.vmap(lambda row: transpose(row)[0])(jnp.eye(moment.shape[0]))
+
+    compose = jax.jit(rows)
+    blocks = []
+    with jax.enable_x64():
+        for moment, wave in zip(moments, points, strict=True):
+            dense = np.asarray(compose(jnp.asarray(moment), jnp.asarray(wave)))
+            used = np.flatnonzero(np.any(dense != 0, axis=0))
+            first, last = (used[0], used[-1] + 1) if used.size else (0, 1)
+            blocks.append((first, dense[:, first:last]))
+    return blocks
+
+
+_RULE_CACHE: dict = {}
+_RULE_CACHE_SIZE = 64
+
+
+class Reduction(eqx.Module):
+    """Node-effective values of one tabulated source on one band rule.
+
+    On a piece with nodes ``lambda_k``, weights ``w_k`` and Lagrange
+    polynomials ``l_k``, a source ``phi`` has the node-effective value
+    ``phibar_k = (1 / w_k) * integral of phi * l_k``. Summed with the weights
+    and a response ``R`` at the nodes it gives the integral of ``phi * R`` over
+    the piece, exactly for any ``R`` of degree below the piece's order and with
+    no error from the source, however rough. A tabulated source is linear in
+    its values, so ``phibar`` is a fixed linear map of them, built on the host
+    from the nodes and the knots and never from a value.
+
+    Three kinds, recorded in the static ``kind``:
+
+    - ``"identity"``: every knot inside the bands is a piece edge (and no
+      piece has fewer nodes than the source's degree), so a Gauss rule on each
+      piece is already exact. ``apply`` takes the source at the
+      nodes, (W, Q, ...).
+    - ``"table"``: ``apply`` takes the table values, (T, ...), and applies one
+      block per piece to the columns that piece reads.
+    - ``"fine"``: ``apply`` takes the source evaluated at ``fine_nm``,
+      (P, M, ...), for a source that is not one table.
+
+    Every kind returns (W, Q, ...) on the quadrature's nodes. A padded node
+    copies the first real node of its band, so a ratio of two node rows stays
+    finite there. The record belongs to one quadrature and one knot grid, named
+    by the static ``layout_digest`` and ``knot_digest``; build it with
+    ``Reduction.build`` or, for a set of tables, ``Resolution.build``.
+
+    Attributes:
+        layout_digest: ``layout_digest`` of the quadrature the record was built for.
+        knot_digest: Digest of the knot grid the record was built for.
+        kind: ``"identity"``, ``"table"`` or ``"fine"``.
+        slots: Static (W, Q) index of each node into the per-piece values
+            (into the node values for the identity kind).
+        blocks: Per-piece matrices, (P, Q_max, T_max) for the table kind and
+            (P, Q_max, M_max) for the fine kind; None for the identity kind.
+        columns: Table columns each piece reads, (P, T_max); table kind only.
+        fine_nm: Wavelengths in nm where the fine kind reads the source,
+            (P, M_max); fine kind only.
+        n_knots: Number of table values the table kind takes.
+    """
+
+    layout_digest: str = eqx.field(static=True)
+    knot_digest: str = eqx.field(static=True)
+    kind: str = eqx.field(static=True)
+    slots: tuple[tuple[int, ...], ...] = eqx.field(static=True)
+    blocks: jax.Array | None = None
+    columns: jax.Array | None = None
+    fine_nm: jax.Array | None = None
+    n_knots: int = eqx.field(static=True, default=0)
+
+    def __check_init__(self):
+        """Require arrays that match the kind."""
+        arrays = {
+            "identity": (False, False, False),
+            "table": (True, True, False),
+            "fine": (True, False, True),
+        }
+        if self.kind not in arrays:
+            raise ValueError("kind must be 'identity', 'table' or 'fine'")
+        present = tuple(
+            x is not None for x in (self.blocks, self.columns, self.fine_nm)
+        )
+        if present != arrays[self.kind]:
+            raise ValueError(f"the {self.kind!r} kind holds the wrong arrays")
+
+    @classmethod
+    def build(
+        cls,
+        quadrature: Quadrature,
+        knots_nm,
+        *,
+        degree: int,
+        interpolant=None,
+        knot_digest: str | None = None,
+    ) -> Self:
+        """Build the operator of one table grid on a built quadrature, on the host.
+
+        Runs in float64 on concrete data and refuses tracers. Every piece of
+        every band must lie inside the table, from its first knot to its last;
+        a piece outside it, or one that straddles its end, is refused, because
+        the table says nothing there. End the band at the table end, or load
+        the table over the band.
+
+        The moments use ``ceil((order + degree) / 2)`` Gauss points on every
+        cell between knots, which is exact for a source of polynomial degree
+        ``degree`` between knots. Where every knot is a piece edge and no piece
+        has fewer nodes than ``degree``, the Gauss rule of each piece is
+        already exact and the build returns the identity kind. With
+        ``interpolant`` the moments are composed with the interpolation by
+        transposing that function, so the scheme is never restated here.
+
+        Args:
+            quadrature: A rule from ``Quadrature.build`` (its ``pieces`` set).
+            knots_nm: Concrete, strictly increasing table wavelengths in nm.
+            degree: Polynomial degree of the source between knots.
+            interpolant: The source's interpolation ``f(values, wavelength_nm)``,
+                linear in values of shape (T,); None for the fine kind.
+            knot_digest: Digest of the knots; ``digest_knots(knots_nm,
+                f"degree {degree}")`` when None.
+
+        Returns:
+            The Reduction for this quadrature and knot grid.
+        """
+        if quadrature.pieces is None:
+            raise ValueError(
+                "a hand-made quadrature has no piece layout; build it with "
+                "Quadrature.build"
+            )
+        if any(
+            isinstance(x, jax.core.Tracer)
+            for x in (quadrature.nodes_nm, quadrature.weights_nm)
+        ):
+            raise TypeError("build the operator on the host, outside any trace")
+        degree = index(degree)
+        if degree < 0:
+            raise ValueError("degree must be a nonnegative integer")
+        knots = _knot_array(knots_nm)
+        if knot_digest is None:
+            knot_digest = digest_knots(knots, f"degree {degree}")
+        for band, row in zip(quadrature.bands, quadrature.pieces, strict=True):
+            for lo, hi, _ in row:
+                if lo < knots[0] or hi > knots[-1]:
+                    word, end = (
+                        ("begins", knots[0]) if lo < knots[0] else ("ends", knots[-1])
+                    )
+                    raise ValueError(
+                        f"band {band.low_nm:g} to {band.high_nm:g} nm: the piece "
+                        f"{lo:g} to {hi:g} nm leaves the table, which {word} at "
+                        f"{end:.10g} nm. End the band at the table end, or load "
+                        "the table over the band."
+                    )
+        key = (
+            quadrature.layout_digest,
+            knot_digest,
+            degree,
+            interpolant is not None,
+            quadrature.nodes_nm.dtype.name,
+        )
+        cached = _RULE_CACHE.get(key)
+        if cached is None:
+            cached = _build_arrays(quadrature, knots, degree, interpolant)
+            if len(_RULE_CACHE) >= _RULE_CACHE_SIZE:
+                _RULE_CACHE.pop(next(iter(_RULE_CACHE)))
+            _RULE_CACHE[key] = cached
+        kind, slots, arrays = cached
+        # Leaves follow the configured precision, like the quadrature's own.
+        return cls(
+            quadrature.layout_digest,
+            knot_digest,
+            kind,
+            slots,
+            **{name: jnp.asarray(value) for name, value in arrays.items()},
+            n_knots=knots.size if kind == "table" else 0,
+        )
+
+    @property
+    def nbytes(self) -> int:
+        """Bytes held by the operator's arrays."""
+        return sum(
+            x.nbytes for x in (self.blocks, self.columns, self.fine_nm) if x is not None
+        )
+
+    def apply(self, values: jax.Array) -> jax.Array:
+        """Return node-effective values, (W, Q, ...), from the source's values.
+
+        Args:
+            values: The source in the form the kind takes: at the quadrature's
+                nodes, (W, Q, ...), for the identity kind; the table values,
+                (T, ...), for the table kind; at ``fine_nm``, (P, M, ...), for the
+                fine kind. Trailing axes are carried through.
+
+        Returns:
+            Node-effective values on the quadrature's nodes, (W, Q, ...).
+        """
+        values = jnp.asarray(values)
+        slots = jnp.asarray(self.slots)
+        if self.kind == "identity":
+            if values.shape[:2] != slots.shape:
+                raise ValueError(f"values must have leading shape {slots.shape}")
+            flat = values.reshape((-1, *values.shape[2:]))
+            return flat[slots]
+        if self.kind == "table":
+            if values.shape[:1] != (self.n_knots,):
+                raise ValueError(f"values must have leading shape ({self.n_knots},)")
+            per_piece = jnp.einsum(
+                "pqt,pt...->pq...", self.blocks, values[self.columns]
+            )
+        else:
+            if values.shape[:2] != self.fine_nm.shape:
+                raise ValueError(f"values must have leading shape {self.fine_nm.shape}")
+            per_piece = jnp.einsum("pqm,pm...->pq...", self.blocks, values)
+        flat = per_piece.reshape((-1, *per_piece.shape[2:]))
+        return flat[slots]
+
+
+def _build_arrays(quadrature, knots, degree, interpolant):
+    """Host arrays of a Reduction: its kind, its slots and its padded blocks."""
+    nodes = np.asarray(quadrature.nodes_nm, dtype=float)
+    weights = np.asarray(quadrature.weights_nm, dtype=float)
+    n_bands, n_nodes = nodes.shape
+    identity = True
+    pieces = []  # (band, first node, nodes, weights, cell edges)
+    for w, row in enumerate(quadrature.pieces):
+        start = 0
+        for lo, hi, n in row:
+            inside = knots[(knots > lo) & (knots < hi)]
+            # Gauss on a piece is exact for the source times a response of
+            # degree n - 1 only while the source's degree is at most n.
+            identity &= inside.size == 0 and degree <= n
+            stop = start + n
+            edges = np.concatenate(([lo], inside, [hi]))
+            pieces.append(
+                (w, start, nodes[w, start:stop], weights[w, start:stop], edges)
+            )
+            start = stop
+    counts = [sum(n for *_, n in row) for row in quadrature.pieces]
+    if identity:
+        slots = [
+            [w * n_nodes + (j if j < counts[w] else 0) for j in range(n_nodes)]
+            for w in range(n_bands)
+        ]
+        return "identity", _tuple(slots), {}
+    q_max = max(p[2].size for p in pieces)
+    moments, points = [], []
+    for _, _, piece_nodes, piece_weights, edges in pieces:
+        n = piece_nodes.size
+        x, wx = _cells_rule(edges, math.ceil((n + degree) / 2))
+        moments.append(_lagrange(piece_nodes, x) * wx / piece_weights[:, None])
+        points.append(x)
+    m_max = max(x.size for x in points)
+    blocks = np.zeros((len(pieces), q_max, m_max))
+    fine = np.empty((len(pieces), m_max))
+    for p, (moment, x) in enumerate(zip(moments, points, strict=True)):
+        blocks[p, : moment.shape[0], : x.size] = moment
+        fine[p, : x.size] = x
+        fine[p, x.size :] = x[0]
+    piece_of = {}
+    for p, (w, start, piece_nodes, *_) in enumerate(pieces):
+        for r in range(piece_nodes.size):
+            piece_of[w, start + r] = p * q_max + r
+    slots = [
+        [piece_of[w, j if j < counts[w] else 0] for j in range(n_nodes)]
+        for w in range(n_bands)
+    ]
+    if interpolant is None:
+        return "fine", _tuple(slots), {"blocks": blocks, "fine_nm": fine}
+    composed = _compose(interpolant, knots.size, blocks, fine)
+    t_max = max(block.shape[1] for _, block in composed)
+    table_blocks = np.zeros((len(pieces), q_max, t_max))
+    columns = np.zeros((len(pieces), t_max), dtype=int)
+    for p, (first, block) in enumerate(composed):
+        table_blocks[p, :, : block.shape[1]] = block
+        columns[p] = np.clip(first + np.arange(t_max), 0, knots.size - 1)
+    return "table", _tuple(slots), {"blocks": table_blocks, "columns": columns}
+
+
+def _tuple(rows):
+    return tuple(tuple(int(x) for x in row) for row in rows)
+
+
+class Resolution(eqx.Module):
+    """The ``Reduction`` of every tabulated source an exposure or term reads.
+
+    One rule per pair of a quadrature and a table grid, found by the two
+    static digests, so a source cannot be integrated by an operator built for
+    another table or another layout. ``quadratures`` lists the rules it was
+    built for: the exposure's own, then any auxiliary one (such as the
+    calibration band of a disk). ``Resolution()`` is empty.
+
+    A rule belongs to the full quadrature: ``Quadrature.band(i)`` has its own
+    layout digest and no rule. A route that works band by band computes the
+    node values once on the full rule and carries the rows of each band.
+
+    Attributes:
+        quadratures: The quadratures the rules were built for.
+        keys: Static ``(layout_digest, knot_digest)`` of each rule.
+        rules: The Reductions, in the order of ``keys``.
+    """
+
+    quadratures: tuple[Quadrature, ...] = ()
+    keys: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
+    rules: tuple[Reduction, ...] = ()
+
+    def __check_init__(self):
+        """Require one rule per key, and keys that name their rule."""
+        if len(self.keys) != len(self.rules):
+            raise ValueError("a Resolution needs one rule per key")
+        for (layout, knots), rule in zip(self.keys, self.rules, strict=True):
+            if (rule.layout_digest, rule.knot_digest) != (layout, knots):
+                raise ValueError("each key must be the digests of its rule")
+
+    @classmethod
+    def build(
+        cls, quadratures: Quadrature | Sequence[Quadrature], *tables: SpectralTable
+    ) -> Self:
+        """Build one rule per pair of a quadrature and a table, on the host.
+
+        Checks every table first: its digest must exist (a table constructed
+        under a trace has none) and match its concrete knots. Rules are cached
+        on the digests, so a runner that builds an exposure per roll pays for
+        each operator once. Tables that share a knot grid share a rule.
+
+        Args:
+            quadratures: The exposure's quadrature, or a sequence of quadratures
+                (the exposure's first, then any auxiliary one).
+            *tables: Tabulated sources implementing ``SpectralTable``.
+
+        Returns:
+            The Resolution holding every rule.
+        """
+        if isinstance(quadratures, Quadrature):
+            quadratures = (quadratures,)
+        quadratures = tuple(quadratures)
+        rules = {}
+        for table in tables:
+            name = type(table).__name__
+            if not isinstance(table, SpectralTable):
+                raise TypeError(f"{name} does not implement SpectralTable")
+            digest = table.knot_digest
+            if digest is None:
+                raise ValueError(
+                    f"{name} was constructed under a trace and has no knot "
+                    "digest; construct the table on the host"
+                )
+            knots = _knot_array(table.spectral_breaks_nm())
+            if digest.rpartition(":")[2] != _knot_hash(knots):
+                raise ValueError(
+                    f"the knot digest of {name} does not match its knots: a knot "
+                    "grid was replaced after construction; rebuild the table"
+                )
+            get = getattr(table, "spectral_interpolant", None)
+            interpolant = get() if callable(get) else None
+            for quadrature in quadratures:
+                key = (quadrature.layout_digest, digest)
+                if key in rules:
+                    continue
+                try:
+                    rules[key] = Reduction.build(
+                        quadrature,
+                        knots,
+                        degree=table.spectral_degree,
+                        interpolant=interpolant,
+                        knot_digest=digest,
+                    )
+                except ValueError as error:
+                    raise ValueError(f"{name}: {error}") from None
+        return cls(quadratures, tuple(rules), tuple(rules.values()))
+
+    def rule(self, quadrature: Quadrature, table: SpectralTable) -> Reduction:
+        """Return the rule of a table on a quadrature, found by static digests.
+
+        Works inside a traced program, since both digests are static, and
+        raises at trace time when there is no rule.
+
+        Args:
+            quadrature: The quadrature whose nodes the values are wanted on.
+            table: The tabulated source.
+
+        Returns:
+            The Reduction built for that pair.
+        """
+        layout = quadrature.layout_digest
+        if layout is None:
+            raise LookupError(
+                "a hand-made quadrature has no piece layout and no rule; build "
+                "it with Quadrature.build"
+            )
+        digest = getattr(table, "knot_digest", None)
+        name = type(table).__name__
+        if digest is None:
+            raise LookupError(
+                f"{name} has no knot digest (it was constructed under a trace); "
+                "construct the table on the host"
+            )
+        for key, rule in zip(self.keys, self.rules, strict=True):
+            if key == (layout, digest):
+                return rule
+        raise LookupError(
+            f"no rule for {name} on this quadrature: build the Resolution with "
+            "Resolution.build over this quadrature and the table. A band slice "
+            "has no rule of its own; carry the rows of the full rule's values"
         )
