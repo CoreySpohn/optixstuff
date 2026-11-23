@@ -82,7 +82,20 @@ per-pixel fractions of unocculted source flux. Use `.data` to obtain its array.
 Select the imaging model with `model = coro.coronagraph_at(500.0)`. Its
 `at_wavelength(500.0)` gives the source, stellar and uniform-sky grids.
 Scene models return an image and a validity flag from
-`render_scene(scene_image, 500.0, grid=target)`.
+`render_scene(scene_image, 500.0, grid=target)`. The image is always finite; the
+flag is False only when lit flux lies outside the cells the model covers, and
+that flux contributes zero. `AbstractSceneCoronagraph.scene_grid` is the grid on
+which a scene (a disk, for example) is built so that it reaches every source the
+model can render.
+
+A product ends where its data end. `resample` and `Image` never reflect or
+extrapolate: a target pixel that reaches past the source footprint reads zero.
+`optixstuff.grids.coverage(source_grid, target_grid, margin)` returns the target
+pixels wholly inside the footprint, and `reconstruction_margin(name)` supplies
+the margin that also excludes pixels whose value depends on the zero beyond the
+data. Consumers mask with it, and `exposure_time` and `snr` report an
+unsupported aperture through `Rates.supported` rather than a number. NaN is
+reserved for terminal statistics such as `snr` and `exposure_time`.
 
 The coronagraph slot is the image capability only: a frame, a bandpass and the
 image methods above. Summary curves are a separate characterization record,
