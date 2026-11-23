@@ -933,3 +933,244 @@ def test_coverage_requires_whole_footprint_and_margin_matches_resample():
     ] == [0.0, 0.5, 2.0, 2.0]
     with pytest.raises(ValueError):
         reconstruction_margin("sinc")
+
+
+# The read margin of `coverage`: a product cropped to a centred window must read
+# the same as the wide product at every pixel `coverage` calls covered, and must
+# read exactly zero wholly beyond the window grown by that margin.
+
+_READ_FRAME = Frame(500.0, 6.0, "circumscribed")
+_HALF_SUPPORT = {"nearest": 0.5, "linear": 1.0, "cubic": 2.0}
+_SAMPLING_MARGIN = {"nearest": 0.0, "linear": 0.5, "cubic": 2.0}
+
+
+def _smooth_field(n_wide, n_crop):
+    """Smooth field on a wide grid and its centred crop, at unit cells."""
+    yy, xx = np.indices((n_wide, n_wide)) - (n_wide - 1) / 2
+    wide = 1.0 + 0.05 * xx + 0.002 * yy**2 + 0.3 * np.sin(0.9 * xx) * np.cos(0.7 * yy)
+    offset = (n_wide - n_crop) // 2
+    return wide, wide[offset : offset + n_crop, offset : offset + n_crop]
+
+
+def _expected_margins(rec, width, angle=0.0, deposit=True):
+    """Margin per source axis from the pixel's extent along it, as derived."""
+    sampling = _SAMPLING_MARGIN[rec]
+    if not deposit:
+        return sampling, sampling
+    extent = tuple(
+        w * (abs(np.cos(np.radians(angle))) + abs(np.sin(np.radians(angle))))
+        if angle
+        else w
+        for w in width
+    )
+    return tuple(max(sampling, (_HALF_SUPPORT[rec] - 0.5) * g - 0.5) for g in extent)
+
+
+def _read_case(
+    rec, width, shift=0.0, angle=None, n_wide=160, n_crop=48, kind="integral"
+):
+    """Resample wide and cropped products onto one detector; return the pieces."""
+    from optixstuff.grids import coverage
+
+    orientation = None if angle is None else SkyOrientation(0.0)
+    wide_grid = replace(
+        PixelGrid.focal(n_wide, 1.0, _READ_FRAME), orientation=orientation
+    )
+    crop_grid = replace(
+        PixelGrid.focal(n_crop, 1.0, _READ_FRAME), orientation=orientation
+    )
+    wx, wy = width
+    shape = (int(np.ceil(100 / wy)), int(np.ceil(100 / wx)))
+    detector = PixelGrid(
+        shape,
+        (shape[1] - 1) / 2 + shift,
+        (shape[0] - 1) / 2 - 0.61 * shift,
+        ((wx, 0.0), (0.0, wy)),
+        "lod",
+        _READ_FRAME,
+        None if angle is None else SkyOrientation(angle),
+    )
+    wide, crop = _smooth_field(n_wide, n_crop)
+    measure = Measure.integral() if kind == "integral" else Measure.density("grid")
+
+    def read(data, grid):
+        image = Image(jnp.asarray(data), grid, (), measure, "x", reconstruction=rec)
+        return np.asarray(resample(image, detector).data)
+
+    full, cut = read(wide, wide_grid), read(crop, crop_grid)
+    covered = np.asarray(
+        coverage(crop_grid, detector, reconstruction=rec, measure=measure)
+    )
+    from optixstuff.grids import _pixel_map
+
+    mapping = np.asarray(_pixel_map(crop_grid, detector), float)
+    rows, columns = np.indices(shape)
+    dx, dy = columns - detector.center_x, rows - detector.center_y
+    xs, ys = [], []
+    for a in (-0.5, 0.5):
+        for b in (-0.5, 0.5):
+            xs.append(
+                mapping[0, 0] * (dx + a) + mapping[0, 1] * (dy + b) + crop_grid.center_x
+            )
+            ys.append(
+                mapping[1, 0] * (dx + a) + mapping[1, 1] * (dy + b) + crop_grid.center_y
+            )
+    return full, cut, covered, np.array(xs), np.array(ys), crop_grid, detector
+
+
+def _assert_reads_agree(rec, width, margins, **case):
+    full, cut, covered, xs, ys, crop_grid, _ = _read_case(rec, width, **case)
+    scale = np.abs(full).max()
+    assert covered.any()
+    # Same linear combination of the same samples wherever no edge is read.
+    assert np.abs(cut - full)[covered].max() <= 64 * np.finfo(float).eps * scale
+    n = crop_grid.shape[0]
+    mx, my = margins
+    outside = (
+        (xs.max(0) <= -0.5 - mx)
+        | (xs.min(0) >= n - 0.5 + mx)
+        | (ys.max(0) <= -0.5 - my)
+        | (ys.min(0) >= n - 0.5 + my)
+    )
+    assert outside.any()
+    assert np.all(cut[outside] == 0.0)
+
+
+@pytest.mark.parametrize("shift", [0.0, 0.37])
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+@pytest.mark.parametrize("width", [0.25, 1.0, 2.0, 2.5, 4.0])
+def test_coverage_read_margin_aligned_pixels(width, rec, shift):
+    """Fails if the margin is the sampling reach when a read deposits.
+
+    Truth is the resample of the wide product, which reads no edge; the two
+    reads are the same linear combination of the same samples wherever no edge
+    is read, so they agree to rounding (64 eps of the field maximum, measured
+    0.0 to 3e-16). With the sampling margin the disagreement reaches 3.8e-2.
+    """
+    margins = _expected_margins(rec, (width, width), deposit=width >= 1.0)
+    _assert_reads_agree(rec, (width, width), margins, shift=shift)
+
+
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+def test_coverage_read_margin_sampling_branch_equals_reconstruction_margin(rec):
+    """Fails if a read that samples gets any margin but the reconstruction's."""
+    from optixstuff.grids import coverage, reconstruction_margin
+
+    _, _, covered, _, _, crop_grid, detector = _read_case(rec, (0.25, 0.25))
+    expected = coverage(crop_grid, detector, reconstruction_margin(rec))
+    assert np.array_equal(covered, expected)
+
+
+@pytest.mark.parametrize(
+    ("rec", "width", "n_wide", "n_crop"),
+    [
+        ("linear", 2.0, 160, 48),
+        ("linear", 2.05, 160, 48),
+        ("linear", 2.05, 161, 49),
+        ("cubic", 5 / 3, 160, 48),
+        ("cubic", 1.7, 160, 48),
+        ("cubic", 1.7, 161, 49),
+    ],
+)
+def test_coverage_read_margin_thresholds(rec, width, n_wide, n_crop):
+    """Fails at the pixel size where the deposit reach overtakes the sampling reach."""
+    margins = _expected_margins(rec, (width, width))
+    _assert_reads_agree(
+        rec, (width, width), margins, shift=0.13, n_wide=n_wide, n_crop=n_crop
+    )
+
+
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+@pytest.mark.parametrize(
+    ("width", "deposit"), [((3.0, 0.5), True), ((2.5, 0.3), False)]
+)
+def test_coverage_read_margin_non_square_pixels(width, deposit, rec):
+    """Fails if the branch or margin ignores that the pixel is not square.
+
+    The 3 by 0.5 pixel (area 1.5) deposits and has a long axis of 3 cells; the
+    2.5 by 0.3 pixel (area 0.75) samples.
+    """
+    margins = _expected_margins(rec, width, deposit=deposit)
+    _assert_reads_agree(rec, width, margins, shift=0.37)
+
+
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+@pytest.mark.parametrize("width", [0.5, 2.5, 4.0])
+@pytest.mark.parametrize("angle", [30.0, 45.0])
+def test_coverage_read_margin_rotated_detector(angle, width, rec):
+    """Fails if the margin uses one axis of a rotated pixel.
+
+    The bounding extent of the rotated pixel along each product axis is
+    ``width (|cos| + |sin|)``. The aligned formula under rotation misses up to
+    9.2e-4 (linear) and 1.3e-4 (cubic) at covered pixels.
+    """
+    margins = _expected_margins(rec, (width, width), angle=angle, deposit=width >= 1.0)
+    _assert_reads_agree(rec, (width, width), margins, shift=0.37, angle=angle)
+
+
+def test_coverage_read_margin_nearest_reaches_nothing():
+    """Fails if nearest, which reads the cell it falls in, gains a margin."""
+    _assert_reads_agree("nearest", (2.5, 2.5), (0.0, 0.0), shift=0.13)
+
+
+@pytest.mark.parametrize("rec", ["linear", "cubic"])
+@pytest.mark.parametrize("width", [2.5, 4.0])
+def test_coverage_read_margin_density_is_the_sampling_margin(width, rec):
+    """Fails if the margin ignores the measure.
+
+    A density is always sampled at pixel centers, so a coarse pixel keeps the
+    reconstruction margin and is not shrunk by the deposit reach.
+    """
+    from optixstuff.grids import coverage, reconstruction_margin
+
+    full, cut, covered, _, _, crop_grid, detector = _read_case(
+        rec, (width, width), shift=0.13, kind="density"
+    )
+    sampling = coverage(crop_grid, detector, reconstruction_margin(rec))
+    assert np.array_equal(covered, sampling)
+    assert (
+        np.abs(cut - full)[covered].max()
+        <= 64 * np.finfo(float).eps * np.abs(full).max()
+    )
+
+
+def test_coverage_read_margin_traced_basis_matches_host():
+    """Fails if the branch is a host `if` on a traced pixel area."""
+    from optixstuff.grids import coverage
+
+    source = PixelGrid.focal(48, 1.0, _READ_FRAME)
+
+    def detector(scale):
+        return PixelGrid(
+            (40, 40),
+            19.5 + 0.13,
+            19.5 - 0.08,
+            ((scale, 0.0), (0.0, scale)),
+            "lod",
+            _READ_FRAME,
+        )
+
+    for rec in ("linear", "cubic"):
+        for scale in (0.5, 2.5):
+            host = coverage(
+                source, detector(scale), reconstruction=rec, measure=Measure.integral()
+            )
+            traced = jax.jit(
+                lambda s, rec=rec: coverage(
+                    source, detector(s), reconstruction=rec, measure=Measure.integral()
+                )
+            )(scale)
+            assert np.array_equal(np.asarray(traced), host)
+
+
+def test_coverage_read_keywords_validate():
+    """Fails unless the two keywords come together and replace the margin."""
+    from optixstuff.grids import coverage
+
+    grid = PixelGrid.focal(8, 1.0, _READ_FRAME)
+    with pytest.raises(ValueError, match="together"):
+        coverage(grid, grid, reconstruction="linear")
+    with pytest.raises(ValueError, match="together"):
+        coverage(grid, grid, measure=Measure.integral())
+    with pytest.raises(ValueError, match="margin"):
+        coverage(grid, grid, 0.5, reconstruction="linear", measure=Measure.integral())

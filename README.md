@@ -93,7 +93,10 @@ extrapolate: a target pixel that reaches past the source footprint reads zero.
 `optixstuff.grids.coverage(source_grid, target_grid, margin)` returns the target
 pixels wholly inside the footprint, and `reconstruction_margin(name)` supplies
 the margin that also excludes pixels whose value depends on the zero beyond the
-data. Consumers mask with it, and `exposure_time` and `snr` report an
+data. When the pixels are at least as large as the product's cells, `resample`
+deposits instead of sampling and reaches further, so pass
+`reconstruction=` and `measure=` in place of `margin` to get the margin of the
+read that is performed. Consumers mask with it, and `exposure_time` and `snr` report an
 unsupported aperture through `Rates.supported` rather than a number. NaN is
 reserved for terminal statistics such as `snr` and `exposure_time`.
 

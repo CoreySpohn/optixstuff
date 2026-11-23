@@ -821,6 +821,11 @@ def reconstruction_margin(name: str) -> float:
     pixels in), so for it the margin marks the support boundary, not an
     accuracy bound.
 
+    This is the reach when the product is sampled at target centers. A read
+    that may deposit instead (a cell integral onto pixels at least as large as
+    the cells) reaches further: pass ``reconstruction`` and ``measure`` to
+    ``coverage`` for the margin of the read that ``resample`` performs.
+
     Args:
         name: Reconstruction name.
 
@@ -831,28 +836,106 @@ def reconstruction_margin(name: str) -> float:
     return _RECONSTRUCTION_MARGIN[name]
 
 
-def coverage(source_grid: PixelGrid, target_grid: PixelGrid, margin: float = 0.0):
+# Kernel half-support in target pixels, for the deposit form of a read.
+_DEPOSIT_HALF_SUPPORT = {"nearest": 0.5, "linear": 1.0, "cubic": 2.0}
+
+
+def _deposits(source_grid, target_grid, measure, reconstruction):
+    """Whether ``resample`` deposits cell integrals instead of sampling.
+
+    True for a cell-integral measure, a nearest, linear or cubic
+    reconstruction, and target pixels at least as large as source cells. The
+    answer is a host bool for host geometry and a traced boolean when the
+    pixel areas are traced.
+    """
+    if measure.kind != "integral" or reconstruction not in _DEPOSIT_HALF_SUPPORT:
+        return False
+    return target_grid.pixel_area / source_grid.pixel_area >= 1.0
+
+
+def _read_margins(source_grid, target_grid, reconstruction, measure, mapping):
+    """Margins along the source x and y axes of the read ``resample`` performs.
+
+    Sampling reaches the reconstruction margin. Depositing reaches the kernel
+    half-support k in target pixels, so a pixel whose extent along a source
+    axis is g cells reaches ``(k - 1/2) g - 1/2`` cells past its edge, never
+    less than the sampling margin. g is the row sum of absolute values of the
+    target-to-source map, which is the bounding extent of a rotated pixel.
+    """
+    _validate_reconstruction(reconstruction)
+    sampling = _RECONSTRUCTION_MARGIN[reconstruction]
+    deposit = _deposits(source_grid, target_grid, measure, reconstruction)
+    traced = _traced(deposit, mapping)
+    if not traced and not deposit:
+        return sampling, sampling
+    half_support = _DEPOSIT_HALF_SUPPORT[reconstruction]
+    xp = jnp if traced else np
+    extent = xp.sum(xp.abs(xp.asarray(mapping)), axis=1)
+    margins = xp.maximum(sampling, (half_support - 0.5) * extent - 0.5)
+    margins = xp.where(deposit, margins, sampling)
+    return margins[0], margins[1]
+
+
+def coverage(
+    source_grid: PixelGrid,
+    target_grid: PixelGrid,
+    margin: float = 0.0,
+    *,
+    reconstruction: str | None = None,
+    measure: Measure | None = None,
+):
     """Boolean (ny, nx) of target pixels wholly inside the source footprint.
 
     A target pixel is covered when all four corners of its footprint map into
-    the source footprint shrunk by margin source pixels on every side, so a
-    pixel that straddles the edge is not covered. Pass
-    reconstruction_margin(name) to also exclude the pixels whose resampled
-    value depends on the zero beyond the data. Orientation and basis are
+    the source footprint shrunk by a margin in source pixels on every side, so
+    a pixel that straddles the edge is not covered. Orientation and basis are
     handled as in resample. The result is static geometry: a host array for
     host grids and a traced array when a basis is traced.
+
+    The margin is either given or derived from the read. Pass ``margin``
+    (for example ``reconstruction_margin(name)``) to exclude the pixels whose
+    sampled value depends on the zero beyond the data. Pass ``reconstruction``
+    and ``measure`` together for the margin of the read ``resample`` performs
+    on these grids: the reconstruction margin when the read samples, and the
+    larger reach of the deposit form when a cell integral lands on pixels at
+    least as large as the cells, computed per source axis from the pixel's
+    extent along it (so it holds under rotation and for non-square pixels).
+    The deposit margin is ``max(m, (k - 1/2) g - 1/2)`` cells for a pixel of g
+    cells and kernel half-support k in pixels (1/2 nearest, 1 linear, 2
+    cubic). A band-limited reconstruction has no finite reach, so its margin
+    marks the support boundary as in ``reconstruction_margin``.
 
     Args:
         source_grid: Grid of the source footprint.
         target_grid: Grid whose pixels are tested.
         margin: Source pixels by which the source footprint is shrunk on every
-            side.
+            side. Must be zero when ``reconstruction`` and ``measure`` are
+            given.
+        reconstruction: Reconstruction of the read, given with ``measure``.
+        measure: Measure of the product that is read, given with
+            ``reconstruction``.
 
     Returns:
         Boolean array of shape ``target_grid.shape``, True where a target pixel is
         covered.
+
+    Raises:
+        ValueError: If only one of ``reconstruction`` and ``measure`` is given,
+            or either is given with a nonzero ``margin``.
     """
+    if (reconstruction is None) != (measure is None):
+        raise ValueError("pass reconstruction and measure together")
+    if reconstruction is not None and margin != 0:
+        raise ValueError(
+            "margin must be zero when reconstruction and measure are given"
+        )
     mapping = _pixel_map(source_grid, target_grid)
+    if reconstruction is None:
+        margin_x = margin_y = margin
+    else:
+        margin_x, margin_y = _read_margins(
+            source_grid, target_grid, reconstruction, measure, mapping
+        )
     traced = _traced(source_grid.basis, target_grid.basis, mapping)
     xp = jnp if traced else np
     rows, columns = xp.indices(target_grid.shape)
@@ -868,10 +951,10 @@ def coverage(source_grid: PixelGrid, target_grid: PixelGrid, margin: float = 0.0
             y = mapping[1][0] * u + mapping[1][1] * v + source_grid.center_y
             covered = (
                 covered
-                & (x >= -0.5 + margin - tolerance)
-                & (x <= nx - 0.5 - margin + tolerance)
-                & (y >= -0.5 + margin - tolerance)
-                & (y <= ny - 0.5 - margin + tolerance)
+                & (x >= -0.5 + margin_x - tolerance)
+                & (x <= nx - 0.5 - margin_x + tolerance)
+                & (y >= -0.5 + margin_y - tolerance)
+                & (y <= ny - 0.5 - margin_y + tolerance)
             )
     return covered
 
@@ -994,6 +1077,7 @@ def resample(
     )
     integral = image.measure.kind == "integral"
     area_ratio = target_grid.pixel_area / source_grid.pixel_area
+    deposit = _deposits(source_grid, target_grid, image.measure, selected)
     data = jnp.asarray(image.data, dtype=jnp.result_type(image.data, 1.0))
     if selected == "band_limited":
         for matrix in (source_grid.basis, target_grid.basis, mapping):
@@ -1076,9 +1160,9 @@ def resample(
         if traced:
             # The host cannot compare traced pixel areas: build both forms and
             # keep the one the areas select.
-            data = jnp.where(area_ratio >= 1.0, kernel(True), kernel(False))
+            data = jnp.where(deposit, kernel(True), kernel(False))
         else:
-            data = kernel(area_ratio >= 1.0)
+            data = kernel(deposit)
     else:
         data = kernel(False)
     return Image.tree_unflatten(metadata, (data,))
