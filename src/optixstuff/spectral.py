@@ -624,17 +624,12 @@ class Quadrature(eqx.Module):
         band = Band(wavelength_nm, wavelength_nm)
         return cls((band,), [[band.low_nm]], [[1.0]])
 
-    def weights(self, name: str = "response") -> jax.Array:
+    def weights(self) -> jax.Array:
         """Return the (W, Q) weights in nm.
-
-        Args:
-            name: The row name; ``"response"`` is the only row.
 
         Returns:
             Weights of shape (W, Q), in nm.
         """
-        if name != "response":
-            raise KeyError(f"no weights named {name!r}; the only row is 'response'")
         return self.weights_nm
 
     @property

@@ -435,5 +435,5 @@ def test_invalid_rules_are_refused():
         for field_lod in (-1.0, np.nan, (1.0, 2.0)):
             with pytest.raises(ValueError, match="field_lod"):
                 Quadrature.build((BAND,), field_lod=field_lod)
-        with pytest.raises(KeyError, match="star"):
-            Quadrature.build((BAND,)).weights("star")
+        with pytest.raises(TypeError):
+            Quadrature.build((BAND,)).weights("response")
