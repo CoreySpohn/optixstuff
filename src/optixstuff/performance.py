@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.map_coordinates import map_coordinates
-from scipy.interpolate import PchipInterpolator
+from scipy.interpolate import CubicSpline, PchipInterpolator
 from scipy.optimize import root_scalar
 
 from optixstuff.grids import (
@@ -39,6 +39,20 @@ CORE_WINDOW_LOD = 3.0
 PROFILE_STEP_PIX = 0.25
 RING_RULE = "aperture_ring_mean"
 LEAKAGE_RULES = ("aperture_mean", RING_RULE, "azimuthal_ring_mean")
+# Quantities that carry the leakage of the star and so depend on its diameter.
+DIAMETER_QUANTITIES = (
+    "leakage_fraction",
+    "leakage_fraction_variance",
+    "leakage_density_lod2",
+    "leakage_density_variance_lod2",
+    "raw_contrast",
+)
+# A record at one diameter serves a star within this relative tolerance of it
+# (plus the absolute floor): the leakage excess grows as the diameter squared.
+_SINGLE_DIAMETER_RTOL = 1e-3
+_SINGLE_DIAMETER_ATOL = 1e-6
+# Slack, as a fraction of the largest tabulated diameter, on the table's range.
+_DIAMETER_RANGE_RTOL = 1e-6
 _QUINTIC_PAD = 48
 
 
@@ -1287,6 +1301,65 @@ def ring_symmetrized(image, grid=None, n_theta=None):
     return replace(image, data=symmetric, grid=grid)
 
 
+def _require(ok, value, message):
+    """Return ``value`` when ``ok`` holds everywhere, else raise ``message``.
+
+    Concrete inputs raise ``ValueError``; traced inputs raise at run time
+    through ``equinox.error_if``, so the check survives ``jit`` and ``vmap``.
+    """
+    if isinstance(ok, jax.core.Tracer) or isinstance(value, jax.core.Tracer):
+        return eqx.error_if(jnp.asarray(value), ~jnp.all(ok), message)
+    if not np.all(np.asarray(ok)):
+        raise ValueError(message)
+    return value
+
+
+def _diameter_abscissa(diameters):
+    """Spline abscissa of a diameter axis: a zero diameter is nudged to float32 eps.
+
+    The nudge matches the one the stellar map interpolation applies, so the
+    leakage at a diameter between knots is read with the rule the image route
+    reads the map with.
+    """
+    x = np.array(diameters, dtype=float)
+    x[x == 0] = np.finfo(np.float32).eps
+    return x
+
+
+def _diameter_spline_basis(diameters):
+    """Cubic-spline basis of a diameter axis: coefficients for each unit sample.
+
+    Returns an array of shape ``(K - 1, 4, K)``: the polynomial coefficients,
+    highest power first, of the not-a-knot spline through the ``k``-th unit
+    sample, on each of the ``K - 1`` intervals. A spline is linear in its
+    samples, so the weights of a read at one diameter are these polynomials
+    evaluated there, and a read is a weighted sum of the K samples.
+    """
+    x = _diameter_abscissa(diameters)
+    if len(x) == 1:
+        return None
+    return np.ascontiguousarray(CubicSpline(x, np.eye(len(x))).c.transpose(1, 0, 2))
+
+
+def _diameter_weights(diameters, basis, diameter):
+    """Spline weights of the K tabulated diameters at ``diameter``, shape (..., K)."""
+    traced = (jax.Array, jax.core.Tracer)
+    xp = jnp if isinstance(diameter, traced) or isinstance(diameters, traced) else np
+    # Under JAX the arrays take the default float dtype, so float32 mode does not warn.
+    dtype = jnp.result_type(float) if xp is jnp else float
+    if isinstance(diameters, (np.ndarray, *traced)):
+        diameters = diameters.astype(dtype)
+    if isinstance(basis, (np.ndarray, *traced)):
+        basis = basis.astype(dtype)
+    x = xp.asarray(diameters)
+    x = xp.where(x == 0, np.finfo(np.float32).eps, x)
+    d = xp.asarray(diameter)
+    i = xp.clip(xp.searchsorted(x, d, side="right") - 1, 0, len(x) - 2)
+    dx = (d - x[i])[..., None]
+    c = xp.asarray(basis)[i]
+    return ((c[..., 0, :] * dx + c[..., 1, :]) * dx + c[..., 2, :]) * dx + c[..., 3, :]
+
+
 class PerformanceCurves(eqx.Module):
     """Frozen photometry on one separation axis; all fractions are absolute.
 
@@ -1304,36 +1377,49 @@ class PerformanceCurves(eqx.Module):
         core_area_variance_lod2: Pixel area times the sum of squared weights, in
             (lambda/D)^2, shape (S,).
         leakage_fraction: Stellar per-pixel fractions integrated with the
-            weights, shape (S,).
+            weights, shape (K, S): one profile per stellar diameter.
         leakage_fraction_variance: Stellar fractions integrated with squared
-            weights, shape (S,).
+            weights, shape (K, S).
         leakage_density_lod2: ``leakage_fraction / core_area_lod2`` in
             1 / (lambda/D)^2 for aperture_mean and aperture_ring_mean; the radial
             azimuthal point-sample mean per unit area for azimuthal_ring_mean.
-            These differ in general. Shape (S,).
+            These differ in general. Shape (K, S).
         leakage_density_variance_lod2: Variance leakage per variance area for the
             aperture rules, or the same azimuthal density for
-            azimuthal_ring_mean. Shape (S,).
+            azimuthal_ring_mean. Shape (K, S).
         raw_contrast: ``leakage_density_lod2 * A / tau``, dimensionless, with 1e20
-            when tau <= 0. Shape (S,).
+            when tau <= 0. Shape (K, S).
         iwa_lod: First half-maximum-throughput crossing of PCHIP, in lambda/D; if
             no crossing exists, the first positive-throughput separation (NaN for
             an all-zero curve).
         data_extent_lod: Minimum array half-width in lambda/D, not an outer
             working angle.
         leakage_rule: The rule that produced the leakage fields (see below).
-        stellar_diameter_lod: Optional provenance, a diameter in lambda/D of the
-            stellar lod frame.
+        stellar_diameters_lod: The K stellar diameters, in lambda/D of ``frame``,
+            increasing, that the leakage fields are tabulated at, or None for one
+            profile of unknown diameter.
         interpolation: Immutable quantity-to-space mapping. PCHIP within the
             sampled interval and linear end-segment tails in that same space.
             The tails only continue the interpolant; the record holds data where
             :meth:`supported` is True. Exact zeros use a 1e-300 floor for log
             interpolation and remain zero at their knots.
 
-    Every field is a function of separation only. For a stellar map that is not
-    rotationally symmetric (a 2D product) the leakage is therefore a reduction
-    over position angle, not the leakage at a planet's own position angle. The
-    rules, by ``leakage_rule``:
+    Throughput and core area are functions of separation. The leakage fields
+    and ``raw_contrast`` are functions of separation and of the stellar
+    diameter: ``evaluate`` reads them at a diameter, interpolating the K
+    profiles with a cubic spline of the logarithm in diameter, the rule the
+    stellar map itself is interpolated with. A record of K > 1 diameters
+    requires the diameter at every leakage read and raises outside the
+    tabulated range; reading it at zero diameter is an explicit choice, not a
+    default. A record of one profile serves a star within ``1e-3`` of the
+    profile's diameter (relative, with an absolute floor of ``1e-6``) and
+    raises for any other; a profile of unknown diameter (None) serves any star
+    and the caller vouches for it.
+
+    At one diameter every field is a function of separation only. For a stellar
+    map that is not rotationally symmetric (a 2D product) the leakage is therefore
+    a reduction over position angle, not the leakage at a planet's own position
+    angle. The rules, by ``leakage_rule``:
 
     - ``aperture_mean``: the exact-coverage aperture of ``rule`` read at (s, 0),
       the +x axis. It is the same number at every angle for a rotationally
@@ -1373,7 +1459,8 @@ class PerformanceCurves(eqx.Module):
     iwa_lod: float
     data_extent_lod: float = eqx.field(static=True)
     leakage_rule: str = eqx.field(static=True)
-    stellar_diameter_lod: float | None = eqx.field(static=True)
+    stellar_diameters_lod: np.ndarray | None
+    _diameter_basis: np.ndarray | None
     _fits: dict
 
     interpolation: ClassVar = MappingProxyType(
@@ -1403,12 +1490,13 @@ class PerformanceCurves(eqx.Module):
         iwa_lod,
         data_extent_lod,
         leakage_rule="aperture_mean",
-        stellar_diameter_lod=None,
+        stellar_diameters_lod=None,
         *,
         throughput_variance,
         core_area_variance_lod2,
         leakage_fraction_variance,
         leakage_density_variance_lod2,
+        _diameter_basis=None,
         _fits=None,
     ):
         """Validate measured arrays and prepare one set of PCHIP coefficients.
@@ -1419,22 +1507,26 @@ class PerformanceCurves(eqx.Module):
             rule: Aperture rule, Circular or HalfMaximum.
             throughput: Planet flux fraction in the aperture, shape (S,).
             core_area_lod2: Aperture area in lambda/D squared, shape (S,).
-            leakage_fraction: Stellar flux fraction in the aperture, shape (S,).
+            leakage_fraction: Stellar flux fraction in the aperture, shape (K, S),
+                or (S,) for one profile.
             leakage_density_lod2: Leakage per unit area in 1 / (lambda/D)^2, shape
-                (S,).
-            raw_contrast: Dimensionless raw contrast, shape (S,).
+                (K, S) or (S,).
+            raw_contrast: Dimensionless raw contrast, shape (K, S) or (S,).
             iwa_lod: Inner working angle in lambda/D.
             data_extent_lod: Minimum array half-width in lambda/D.
             leakage_rule: One of ``LEAKAGE_RULES``.
-            stellar_diameter_lod: Optional stellar diameter in lambda/D, provenance
-                only.
+            stellar_diameters_lod: The diameters in lambda/D of ``frame`` the leakage
+                rows are tabulated at: increasing, nonnegative, one per row. A
+                scalar is one profile of that diameter; None is one profile of
+                unknown diameter.
             throughput_variance: Planet flux fraction with squared weights, shape (S,).
             core_area_variance_lod2: Area with squared weights in lambda/D squared,
                 shape (S,).
             leakage_fraction_variance: Stellar flux fraction with squared weights,
-                shape (S,).
+                shape (K, S) or (S,).
             leakage_density_variance_lod2: Variance leakage per variance area, shape
-                (S,).
+                (K, S) or (S,).
+            _diameter_basis: Carried through ``dataclasses.replace``; leave None.
             _fits: Precomputed fits carried through ``dataclasses.replace``; leave
                 None.
         """
@@ -1446,9 +1538,32 @@ class PerformanceCurves(eqx.Module):
         self.separation_lod = x
         self.frame, self.rule = frame, rule
         self.iwa_lod, self.data_extent_lod = float(iwa_lod), float(data_extent_lod)
-        self.leakage_rule, self.stellar_diameter_lod = (
-            leakage_rule,
-            stellar_diameter_lod,
+        self.leakage_rule = leakage_rule
+        if stellar_diameters_lod is None:
+            diameters = None
+        else:
+            traced = isinstance(stellar_diameters_lod, jax.core.Tracer)
+            diameters = (
+                jnp.atleast_1d(stellar_diameters_lod)
+                if traced
+                else np.atleast_1d(np.array(stellar_diameters_lod, dtype=float))
+            )
+            if diameters.ndim != 1:
+                raise ValueError("stellar_diameters_lod must be a scalar or a vector")
+            if not traced and (
+                not np.all(np.isfinite(diameters))
+                or diameters[0] < 0
+                or np.any(np.diff(diameters) <= 0)
+            ):
+                raise ValueError(
+                    "stellar_diameters_lod must be increasing, finite and nonnegative"
+                )
+        n_diameters = 1 if diameters is None else len(diameters)
+        self.stellar_diameters_lod = diameters
+        self._diameter_basis = (
+            None
+            if diameters is None or n_diameters == 1
+            else _diameter_spline_basis(np.asarray(diameters, dtype=float))
         )
         values = dict(
             throughput=throughput,
@@ -1465,26 +1580,47 @@ class PerformanceCurves(eqx.Module):
         self._fits = {}
         for name, value in values.items():
             a = np.array(value, dtype=float, copy=True)
-            if a.shape != x.shape or not np.all(np.isfinite(a)):
-                raise ValueError(f"{name} must be finite and have shape {x.shape}")
+            by_diameter = name in DIAMETER_QUANTITIES
+            if by_diameter and a.ndim == 1:
+                a = a[None]
+            shape = (n_diameters, *x.shape) if by_diameter else x.shape
+            if a.shape != shape or not np.all(np.isfinite(a)):
+                raise ValueError(f"{name} must be finite and have shape {shape}")
             a.flags.writeable = False
             setattr(self, name, a)
-            self._fits[name] = _profile_fit(x, a, self.interpolation[name])
+            self._fits[name] = (
+                tuple(_profile_fit(x, row, self.interpolation[name]) for row in a)
+                if by_diameter
+                else _profile_fit(x, a, self.interpolation[name])
+            )
 
-    def evaluate(self, name, separation_lod):
+    def evaluate(self, name, separation_lod, stellar_diameter_lod=None):
         """Evaluate one named quantity using its declared interpolation space.
 
         Args:
             name: Quantity name, a key of ``interpolation``.
             separation_lod: Separations in lambda/D, scalar or array.
+            stellar_diameter_lod: Stellar diameter in lambda/D of this record's
+                frame, scalar or broadcastable with ``separation_lod``; may be
+                traced. Required for the leakage quantities of a record
+                tabulated at several diameters, optional for one profile, and
+                not accepted for throughput and core area. A diameter outside
+                the table (or, for one profile, away from its diameter) raises.
 
         Returns:
-            Interpolated values, shaped like ``separation_lod``. Outside the
-            samples these are end-segment continuations, not data: read them only
-            where :meth:`supported` is True.
+            Interpolated values, shaped like ``separation_lod`` (broadcast with
+            the diameter). Outside the samples these are end-segment
+            continuations, not data: read them only where :meth:`supported` is
+            True.
         """
         if name not in self.interpolation:
             raise ValueError(f"quantity {name!r} is not present in this record")
+        if name in DIAMETER_QUANTITIES:
+            return self._evaluate_by_diameter(
+                name, separation_lod, stellar_diameter_lod
+            )
+        if stellar_diameter_lod is not None:
+            raise ValueError(f"{name} does not depend on the stellar diameter")
         return _evaluate_profile(
             self.separation_lod,
             getattr(self, name),
@@ -1493,6 +1629,63 @@ class PerformanceCurves(eqx.Module):
             separation_lod,
             exact_knots=False,
         )
+
+    def _evaluate_by_diameter(self, name, separation_lod, stellar_diameter_lod):
+        """Read a leakage quantity at a separation and a stellar diameter."""
+        rows = getattr(self, name)
+        fits = self._fits[name]
+        diameters = self.stellar_diameters_lod
+        if isinstance(diameters, (jax.Array, jax.core.Tracer)):
+            # A record built under x64 keeps float64 leaves; read the active dtype.
+            diameters = diameters.astype(jnp.result_type(float))
+        n_rows = rows.shape[0]
+
+        def profile(k, q):
+            return _evaluate_profile(
+                self.separation_lod,
+                rows[k],
+                fits[k],
+                self.interpolation[name],
+                q,
+                exact_knots=False,
+            )
+
+        if n_rows == 1:
+            value = profile(0, separation_lod)
+            if stellar_diameter_lod is None or diameters is None:
+                return value
+            # The checked value is the result, so the check survives jit.
+            return _require(
+                abs(stellar_diameter_lod - diameters[0])
+                <= _SINGLE_DIAMETER_RTOL * diameters[0] + _SINGLE_DIAMETER_ATOL,
+                value,
+                "this record holds one profile, at one stellar diameter; a star "
+                "of a different diameter needs a record tabulated over diameter",
+            )
+        if stellar_diameter_lod is None:
+            raise ValueError(
+                f"{name} of a record tabulated over diameter needs stellar_diameter_lod"
+            )
+        traced = (jax.Array, jax.core.Tracer)
+        use_jax = isinstance(separation_lod, traced) or isinstance(
+            stellar_diameter_lod, traced
+        )
+        xp = jnp if use_jax else np
+        q, d = xp.broadcast_arrays(
+            xp.asarray(separation_lod), xp.asarray(stellar_diameter_lod)
+        )
+        slack = _DIAMETER_RANGE_RTOL * diameters[-1]
+        d = _require(
+            (d >= diameters[0] - slack) & (d <= diameters[-1] + slack),
+            d,
+            "the stellar diameter is outside the tabulated range of the record",
+        )
+        per_row = xp.stack([profile(k, q) for k in range(n_rows)], axis=-1)
+        weights = _diameter_weights(diameters, self._diameter_basis, d)
+        tiny = np.finfo(per_row.dtype).tiny
+        logs = xp.log(xp.maximum(per_row, tiny))
+        value = xp.exp(xp.sum(weights * logs, axis=-1))
+        return xp.where(xp.all(per_row <= 0, axis=-1), 0.0, value)
 
     def supported(self, separation_lod):
         """Report where the record holds data for this record's aperture rule.
@@ -1542,6 +1735,7 @@ def performance_curves(
     source_positions_lod=None,
     leakage_rule="aperture_mean",
     stellar_diameter_lod=None,
+    stellar_diameters_lod=None,
 ) -> PerformanceCurves:
     """Tabulate one aperture rule on one axis.
 
@@ -1557,8 +1751,12 @@ def performance_curves(
     Circular's ``centre`` chooses the supplied source position (default) or
     its refined local peak; every field, including IWA, uses that same rule.
 
-    ``stellar_diameter_lod`` records the provenance of the already evaluated map;
-    it does not broaden or reevaluate that map. Geometric rules resolve
+    ``stellar_diameter_lod`` records the diameter of the one stellar map supplied;
+    it does not broaden or reevaluate that map, and the record then serves only
+    a star of that diameter. To tabulate the leakage over stellar diameter, give
+    ``stellar`` a leading diameter axis, one map per entry of
+    ``stellar_diameters_lod``; the record then holds one leakage profile per
+    diameter and reads any diameter between them. Geometric rules resolve
     coverage at CORE_OVERSAMPLE subpixels per side.
 
     ``leakage_rule`` is ``aperture_mean`` (the +x aperture), ``aperture_ring_mean``
@@ -1569,15 +1767,20 @@ def performance_curves(
     Args:
         offaxis: Function of a separation in lambda/D returning the off-axis source
             Image on the +x axis.
-        stellar: Stellar-flux Image, possibly on a distinct grid and frame.
+        stellar: Stellar-flux Image, possibly on a distinct grid and frame; with
+            ``stellar_diameters_lod`` its data are ``(K, ny, nx)``, one map per
+            diameter.
         rule: Aperture rule, Circular or HalfMaximum.
         separations_lod: Increasing nonnegative separations in lambda/D, required.
         source_positions_lod: Optional (x, y) source position in lambda/D for each
             separation; ``(s, 0)`` by default.
         leakage_rule: ``"aperture_mean"``, ``"aperture_ring_mean"`` or the
             deprecated ``"azimuthal_ring_mean"``.
-        stellar_diameter_lod: Optional stellar diameter in lambda/D, recorded as
-            provenance only.
+        stellar_diameter_lod: Optional diameter in lambda/D of the one stellar
+            map supplied, recorded for the check on later reads.
+        stellar_diameters_lod: Increasing diameters in lambda/D of the stellar
+            Image's frame, one per map of a diameter-axis ``stellar``; excludes
+            ``stellar_diameter_lod``.
 
     Returns:
         The photometric record on the separation axis.
@@ -1598,6 +1801,7 @@ def performance_curves(
         source_positions_lod=source_positions_lod,
         leakage_rule=leakage_rule,
         stellar_diameter_lod=stellar_diameter_lod,
+        stellar_diameters_lod=stellar_diameters_lod,
     )
 
 
@@ -1610,13 +1814,36 @@ def _performance_curves(
     source_positions_lod=None,
     leakage_rule="aperture_mean",
     stellar_diameter_lod=None,
+    stellar_diameters_lod=None,
     oversample=CORE_OVERSAMPLE,
 ):
 
     if not isinstance(rule, (Circular, HalfMaximum)):
         raise TypeError("rule must be Circular or HalfMaximum")
-    _validate_photometry_image(stellar)
-    stellar = stellar.integrated()
+    if stellar_diameters_lod is None:
+        stellars = [stellar]
+    else:
+        if stellar_diameter_lod is not None:
+            raise ValueError(
+                "give stellar_diameter_lod or stellar_diameters_lod, not both"
+            )
+        diameters = np.asarray(stellar_diameters_lod, dtype=float)
+        if (
+            diameters.ndim != 1
+            or stellar.data.ndim != 3
+            or stellar.data.shape[0] != len(diameters)
+        ):
+            raise ValueError(
+                "stellar must hold one map per entry of stellar_diameters_lod, "
+                "shape (K, ny, nx)"
+            )
+        stellars = [
+            replace(stellar, data=stellar.data[k], leading_axes=())
+            for k in range(len(diameters))
+        ]
+    for image in stellars:
+        _validate_photometry_image(image)
+    stellars = [image.integrated() for image in stellars]
     if leakage_rule not in LEAKAGE_RULES:
         raise ValueError(f"unknown leakage_rule; expected one of {LEAKAGE_RULES}")
     if separations_lod is None:
@@ -1641,10 +1868,18 @@ def _performance_curves(
     if not images:
         raise ValueError("no off-axis source positions lie inside the image")
     grid = images[0].grid
-    tau, area, leakage = [], [], []
+    sf, pf = stellars[0].grid.frame, grid.frame
+    # Stellar lambda/D of the supplied maps per lambda/D of the planet's frame.
+    angular_ratio = pf.lod_to_arcsec(pf.reference_wavelength_nm) / sf.lod_to_arcsec(
+        sf.reference_wavelength_nm
+    )
+    tau, area = [], []
+    leakage = [[] for _ in stellars]
     with jax.enable_x64():
         symmetric = (
-            ring_symmetrized(stellar, grid).data if leakage_rule == RING_RULE else None
+            [ring_symmetrized(image, grid).data for image in stellars]
+            if leakage_rule == RING_RULE
+            else None
         )
         for psf, position in zip(images, locations, strict=True):
             if psf.grid != grid:
@@ -1652,39 +1887,52 @@ def _performance_curves(
             fine, weights, sy, sx, factor = _rule_samples(
                 rule, psf, position, oversample
             )
-            star = _stellar_samples(
-                stellar.data, stellar.grid, grid, sy, sx, weights.shape, factor
-            )
             tau.append(float(jnp.sum(fine * weights) / factor**2))
             area.append(float(jnp.sum(weights)) * grid.pixel_area / factor**2)
             if symmetric is None:
-                leakage.append(float(jnp.sum(star * weights) / factor**2))
+                for row, image in zip(leakage, stellars, strict=True):
+                    star = _stellar_samples(
+                        image.data, image.grid, grid, sy, sx, weights.shape, factor
+                    )
+                    row.append(float(jnp.sum(star * weights) / factor**2))
             else:
                 # Native exact-coverage weights on the symmetrized map; the
                 # band-limited samples ripple on its ring edges.
                 native = _rule_weights(rule, psf, position, oversample)
-                leakage.append(float(jnp.sum(native * symmetric)))
-        tau, area, leakage = map(np.asarray, (tau, area, leakage))
+                for row, ring in zip(leakage, symmetric, strict=True):
+                    row.append(float(jnp.sum(native * ring)))
+        tau, area, leakage = np.asarray(tau), np.asarray(area), np.asarray(leakage)
         density = np.divide(leakage, area, out=np.zeros_like(leakage), where=area > 0)
         if leakage_rule == "azimuthal_ring_mean":
-            sf, pf = stellar.grid.frame, grid.frame
-            angular_ratio = pf.lod_to_arcsec(
-                pf.reference_wavelength_nm
-            ) / sf.lod_to_arcsec(sf.reference_wavelength_nm)
-            density = (
-                np.asarray(
-                    azimuthal_mean_profile(
-                        jnp.asarray(stellar.data, dtype=jnp.float64),
-                        (stellar.grid.center_y, stellar.grid.center_x),
-                        jnp.asarray(separations * angular_ratio / stellar.grid.step),
+            density = np.stack(
+                [
+                    np.asarray(
+                        azimuthal_mean_profile(
+                            jnp.asarray(image.data, dtype=jnp.float64),
+                            (image.grid.center_y, image.grid.center_x),
+                            jnp.asarray(separations * angular_ratio / image.grid.step),
+                        )
                     )
-                )
-                / stellar.grid.pixel_area
-                * angular_ratio**2
+                    / image.grid.pixel_area
+                    * angular_ratio**2
+                    for image in stellars
+                ]
             )
     contrast = np.divide(
-        density * area, tau, out=np.full_like(tau, 1e20), where=tau > 0
+        density * area,
+        tau,
+        out=np.full_like(density, 1e20),
+        where=np.broadcast_to(tau > 0, density.shape),
     )
+    if stellar_diameters_lod is None:
+        diameters = (
+            None
+            if stellar_diameter_lod is None
+            else np.asarray([stellar_diameter_lod], dtype=float) / angular_ratio
+        )
+    else:
+        # The record's axis is in lambda/D of its own (planet) frame.
+        diameters = np.asarray(stellar_diameters_lod, dtype=float) / angular_ratio
     return PerformanceCurves(
         separations,
         grid.frame,
@@ -1697,7 +1945,7 @@ def _performance_curves(
         _iwa(separations, tau),
         min(grid.shape) * grid.step / 2,
         leakage_rule,
-        stellar_diameter_lod,
+        diameters,
         throughput_variance=tau,
         core_area_variance_lod2=area,
         leakage_fraction_variance=leakage,

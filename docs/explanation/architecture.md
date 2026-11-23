@@ -257,7 +257,8 @@ flux collected by each pixel.
 on one lambda/D axis for one aperture rule, built by `performance_curves`.
 No simulation reads it from the coronagraph slot; a provider that stores records
 hands them out as data, and `record.evaluate(name, separation_lod)` is the one
-read. `leakage_density_lod2` is already per square lambda/D; no pixel-area
+read; the leakage fields and `raw_contrast` also take `stellar_diameter_lod` (see
+below). `leakage_density_lod2` is already per square lambda/D; no pixel-area
 correction belongs in consumers. Post-processing may divide that density, or raw
 contrast, by `ppf`; `optixstuff.PostProcessing.speckle_residual_fraction` owns the
 residual. No noise floor is a coronagraph property.
@@ -266,8 +267,12 @@ return native samples and product metadata. An explicit grid requests pixel
 integration, including at native pitch.
 The record's contrast identity holds at measured knots; `PerformanceCurves`
 interpolates the five fields in their declared spaces independently between knots.
-Finite stellar diameter is an image capability (`stellar_map`); a record keeps the
-diameter of the stellar image used to prepare it.
+The leakage fields and `raw_contrast` carry one profile per stellar diameter of
+the product (`stellar_diameters_lod`, in the record's lambda/D, shape `(K, S)`),
+so a star's size is part of the read: `evaluate` interpolates the log profile
+between diameters with the cubic spline the image route applies to the stellar
+map, and raises outside the tabulated range. A record prepared from one stellar
+image holds one profile and serves only a star of that diameter.
 `bandpass` is a `optixstuff.spectral.Band` or `None` for unknown coverage;
 each child of a multiband model must declare its interval. The first child
 covering the requested wavelength supplies the model, including at a shared

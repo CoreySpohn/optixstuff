@@ -307,7 +307,10 @@ def test_exact_binary_moments():
             ("leakage_density_lod2", "leakage_density_variance_lod2", 0.375 / 0.81),
         ):
             np.testing.assert_allclose(
-                getattr(binary, mean), [expected], rtol=32 * np.finfo(float).eps, atol=0
+                np.ravel(getattr(binary, mean)),
+                [expected],
+                rtol=32 * np.finfo(float).eps,
+                atol=0,
             )
             np.testing.assert_array_equal(
                 getattr(binary, variance), getattr(binary, mean)
@@ -405,7 +408,7 @@ def test_geometric_rules_preserve_primitive_curves():
                 )
             parent_mean = azimuthal_mean_profile(star.data, (24.0, 24.0), seps / 0.25)
             np.testing.assert_allclose(
-                record.leakage_density_lod2, parent_mean / 0.25**2, rtol=2e-12
+                record.leakage_density_lod2[0], parent_mean / 0.25**2, rtol=2e-12
             )
 
 
@@ -428,7 +431,7 @@ def test_absolute_leakage_sampling():
                 source, star, rule, separations_lod=[sep], oversample=factor
             )
             np.testing.assert_allclose(
-                record.leakage_fraction, record.throughput / 8, rtol=2e-14
+                record.leakage_fraction[0], record.throughput / 8, rtol=2e-14
             )
         small_grid = PixelGrid.focal(5, 0.25, grid.frame)
         small_star = Image(
@@ -441,7 +444,7 @@ def test_absolute_leakage_sampling():
         outside = performance_curves(source, small_star, rule, separations_lod=[2.0])
         # The disk's nearest edge is 1.3 lod, beyond the 0.625 lod stellar edge.
         # Zero extension must not wrap the opposite side of the stellar image.
-        assert outside.leakage_fraction[0] == 0.0
+        assert outside.leakage_fraction[0, 0] == 0.0
 
 
 def test_leakage_mean_conventions_and_disconnected_core():
@@ -599,4 +602,257 @@ def test_azimuthal_ring_mean_is_deprecated_but_works():
         with pytest.raises(ValueError, match="unknown leakage_rule"):
             performance_curves(
                 source, star, Circular(0.7), separations_lod=[2.0], leakage_rule="x"
+            )
+
+
+# A star's leakage depends on its diameter: the record tabulates it over a
+# diameter axis and reads between the tabulated diameters.
+DIAMETERS = np.array([0.0, 0.01, 0.03, 0.1, 0.3, 1.0])
+
+
+def _diameter_record(diameters=DIAMETERS, **kwargs):
+    """Uniform stellar maps whose level grows with the diameter, on a test source.
+
+    Plane ``k`` holds ``1e-8 (1 + 40 d_k**2)`` in every pixel, so the leakage
+    of an aperture of uniform coverage is that level times the aperture's
+    pixel count.
+    """
+    source, _, _, grid = _gaussian_source()
+    levels = 1e-8 * (1 + 40 * np.asarray(diameters) ** 2)
+    stars = Image(
+        levels[:, None, None] * np.ones(grid.shape),
+        grid,
+        ("diameter",),
+        Measure.integral(),
+        "stellar_flux_fraction",
+    )
+    return levels, performance_curves(
+        source,
+        stars,
+        Circular(0.7),
+        separations_lod=[0.5, 1.0, 1.5, 2.0],
+        stellar_diameters_lod=diameters,
+        **kwargs,
+    )
+
+
+def test_record_tabulates_the_leakage_at_each_diameter():
+    """Fails if a leakage profile is read from the wrong diameter plane.
+
+    Each row of the record is the aperture sum of its own plane; the aperture
+    is covered entirely by the uniform map, so the sum is the level times the
+    aperture's pixel count, floating-point exact to 256 eps. The read at a
+    knot is the spline weights' roundoff: 1.6e-9 measured at a zero diameter,
+    whose abscissa is nudged to float32 eps, so 1e-8 bounds it.
+    """
+    with jax.enable_x64():
+        levels, record = _diameter_record()
+        assert record.leakage_fraction.shape == (len(DIAMETERS), 4)
+        np.testing.assert_array_equal(record.stellar_diameters_lod, DIAMETERS)
+        pixels = record.core_area_lod2 / 0.25**2
+        np.testing.assert_allclose(
+            record.leakage_fraction,
+            levels[:, None] * pixels,
+            rtol=256 * np.finfo(float).eps,
+            atol=0,
+        )
+        for k, diameter in enumerate(DIAMETERS):
+            np.testing.assert_allclose(
+                record.evaluate("leakage_fraction", record.separation_lod, diameter),
+                record.leakage_fraction[k],
+                rtol=1e-8,
+            )
+
+
+def test_record_reads_between_diameters_with_the_stellar_map_rule():
+    """Fails if the diameter is interpolated by a rule other than the map's.
+
+    The stellar map is read with a cubic spline of the logarithm in diameter
+    (a zero diameter nudged to float32 eps). The reference applies scipy's
+    spline to the tabulated rows. 1e-12 is float64 roundoff of the weights.
+    A linear rule in place of the spline differs by more than 1e-3 at 0.2,
+    which the check requires, so a switch to it fails.
+    """
+    from scipy.interpolate import CubicSpline
+
+    with jax.enable_x64():
+        _, record = _diameter_record()
+        x = DIAMETERS.copy()
+        x[0] = np.finfo(np.float32).eps
+        spline = CubicSpline(x, np.log(record.leakage_density_lod2))
+        for diameter in (0.002, 0.02, 0.05, 0.2, 0.7):
+            expected = np.exp(spline(diameter))
+            read = record.evaluate(
+                "leakage_density_lod2", record.separation_lod, diameter
+            )
+            np.testing.assert_allclose(read, expected, rtol=1e-12)
+        linear = np.array(
+            [
+                np.interp(0.2, DIAMETERS, record.leakage_density_lod2[:, s])
+                for s in range(4)
+            ]
+        )
+        read = record.evaluate("leakage_density_lod2", record.separation_lod, 0.2)
+        assert np.all(abs(linear / read - 1) > 1e-3)
+
+
+def test_record_reads_every_leakage_quantity_at_a_diameter():
+    """Fails if a diameter-dependent quantity is left at the first diameter."""
+    with jax.enable_x64():
+        _, record = _diameter_record()
+        for name in (
+            "leakage_fraction",
+            "leakage_fraction_variance",
+            "leakage_density_lod2",
+            "leakage_density_variance_lod2",
+            "raw_contrast",
+        ):
+            wide = record.evaluate(name, 1.0, 0.7)
+            point = record.evaluate(name, 1.0, 0.0)
+            assert wide > 1.5 * point, name
+        for name in ("throughput", "core_area_lod2"):
+            with pytest.raises(ValueError, match="does not depend"):
+                record.evaluate(name, 1.0, 0.1)
+
+
+def test_record_over_diameter_refuses_a_silent_read():
+    """Fails if a read without, or outside, the tabulated diameters returns a value."""
+    with jax.enable_x64():
+        _, record = _diameter_record()
+        with pytest.raises(ValueError, match="needs stellar_diameter_lod"):
+            record.evaluate("leakage_density_lod2", 1.0)
+        for outside in (-0.01, 1.01):
+            with pytest.raises(ValueError, match="outside the tabulated range"):
+                record.evaluate("leakage_density_lod2", 1.0, outside)
+        read = jax.jit(lambda d: record.evaluate("leakage_density_lod2", 1.0, d))
+        with pytest.raises(Exception, match="outside the tabulated range"):
+            read(jnp.asarray(2.0))
+        assert np.isfinite(read(jnp.asarray(0.5)))
+
+
+def test_record_of_one_profile_serves_only_its_own_star():
+    """Fails if a profile of one diameter is read for a star of another.
+
+    The record serves a star within 1e-3 of its diameter (relative; the
+    excess leakage grows as the square of the diameter, so 2e-3 of the excess).
+    """
+    with jax.enable_x64():
+        source, _, _, grid = _gaussian_source()
+        star = Image(
+            np.full(grid.shape, 1e-8),
+            grid,
+            (),
+            Measure.integral(),
+            "stellar_flux_fraction",
+        )
+        point = performance_curves(
+            source, star, Circular(0.7), separations_lod=[1.0], stellar_diameter_lod=0.0
+        )
+        sized = performance_curves(
+            source, star, Circular(0.7), separations_lod=[1.0], stellar_diameter_lod=0.3
+        )
+        unknown = performance_curves(source, star, Circular(0.7), separations_lod=[1.0])
+        assert point.leakage_fraction.shape == (1, 1)
+        value = sized.evaluate("leakage_fraction", 1.0, 0.3 * (1 + 5e-4))
+        np.testing.assert_array_equal(value, sized.leakage_fraction[0])
+        for record, wrong in ((point, 0.02), (sized, 0.0), (sized, 0.31)):
+            with pytest.raises(ValueError, match="one profile"):
+                record.evaluate("leakage_fraction", 1.0, wrong)
+        # No diameter given, or a profile of unknown diameter: the caller vouches.
+        np.testing.assert_array_equal(
+            sized.evaluate("leakage_fraction", 1.0), sized.leakage_fraction[0]
+        )
+        np.testing.assert_array_equal(
+            unknown.evaluate("leakage_fraction", 1.0, 0.5), unknown.leakage_fraction[0]
+        )
+        assert unknown.stellar_diameters_lod is None
+        with pytest.raises(Exception, match="one profile"):
+            jax.jit(lambda d: sized.evaluate("leakage_fraction", 1.0, d))(
+                jnp.asarray(0.0)
+            )
+
+
+def test_record_gradient_in_the_stellar_diameter():
+    """Fails if the diameter read is not differentiable, or its slope is wrong.
+
+    Central differences at h = 1e-6 of a float64 read bound the slope to 1e-6
+    relative; the slope is nonzero (the leakage grows with the diameter).
+    """
+    with jax.enable_x64():
+        _, record = _diameter_record()
+
+        def read(d):
+            return record.evaluate("leakage_density_lod2", 1.0, d)
+
+        for d in (0.004, 0.07, 0.5):
+            slope = jax.grad(read)(d)
+            h = 1e-6
+            numeric = (read(d + h) - read(d - h)) / (2 * h)
+            assert np.isfinite(slope) and slope > 0
+            np.testing.assert_allclose(slope, numeric, rtol=1e-6)
+        batch = jax.vmap(read)(jnp.array([0.0, 0.05, 0.9]))
+        assert batch.shape == (3,) and bool(jnp.all(jnp.diff(batch) > 0))
+
+
+def test_record_diameters_are_in_the_planet_frame():
+    """Fails if the diameter axis keeps the stellar frame's lambda/D.
+
+    A stellar map on a frame of twice the aperture has a lambda/D half as
+    large in arcsec, so a diameter of one tabulated unit there spans two of
+    the planet frame's units, to float rounding.
+    """
+    with jax.enable_x64():
+        source, *_ = _gaussian_source()
+        stellar_grid = PixelGrid.focal(49, 0.25, Frame(500, 3, "circumscribed"))
+        star = Image(
+            np.ones((2, *stellar_grid.shape)) * 1e-8,
+            stellar_grid,
+            ("diameter",),
+            Measure.integral(),
+            "stellar_flux_fraction",
+        )
+        record = performance_curves(
+            source,
+            star,
+            Circular(0.7),
+            separations_lod=[1.0],
+            stellar_diameters_lod=[0.0, 1.0],
+        )
+        np.testing.assert_allclose(record.stellar_diameters_lod, [0.0, 2.0], rtol=1e-14)
+
+
+def test_record_diameter_axis_validation():
+    """Fails if a malformed diameter axis or map stack is accepted."""
+    source, _, _, grid = _gaussian_source()
+    plane = np.full(grid.shape, 1e-8)
+    two = Image(
+        np.stack([plane, plane]),
+        grid,
+        ("diameter",),
+        Measure.integral(),
+        "stellar_flux_fraction",
+    )
+    one = Image(plane, grid, (), Measure.integral(), "stellar_flux_fraction")
+    base = dict(separations_lod=[1.0])
+    with pytest.raises(ValueError, match="one map per entry"):
+        performance_curves(
+            source, two, Circular(0.7), stellar_diameters_lod=[0.0], **base
+        )
+    with pytest.raises(ValueError, match="one map per entry"):
+        performance_curves(
+            source, one, Circular(0.7), stellar_diameters_lod=[0.0, 1.0], **base
+        )
+    with pytest.raises(ValueError, match="not both"):
+        performance_curves(
+            source,
+            two,
+            Circular(0.7),
+            stellar_diameters_lod=[0.0, 1.0],
+            stellar_diameter_lod=0.0,
+            **base,
+        )
+    for bad in ([1.0, 0.0], [-0.1, 1.0], [0.0, np.nan]):
+        with pytest.raises(ValueError, match="increasing"):
+            performance_curves(
+                source, two, Circular(0.7), stellar_diameters_lod=bad, **base
             )
