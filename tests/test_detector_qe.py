@@ -141,3 +141,23 @@ def test_concrete_validation(detector_cls):
         ]:
             with pytest.raises(ValueError, match="QE"):
                 detector_cls(pixel_scale_arcsec=0.01, shape=(1, 1), **kwargs)
+
+
+def test_qe_grid_is_static_and_values_are_leaves():
+    """Exact basis (bitwise): the QE wavelengths are static knots.
+
+    Freeing the QE values leaves the quadrature breaks bitwise unchanged, the
+    only leaf of the curve is the values, and ``eqx.tree_at`` on the grid is
+    refused. Fails if the wavelengths are a leaf a fit could move.
+    """
+    det = ox.Detector(
+        pixel_scale_arcsec=0.01,
+        shape=(1, 1),
+        qe_curve=([400, 600, 800], [0.2, 0.8, 0.4]),
+    )
+    moved = eqx.tree_at(lambda d: d._qe_values, det, jnp.array([0.5, 0.5, 0.5]))
+    np.testing.assert_array_equal(moved.spectral_breaks_nm(), det.spectral_breaks_nm())
+    assert det.spectral_breaks_nm() is det._qe_knots.nm
+    assert not any(leaf is det._qe_knots for leaf in jax.tree.leaves(det))
+    with pytest.raises(TypeError, match="not a leaf"):
+        eqx.tree_at(lambda d: d._qe_knots, det, ox.spectral.Knots([1.0, 2.0]))

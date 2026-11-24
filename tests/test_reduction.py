@@ -510,7 +510,7 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
             np.interp(np.asarray(exact_rule.nodes_nm), knots, values)
         )
 
-        exposure = Exposure(0.0, 0.0, rule, resolution=resolution, reads=("star",))
+        exposure = Exposure(0.0, 0.0, rule, resolution=resolution)
         np.testing.assert_array_equal(
             eqx.filter_jit(
                 lambda e, t: e.resolution.rule(e.quadrature, t).apply(t.values)

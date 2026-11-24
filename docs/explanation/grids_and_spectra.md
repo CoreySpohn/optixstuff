@@ -162,8 +162,21 @@ source that is not one table (a product of two tables) takes the `"fine"`
 kind and is evaluated at `Reduction.fine_nm`. A rule belongs to the full
 quadrature: a route that works band by band computes the node values once and
 carries the rows of each band. `Exposure.resolution` carries the rules beside
-the quadrature, and `Exposure.reads` names the knot leaves they were built
-from.
+the quadrature, and the knot grids they were built from are static, so no fit
+can free them.
+
+A band or a piece narrower than the wavelength tolerance is refused, because
+two edges that close are one wavelength to every comparison above and a rule
+on them would hold coincident nodes. The refusal does not depend on the
+precision: `Quadrature.build` also refuses a piece whose nodes at the
+requested order would collide at float32 resolution (at 450 nm a 16-node piece needs
+about 10 tolerances of width and a 32-node piece about 40; a 4-node piece
+needs less than one), whether or not x64 is
+on. Widen the band, lower the order, or merge breaks that differ by rounding.
+Breaks that chain, each within the tolerance of the next but spanning more
+than one tolerance, are refused too, with the breaks named, since merging them
+would move a break farther than the tolerance. The limit is a resolving power
+of about 2e6 to 4e6.
 
 `Quadrature.monochromatic(wavelength_nm)` represents an already integrated
 rate at one wavelength. Its single node has unit weight. A mean density

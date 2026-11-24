@@ -196,10 +196,20 @@ class Knots(HostGrid):
         return _union((self, *others))
 
 
-@functools.lru_cache(maxsize=256)
+@functools.lru_cache(maxsize=8)
 def _union(grids: tuple[Knots, ...]) -> Knots:
     values = np.concatenate([grid.nm for grid in grids])
     return Knots(_merge_breaks(np.unique(values), np.empty(0)))
+
+
+def _as_grid(grid) -> HostGrid:
+    """A ``HostGrid`` (``Knots`` included) unchanged, else validated ``Knots``.
+
+    A composite table, such as a planet times its star, holds the raw union
+    of its components' knots as a plain ``HostGrid``: its cell edges may lie
+    closer than the wavelength tolerance, which ``Knots`` refuses.
+    """
+    return grid if isinstance(grid, HostGrid) else Knots(grid)
 
 
 def as_knots(knots_nm) -> Knots:
@@ -561,6 +571,11 @@ def _merge_breaks(declared, extra):
     breaks the smallest is kept, so two breaks that differ by rounding (a
     float32 copy of a float64 grid, say) never make a sliver piece. The kept
     value is bitwise one of the inputs.
+
+    Raises:
+        ValueError: If a chain of breaks, each within the tolerance of the
+            next, spans more than one tolerance: collapsing it would move a
+            break by more than the tolerance, so the breaks are named instead.
     """
     values = np.concatenate([declared, extra]).astype(np.float64)
     is_declared = np.concatenate(
@@ -574,6 +589,15 @@ def _merge_breaks(declared, extra):
     for i in range(1, values.size + 1):
         if i == values.size or not close[i - 1]:
             cluster = slice(start, i)
+            if not same_wavelength(values[start], values[i - 1]):
+                raise ValueError(
+                    f"{i - start} breaks from {float(values[start])!r} to "
+                    f"{float(values[i - 1])!r} nm each lie within the wavelength "
+                    f"tolerance of {float(merge_tolerance_nm(values[i - 1])):.3g} "
+                    "nm of the next but span more than one tolerance, so merging "
+                    "them would move a break too far; remove or align the "
+                    "breaks that differ by rounding"
+                )
             first = start + int(np.argmax(is_declared[cluster]))
             kept.append(values[first])
             start = i
@@ -744,7 +768,16 @@ class Quadrature(eqx.Module):
                     legendre[n] = leggauss(n)
                 nodes, unit = legendre[n]
                 length = hi - lo
-                waves.append(lo + length * ((nodes + 1) / 2))
+                piece_nodes = lo + length * ((nodes + 1) / 2)
+                if np.any(np.diff(piece_nodes.astype(np.float32)) <= 0):
+                    raise ValueError(
+                        f"band {band.low_nm:g} to {band.high_nm:g} nm: the "
+                        f"{n} nodes of the piece {float(lo)!r} to {float(hi)!r} "
+                        "nm are not distinct at float32 resolution, so an "
+                        "operator on them would be NaN. Merge breaks that "
+                        "differ by rounding, widen the band, or lower the order."
+                    )
+                waves.append(piece_nodes)
                 weights.append(length * unit / 2)
                 layout.append((lo, hi, n))
             pieces.append(tuple(layout))
@@ -870,7 +903,8 @@ def digest_knots(knots_nm, method: str) -> str:
     be looked up for the table inside a traced program.
 
     Args:
-        knots_nm: A ``Knots``, or concrete table wavelengths in nm.
+        knots_nm: A ``Knots`` or ``HostGrid``, or concrete table wavelengths
+            in nm.
         method: Name of the interpolation between the knots, such as
             ``"linear"`` or ``"cubic"``; it must not contain a colon.
 
@@ -879,7 +913,7 @@ def digest_knots(knots_nm, method: str) -> str:
     """
     if ":" in method:
         raise ValueError("the interpolation method name must not contain ':'")
-    return f"{method}:{as_knots(knots_nm).digest}"
+    return f"{method}:{_as_grid(knots_nm).digest}"
 
 
 @runtime_checkable
@@ -1100,8 +1134,8 @@ class Reduction(eqx.Module):
         degree = index(degree)
         if degree < 0:
             raise ValueError("degree must be a nonnegative integer")
-        grid = as_knots(knots_nm)
-        knots = grid.nm
+        grid = _as_grid(knots_nm)
+        knots = grid.values
         if knot_digest is None:
             knot_digest = digest_knots(grid, f"degree {degree}")
         all_nodes = np.asarray(quadrature.nodes_nm, dtype=float)
@@ -1230,7 +1264,7 @@ def _interior_knots(knots, lo, hi):
 
 def _build_arrays(quadrature, grid, degree, interpolant):
     """Host arrays of a Reduction: its kind, its slots and its padded blocks."""
-    knots = as_knots(grid).nm
+    knots = _as_grid(grid).values
     nodes = np.asarray(quadrature.nodes_nm, dtype=float)
     weights = np.asarray(quadrature.weights_nm, dtype=float)
     n_bands, n_nodes = nodes.shape
@@ -1293,10 +1327,10 @@ def _build_arrays(quadrature, grid, degree, interpolant):
 def _table_grid(table, name):
     """Static knots and digest of a table."""
     knots = table.knots
-    if not isinstance(knots, Knots):
+    if not isinstance(knots, HostGrid):
         raise TypeError(
             f"{name} holds its knots as {type(knots).__name__}; a SpectralTable "
-            "holds a static Knots"
+            "holds a static Knots (a composite, a static HostGrid)"
         )
     return knots, table.knot_digest
 

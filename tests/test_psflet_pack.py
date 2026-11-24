@@ -1,5 +1,7 @@
 """Tests for the PSFlet template pack record and its npz format."""
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -32,7 +34,7 @@ def test_pack_roundtrip(tmp_path):
     loaded = load_psflet_pack(path)
     assert jnp.allclose(loaded.templates, pack.templates)
     assert jnp.allclose(loaded.offsets, pack.offsets)
-    assert jnp.allclose(loaded.wavelengths_nm, pack.wavelengths_nm)
+    assert loaded.wavelengths_nm == pack.wavelengths_nm
     assert jnp.allclose(loaded.field_xy, pack.field_xy)
     assert jnp.allclose(loaded.centroids, pack.centroids)
     assert loaded.meta_json == pack.meta_json
@@ -65,7 +67,7 @@ def test_pack_validation_rejects_bad_shapes():
             wavelengths_nm=lam,
             field_xy=good.field_xy,
         )
-    with pytest.raises(ValueError, match="ascending"):
+    with pytest.raises(ValueError, match="strictly increasing"):
         PsfletPack(
             templates=good.templates,
             offsets=good.offsets,
@@ -91,3 +93,17 @@ def test_loader_rejects_unknown_format(tmp_path):
     np.savez(path, **data)
     with pytest.raises(ValueError, match="format"):
         load_psflet_pack(path)
+
+
+def test_wavelength_grid_is_static():
+    """Exact basis (bitwise): the tabulation wavelengths are static knots.
+
+    Freeing a template value leaves ``spectral_breaks_nm`` bitwise unchanged
+    and the grid is not a leaf. Fails if the grid is stored as a leaf.
+    """
+    pack = _pack(jnp.array([640.0, 660.0, 680.0]))
+    moved = eqx.tree_at(lambda p: p.templates, pack, pack.templates * 2.0)
+    np.testing.assert_array_equal(moved.spectral_breaks_nm(), [640.0, 660.0, 680.0])
+    assert not any(leaf is pack.wavelengths_nm for leaf in jax.tree.leaves(pack))
+    with pytest.raises(TypeError, match="not a leaf"):
+        eqx.tree_at(lambda p: p.wavelengths_nm, pack, pack.wavelengths_nm)

@@ -25,6 +25,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from optixstuff.spectral import Knots, as_knots
+
 PACK_FORMAT_VERSION = 1
 
 
@@ -38,7 +40,10 @@ class PsfletPack(eqx.Module):
     Attributes:
         templates: Template planes, shape ``(n_field, n_lam, n_off, n_off)``.
         offsets: Uniform ascending pixel-offset axis, shape ``(n_off,)``.
-        wavelengths_nm: Ascending tabulation wavelengths in nm, shape ``(n_lam,)``.
+        wavelengths_nm: Ascending tabulation wavelengths in nm, shape ``(n_lam,)``,
+            a static :class:`~optixstuff.spectral.Knots` (at least two, each at
+            least the wavelength tolerance from the next); ``.nm`` is the
+            float64 array.
         field_xy: Field-anchor positions in lenslet-index coordinates, shape
             ``(n_field, 2)``.
         centroids: Optional ``(dx, dy)`` pixel corrections to the dispersion-model
@@ -48,7 +53,7 @@ class PsfletPack(eqx.Module):
 
     templates: Array = eqx.field(converter=jnp.asarray)
     offsets: Array = eqx.field(converter=jnp.asarray)
-    wavelengths_nm: Array = eqx.field(converter=jnp.asarray)
+    wavelengths_nm: Knots = eqx.field(static=True, converter=as_knots)
     field_xy: Array = eqx.field(converter=jnp.asarray)
     centroids: Array | None = eqx.field(converter=_optional_asarray, default=None)
     meta_json: str = eqx.field(static=True, default="")
@@ -59,7 +64,7 @@ class PsfletPack(eqx.Module):
         Returns:
             The tabulation wavelengths in nm.
         """
-        return np.asarray(self.wavelengths_nm)
+        return self.wavelengths_nm.nm
 
     def __check_init__(self):
         """Validate shapes and grid conventions at construction (eager only)."""
@@ -78,10 +83,8 @@ class PsfletPack(eqx.Module):
             raise ValueError("offsets must be ascending")
         if not bool(jnp.allclose(steps, steps[0], rtol=1e-6, atol=0.0)):
             raise ValueError("offsets must be uniform")
-        if self.wavelengths_nm.shape != (n_lam,):
+        if len(self.wavelengths_nm) != n_lam:
             raise ValueError("wavelengths_nm must match the template plane count")
-        if n_lam > 1 and not bool(jnp.all(jnp.diff(self.wavelengths_nm) > 0)):
-            raise ValueError("wavelengths_nm must be ascending")
         if self.field_xy.shape != (n_field, 2):
             raise ValueError("field_xy must be (n_field, 2)")
         if self.centroids is not None and self.centroids.shape != (n_field, n_lam, 2):
@@ -99,7 +102,7 @@ def save_psflet_pack(path, pack):
         format_version=np.int64(PACK_FORMAT_VERSION),
         templates=np.asarray(pack.templates),
         offsets=np.asarray(pack.offsets),
-        wavelengths_nm=np.asarray(pack.wavelengths_nm),
+        wavelengths_nm=pack.wavelengths_nm.nm,
         field_xy=np.asarray(pack.field_xy),
     )
     if pack.centroids is not None:

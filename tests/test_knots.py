@@ -281,3 +281,72 @@ def test_transmission_has_one_leaf_and_a_true_gradient():
 
         check_grads(integral, (curve.transmission,), order=1, modes=("rev",))
         assert curve.low_nm == 500.0 and curve.high_nm == 560.0
+
+
+def _width_where_nodes_collapse(order, edge=450.0):
+    """Adjacent float64 band widths, the first with float32-colliding nodes.
+
+    Bisection on the independent predicate ``np.diff(nodes.astype(float32))
+    > 0`` over the Gauss-Legendre nodes of one piece starting at ``edge``.
+    """
+    unit, _ = np.polynomial.legendre.leggauss(order)
+
+    def distinct(high):
+        nodes = edge + (high - edge) * (unit + 1) / 2
+        return bool(np.all(np.diff(nodes.astype(np.float32)) > 0))
+
+    bad = edge + 1.5 * float(merge_tolerance_nm(edge))
+    good = edge + 400 * float(merge_tolerance_nm(edge))
+    assert not distinct(bad) and distinct(good)
+    while np.nextafter(bad, good) != good:
+        mid = 0.5 * (bad + good)
+        bad, good = (mid, good) if not distinct(mid) else (bad, mid)
+    return bad, good
+
+
+def test_quadrature_refuses_nodes_that_collide_at_float32_in_both_precisions():
+    """Bitwise bracket basis.
+
+    A 16-node piece wide enough to pass the tolerance but too narrow for its
+    nodes to stay distinct as float32 is refused with one message in x32 and
+    x64; the adjacent wider float64 edge is accepted in both. The bracket is
+    found by bisection on the independent float32 predicate. Fails if the
+    refusal is left to ``Reduction`` (x32 only).
+    """
+    bad, good = _width_where_nodes_collapse(16)
+    messages = []
+    for flag in (False, True):
+        with jax.enable_x64(flag):
+            with pytest.raises(ValueError, match="not distinct at float32") as error:
+                Quadrature.build((Band(450.0, bad),), order=16)
+            messages.append(str(error.value))
+            Quadrature.build((Band(450.0, good),), order=16)
+    assert messages[0] == messages[1]
+
+
+def test_merge_refuses_a_chain_longer_than_one_tolerance():
+    """Exact basis. Grids spaced 1.8 tolerances and offset 0.9 chain into a
+    run of breaks 0.9 tolerances apart, spanning far more than one; the merge
+    names them. Well-separated grids and a pair within one tolerance merge as
+    before. Fails if a long chain collapses silently."""
+    tol = float(merge_tolerance_nm(500.0))
+    first = 500.0 + 1.8 * tol * np.arange(6)
+    with pytest.raises(ValueError, match="span more than one tolerance"):
+        _merge_breaks(first, first + 0.9 * tol)
+    apart = 500.0 + 10 * tol * np.arange(6)
+    far = _merge_breaks(apart, apart + 5 * tol)
+    assert far.size == 12
+    np.testing.assert_array_equal(
+        _merge_breaks(first[:1], first[:1] + 0.9 * tol), first[:1]
+    )
+
+
+def test_union_cache_is_bounded():
+    """Exact basis: after 20 distinct grids the union cache holds at most 8
+    entries. Fails if the cache is unbounded."""
+    from optixstuff.spectral import _union
+
+    _union.cache_clear()
+    for i in range(20):
+        Knots([400.0, 500.0 + i]).union(Knots([450.0, 560.0 + i]))
+    assert _union.cache_info().currsize <= 8

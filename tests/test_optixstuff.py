@@ -285,3 +285,21 @@ def test_quadrature_build_takes_the_instrument_field_when_asked():
     assert declared.pieces == explicit.pieces
     assert declared.nodes_nm.shape[1] > 4
     assert Quadrature.build((band,), instrument).nodes_nm.shape == (1, 4)
+
+
+@pytest.mark.parametrize("x64", [False, True], ids=["x32", "x64"])
+def test_exposure_time_is_a_strong_leaf_and_declares_no_reads(x64):
+    """Exact dtype basis. Fails if a Python-float time stays a Python number,
+    is weakly typed or has another dtype than the active one, or if the
+    removed ``reads`` field is accepted again."""
+    from optixstuff.spectral import Band, Quadrature
+
+    with jax.enable_x64(x64):
+        quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
+        exposure = ox.Exposure(time_d=1.0, roll_deg=0.0, quadrature=quadrature)
+        assert isinstance(exposure.time_d, jax.Array)
+        assert exposure.time_d.dtype == (jnp.float64 if x64 else jnp.float32)
+        assert not exposure.time_d.weak_type
+        assert exposure.time_d in jax.tree.leaves(exposure)
+        with pytest.raises(TypeError):
+            ox.Exposure(0.0, 0.0, quadrature, reads=("star",))

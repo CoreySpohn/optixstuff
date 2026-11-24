@@ -2,6 +2,7 @@
 
 import equinox as eqx
 import jax.numpy as jnp
+from hwoutils.leaves import as_float_leaf
 
 from optixstuff.spectral import Quadrature, Resolution
 
@@ -114,7 +115,8 @@ class Exposure(eqx.Module):
     built from.
 
     Attributes:
-        time_d: Observation time in days from the scene epoch. The local-zodi
+        time_d: Observation time in days from the scene epoch, a float leaf of
+            the active dtype. The local-zodi
             sightline is derived from it, the scene's epoch and the target's
             sky position, not stored here.
         roll_deg: Position angle of detector +y, north through east, in
@@ -124,23 +126,16 @@ class Exposure(eqx.Module):
             are wanted.
         resolution: Operators of the scene's tabulated sources on
             ``quadrature``; empty when the scene has none.
-        reads: Paths, relative to the scene, of the knot leaves the build read.
-            Changing one of them leaves the exposure stale; rebuild it.
     """
 
-    time_d: jnp.ndarray | float
+    time_d: jnp.ndarray | float = eqx.field(converter=as_float_leaf)
     roll_deg: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
     quadrature: Quadrature
     plan: FramePlan | None = None
     resolution: Resolution = eqx.field(default_factory=Resolution)
-    reads: tuple[str, ...] = eqx.field(static=True, default=())
 
     def __check_init__(self):
-        """Require path strings and a resolution built for this quadrature."""
-        if not isinstance(self.reads, tuple) or not all(
-            isinstance(path, str) for path in self.reads
-        ):
-            raise TypeError("reads must be a tuple of path strings")
+        """Require a resolution built for this quadrature."""
         built = self.resolution.quadratures
         if built and built[0].layout_digest != self.quadrature.layout_digest:
             raise ValueError("the resolution was built for another quadrature")

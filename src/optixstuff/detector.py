@@ -9,12 +9,14 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.special as jsp
 import numpy as np
+from hwoutils.leaves import as_float_leaf
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
 from optixstuff.exposure import FramePlan
 from optixstuff.grids import PixelGrid
 from optixstuff.rates import RATE_FLOOR_RTOL, Rates, floor_rate
+from optixstuff.spectral import Knots, as_knots
 
 
 def _check_range(name, value, low, high=float("inf")):
@@ -535,7 +537,8 @@ class Detector(AbstractDetector):
     """Constant or tabulated QE with Poisson, gamma gain, and Gaussian noise."""
 
     _qe: Array
-    _qe_curve: tuple[Array, Array] | None
+    _qe_knots: Knots | None = eqx.field(static=True)
+    _qe_values: Array | None
 
     def __init__(
         self,
@@ -578,9 +581,12 @@ class Detector(AbstractDetector):
                 zero read noise and F2 of one.
         """
         self._qe = jnp.asarray(qe)
-        self._qe_curve = (
-            None if qe_curve is None else tuple(jnp.asarray(x) for x in qe_curve)
-        )
+        if qe_curve is None:
+            self._qe_knots, self._qe_values = None, None
+        else:
+            wavelengths_nm, efficiencies = qe_curve
+            self._qe_knots = as_knots(wavelengths_nm)
+            self._qe_values = as_float_leaf(efficiencies)
         super().__init__(
             pixel_scale_arcsec=pixel_scale_arcsec,
             shape=shape,
@@ -599,24 +605,13 @@ class Detector(AbstractDetector):
         _check_range("QE", self._qe, 0.0, 1.0)
         if self._qe.ndim != 0:
             raise ValueError("constant QE must be scalar")
-        if self._qe_curve is not None:
-            wavelengths_nm, qe = self._qe_curve
-            if (
-                wavelengths_nm.ndim != 1
-                or qe.shape != wavelengths_nm.shape
-                or qe.size < 2
-            ):
+        if self._qe_knots is not None:
+            qe = self._qe_values
+            if qe.shape != (len(self._qe_knots),):
                 raise ValueError(
                     "QE curve requires matching 1D arrays with >=2 samples"
                 )
             _check_range("QE", qe, 0.0, 1.0)
-            if not isinstance(wavelengths_nm, jax.core.Tracer) and not bool(
-                jnp.all(jnp.isfinite(wavelengths_nm))
-                & jnp.all(jnp.diff(wavelengths_nm) > 0)
-            ):
-                raise ValueError(
-                    "QE wavelengths must be finite and strictly increasing"
-                )
 
     def quantum_efficiency(self, wavelength_nm: ArrayLike) -> Array:
         """Return constant or linearly interpolated QE at every input wavelength.
@@ -628,10 +623,15 @@ class Detector(AbstractDetector):
             Quantum efficiency in [0, 1], shaped like ``wavelength_nm``.
         """
         wavelength_nm = jnp.asarray(wavelength_nm)
-        if self._qe_curve is None:
+        if self._qe_knots is None:
             return jnp.broadcast_to(self._qe, wavelength_nm.shape)
-        wavelengths_nm, qe = self._qe_curve
-        return jnp.interp(wavelength_nm, wavelengths_nm, qe, left=0.0, right=0.0)
+        return jnp.interp(
+            wavelength_nm,
+            self._qe_knots.array(),
+            self._qe_values,
+            left=0.0,
+            right=0.0,
+        )
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Tabulated QE wavelengths [nm]; empty for a constant QE.
@@ -642,9 +642,9 @@ class Detector(AbstractDetector):
         Returns:
             Tabulated QE wavelengths in nm, or an empty array for a constant QE.
         """
-        if self._qe_curve is None:
+        if self._qe_knots is None:
             return np.empty(0)
-        return np.asarray(self._qe_curve[0])
+        return self._qe_knots.nm
 
     def __repr__(self) -> str:
         """Summarize geometry, yield, and noise parameters.
@@ -653,7 +653,7 @@ class Detector(AbstractDetector):
             One-line summary string.
         """
         ny, nx = self.shape
-        qe_str = "spectral" if self._qe_curve is not None else f"{self._qe:.2f}"
+        qe_str = "spectral" if self._qe_knots is not None else f"{self._qe:.2f}"
         return (
             f"Detector({ny}x{nx} @ {self.pixel_scale_arcsec:.3g} arcsec/px, "
             f"QE={qe_str}, survival={self.survival_fraction:.3g}, "
