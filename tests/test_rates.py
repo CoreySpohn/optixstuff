@@ -1,6 +1,7 @@
 """Code verification of spectral photon records and their dimensional weights."""
 
 import equinox as eqx
+import ineedvalidation as vv
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -64,7 +65,7 @@ def test_zeros():
                 getattr(rates, name), np.zeros((2, 3, *spatial))
             )
         assert rates.integrate().total().shape == (2, *spatial)
-    with pytest.raises(ValueError, match="quadrature"):
+    with pytest.raises(ValueError, match=r"planet.*\(2, 1\).*leading shape \(2, 3\)"):
         ox.Rates(quad, "photon", planet=jnp.ones((2, 1)))
     empty = ox.Rates(quad, "photon")
     assert empty.integrate().total().shape == (2,)
@@ -136,3 +137,77 @@ def test_static_support_is_implied_by_support_and_skips_tracers():
 
     mapped = jax.vmap(build)(jnp.stack([strict, ~static]), jnp.stack([static, static]))
     assert mapped.static_supported.shape == (2, 2, 2, 3)
+
+
+THREE_BANDS = (Band(400, 450), Band(450, 500), Band(500, 550))
+
+
+@vv.case("detector-readout", "code-verification")
+def test_image_component_shapes():
+    """Truth is the named leading axes and singleton-or-full spatial axis rule.
+
+    Acceptance and rejection are exact, including when shapes are traced.
+    """
+    signal = jnp.ones((3, 4, 3))
+
+    def build(background):
+        return ox.Rates(THREE_BANDS, "photon", planet=signal, thermal=background)
+
+    for shape in [(), (3, 1, 1), (3, 4, 3), (3, 1, 3), (3, 4, 1)]:
+        assert jax.eval_shape(build, jnp.ones(shape)).thermal.shape == shape
+    for shape in [(3,), (3, 2, 3), (1, 4, 3)]:
+        with pytest.raises(ValueError, match="thermal") as exc:
+            jax.eval_shape(build, jnp.ones(shape))
+        assert str(shape) in str(exc.value)
+
+
+@vv.case("detector-readout", "code-verification")
+def test_empty_selection_broadcasts_a_singleton_background():
+    """A zero-length spatial axis beside a singleton background is valid.
+
+    Truth is the rule itself: a length of one broadcasts against any length,
+    including zero, so the record's axis length is zero. Fails if the largest
+    length (one) is taken as the record length.
+    """
+    rates = ox.Rates(
+        THREE_BANDS,
+        "photon",
+        planet=jnp.ones((3, 0, 4)),
+        thermal=jnp.ones((3, 1, 1)),
+    )
+    assert rates.total().shape == (3, 0, 4)
+
+
+@vv.case("detector-readout", "code-verification")
+def test_total_adds_per_band_background():
+    """Truth is the hand sum of each image and its own band's background.
+
+    The small integer sums are exactly representable, so compare bitwise.
+    """
+    signal = np.arange(36, dtype=np.float32).reshape(3, 4, 3)
+    rates = ox.Rates(
+        THREE_BANDS,
+        "photon",
+        planet=signal,
+        thermal=jnp.array([1, 2, 3])[:, None, None],
+    )
+    expected = np.stack([signal[0] + 1, signal[1] + 2, signal[2] + 3])
+    np.testing.assert_array_equal(rates.total(), expected, strict=True)
+
+
+@vv.case("detector-readout", "code-verification")
+@pytest.mark.parametrize("entry", ["total", "integrate", "electrons"])
+def test_recheck_replaced_component(entry):
+    """Truth is the input shape contract after replacing a component leaf.
+
+    Rejection of the short rank and identification of the field are exact.
+    """
+    quad = Quadrature.build(THREE_BANDS, order=2)
+    rates = ox.Rates.zeros(THREE_BANDS if entry == "total" else quad, "photon", (4, 3))
+    rates = eqx.tree_at(lambda r: r.thermal, rates, jnp.array([1, 2, 3]))
+    detector = ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(4, 3))
+    with pytest.raises(ValueError, match=r"thermal.*\(3,\)"):
+        if entry == "electrons":
+            detector.electrons(rates)
+        else:
+            getattr(rates, entry)()

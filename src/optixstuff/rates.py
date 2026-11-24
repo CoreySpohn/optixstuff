@@ -62,8 +62,10 @@ class Rates(eqx.Module):
     concrete arrays (traced arrays are not checked) and refuses
     ``supported=None`` beside a ``static_supported`` with a False entry.
 
-    An absent source may be scalar zero. ``bands`` (static) names the leading
-    axis and equals ``quadrature.bands`` for spectral records.
+    Scalar sources apply everywhere. Nonscalar sources share the same rank and
+    leading axes. A spatial axis may be singleton to repeat along that axis.
+    ``bands`` (static) names the leading axis and equals ``quadrature.bands`` for
+    spectral records.
 
     Attributes:
         planet: Planet rate, photon or electron per second (per nm while spectral).
@@ -162,24 +164,18 @@ class Rates(eqx.Module):
         )
 
     def __check_init__(self):
-        """Require a known carrier, matching leading axes and a like variance."""
+        """Require a known carrier, aligned components and a like variance."""
         if self.carrier not in _CARRIERS:
             raise ValueError(f"carrier must be one of {_CARRIERS}")
         if self.quadrature is not None and self.quadrature.bands != self.bands:
             raise ValueError("bands must be the quadrature's bands")
-        leading = self._leading_shape
-        for name in _COMPONENTS:
-            value = getattr(self, name)
-            if value.ndim and value.shape[: len(leading)] != leading:
-                raise ValueError(
-                    f"{name} must match the quadrature's (W, Q) shape"
-                    if self.spectral
-                    else f"{name} must have one leading entry per band"
-                )
+        _component_shape(self)
         for name in ("supported", "static_supported"):
             flag = getattr(self, name)
-            if flag is not None and flag.ndim and flag.shape[:1] != leading[:1]:
-                raise ValueError(f"{name} must have one leading entry per band")
+            if flag is not None and flag.ndim and flag.shape[0] != len(self.bands):
+                raise ValueError(
+                    f"{name} must have one leading entry per band, got {flag.shape}"
+                )
         self._check_flags()
         other = self.variance
         if other is not None:
@@ -236,9 +232,12 @@ class Rates(eqx.Module):
 
         Returns:
             Sum over the six sources, in the record's unit.
+
+        Raises:
+            ValueError: If any component has incompatible axes.
         """
-        total = sum(getattr(self, name) for name in _COMPONENTS)
-        return jnp.broadcast_to(total, total.shape or self._leading_shape)
+        shape = _component_shape(self)
+        return sum(jnp.broadcast_to(getattr(self, name), shape) for name in _COMPONENTS)
 
     def integrate(self) -> "Rates":
         """Integrate spectral fields over each band, to shape ``(W, *spatial)``.
@@ -250,11 +249,15 @@ class Rates(eqx.Module):
 
         Returns:
             Band-integrated Rates of the same carrier.
+
+        Raises:
+            ValueError: If the rates are already integrated or components have
+                incompatible axes.
         """
+        shape = _component_shape(self)
         quadrature = self.quadrature
         if quadrature is None:
             raise ValueError("rates are already integrated over their bands")
-        shape = self.total().shape
         return Rates(
             self.bands,
             self.carrier,
@@ -291,6 +294,47 @@ class Rates(eqx.Module):
         empty = cls(sampling, carrier)
         zero = jnp.zeros((*empty._leading_shape, *spatial_shape), dtype=dtype)
         return cls(sampling, carrier, **dict.fromkeys(_COMPONENTS, zero))
+
+
+def _component_shape(rates: Rates) -> tuple[int, ...]:
+    """Return the common shape for a record's named sources.
+
+    Args:
+        rates: Record whose components may be scalar or spatially aligned.
+
+    Returns:
+        Leading sampling axes followed by the largest size on each spatial axis.
+
+    Raises:
+        ValueError: If a nonscalar component omits an axis, differs from the
+            leading shape, or has a spatial size other than one or the largest.
+    """
+    leading = rates._leading_shape
+    shapes = {name: jnp.shape(getattr(rates, name)) for name in _COMPONENTS}
+    rank = max(len(leading), *(len(shape) for shape in shapes.values()))
+    full_shapes = [shape for shape in shapes.values() if len(shape) == rank]
+    # A length of one broadcasts, so it never sets the axis length; an empty
+    # axis (length zero) does.
+    spatial = tuple(
+        max({shape[axis] for shape in full_shapes} - {1}, default=1)
+        for axis in range(len(leading), rank)
+    )
+
+    for name, shape in shapes.items():
+        if not shape:
+            continue
+        if len(shape) != rank or shape[: len(leading)] != leading:
+            raise ValueError(
+                f"{name} has shape {shape}, expected rank {rank} "
+                f"with leading shape {leading}"
+            )
+        tail = shape[len(leading) :]
+        if any(n not in (1, size) for n, size in zip(tail, spatial, strict=True)):
+            raise ValueError(
+                f"{name} has shape {shape}, expected spatial axes "
+                f"of length one or the matching length in {spatial}"
+            )
+    return leading + spatial
 
 
 RATE_FLOOR_RTOL = 1e-4
