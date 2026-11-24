@@ -308,8 +308,16 @@ A `FocalResponse` stores the linear family's nominal amplitude density
 `e_nom` and sensitivity density `G` with shapes `(ny, nx)` and
 `(n_modes, ny, nx)`, as well as the grid and unocculted input energy.
 `response.per_pixel()` supplies the amplitudes for the stable excess law
-`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`. The shared law scales
-`G` by `reference_wavelength_nm / wavelength_nm`.
+`[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`.
+
+State `wavelength_law="opd"` for optical path differences, whose phase
+sensitivity scales by `reference_wavelength_nm / wavelength_nm`. State
+`"amplitude"` for achromatic fractional-amplitude modes, and `None` for a
+response tabulated at wavelength nodes, where the consumer reads each
+sensitivity as given. For one mode with zero nominal field and a 500 nm
+reference, the halo at 1000 nm is 0.25 times the 500 nm halo for `"opd"`
+and equal to it for `"amplitude"`. Passing `wavelength_law="opd"`
+reproduces the old behavior.
 
 `realize(wavelength_nm=..., elapsed_s=...)` returns an `Image` on `self.grid`,
 with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `zero`

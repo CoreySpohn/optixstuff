@@ -8,7 +8,7 @@ unocculted stellar flux; coherent interference can make the excess negative.
 import abc
 import math
 from dataclasses import replace
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import equinox as eqx
 import jax
@@ -32,6 +32,7 @@ class FocalResponse(eqx.Module):
     are (y, x) and (m, y, x), or (w, y, x) and (w, m, y, x) for a table
     of wavelength nodes. input_energy is the total incident photon
     count, scalar or one count per wavelength node.
+    Passing ``wavelength_law="opd"`` reproduces the earlier behavior.
 
     Attributes:
         e_nom: Nominal complex focal amplitude, shape (y, x) or (w, y, x), in
@@ -41,8 +42,14 @@ class FocalResponse(eqx.Module):
         grid: PixelGrid the amplitudes are sampled on.
         input_energy: Total incident photon count, scalar or one per wavelength
             node; positive and finite.
-        reference_wavelength_nm: Wavelength in nm at which ``G`` is specified; must
-            match the grid's frame.
+        reference_wavelength_nm: Grid frame's reference wavelength in nm.
+            For an OPD response, ``G`` is specified at this wavelength.
+        wavelength_law: For ``"opd"``, G is the sensitivity to an optical path
+            difference. The phase sensitivity at wavelength lambda is
+            ``G * reference_wavelength_nm / lambda``. For ``"amplitude"``, G is
+            achromatic and used as given at every wavelength. With ``None``,
+            the consumer reads the tabulated arrays at their wavelength nodes
+            without scaling.
     """
 
     e_nom: Array = eqx.field(converter=jnp.asarray)
@@ -50,6 +57,9 @@ class FocalResponse(eqx.Module):
     grid: PixelGrid
     input_energy: Array = eqx.field(converter=jnp.asarray)
     reference_wavelength_nm: float = eqx.field(static=True, converter=float)
+    wavelength_law: Literal["opd", "amplitude"] | None = eqx.field(
+        static=True, kw_only=True
+    )
 
     def __check_init__(self):
         """Validate the sampled arrays and their reference."""
@@ -61,6 +71,16 @@ class FocalResponse(eqx.Module):
             or self.G.shape[-2:] != self.grid.shape
         ):
             raise ValueError("G must have shape (m, y, x) or (w, m, y, x) on grid")
+        if self.e_nom.ndim == 3:
+            if self.wavelength_law is not None:
+                raise ValueError("pass wavelength_law=None for a tabulated response")
+        elif not isinstance(self.wavelength_law, str) or self.wavelength_law not in (
+            "opd",
+            "amplitude",
+        ):
+            raise ValueError(
+                'pass wavelength_law="opd" or "amplitude" for a single-plane response'
+            )
         if self.input_energy.shape not in ((), self.e_nom.shape[:-2]):
             raise ValueError("input_energy must be scalar or match the wavelength axis")
         if not isinstance(self.input_energy, jax.core.Tracer):
@@ -94,6 +114,15 @@ class FocalResponse(eqx.Module):
 
     def _pixel_amplitude_scale(self) -> Array:
         return jnp.sqrt(self.grid.pixel_area)
+
+
+def _sensitivity_scale(response, wavelengths):
+    """Scale a single-plane sensitivity on its native lambda/D grid."""
+    if response.wavelength_law == "opd":
+        return response.reference_wavelength_nm / wavelengths
+    if response.wavelength_law == "amplitude":
+        return jnp.ones_like(wavelengths, dtype=float)
+    raise ValueError("a tabulated response must be read at its wavelength nodes")
 
 
 def _reduced_time_message(dtype, epoch_d: float) -> str:
@@ -301,13 +330,13 @@ class LinearSpeckleField(AbstractSpeckleField):
     density units. Squared per-pixel amplitudes divided by the response's
     input energy (unocculted photon count) are per-pixel stellar flux fractions.
 
-    At wavelength lambda, the phase sensitivity is G * lambda_ref / lambda;
-    e_nom is held fixed. Native coordinates u = basis @ (pixel - center)
-    describe lambda/D AT THE NODE wavelength, with angular coordinates
-    u * grid.frame.lod_to_arcsec(lambda). Thus the same native pixel spans
-    lambda/lambda_ref times its reference angular size, without changing its
-    per-pixel flux fraction for geometric dilation alone. The returned grid
-    remains self.grid: a wavelength stack has one static lod grid, not one
+    The response's ``wavelength_law`` sets the sensitivity at wavelength lambda.
+    A single-plane response holds e_nom fixed. Native coordinates
+    u = basis @ (pixel - center) describe lambda/D AT THE NODE wavelength,
+    with angular coordinates u * grid.frame.lod_to_arcsec(lambda). The same
+    native pixel spans lambda/lambda_ref times its reference angular size.
+    Geometric dilation alone preserves its per-pixel flux fraction. The returned
+    grid remains self.grid: a wavelength stack has one static lod grid, not one
     static angular grid. For each concrete node, attach grid.to_arcsec(node)
     before shared resample. This uses the same Frame conversion as native
     coronagraph products; their stored reference grid is not itself a request
@@ -393,7 +422,7 @@ class LinearSpeckleField(AbstractSpeckleField):
         pixel_scale = self.response._pixel_amplitude_scale()
         e_nom = self.response.e_nom * pixel_scale
         delta_e = jnp.einsum("...m,myx->...yx", eps, self.response.G) * pixel_scale
-        scale = self.response.reference_wavelength_nm / wavelengths
+        scale = _sensitivity_scale(self.response, wavelengths)
         delta_e = scale.reshape((*scale.shape, *((1,) * delta_e.ndim))) * delta_e
         delta = 2 * jnp.real(jnp.conj(e_nom) * delta_e) + jnp.abs(delta_e) ** 2
         if wavelengths.ndim == 2:

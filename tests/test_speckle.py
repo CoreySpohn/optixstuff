@@ -25,13 +25,54 @@ def test_focal_response_integrates_density_over_the_grid():
     grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
     nominal = jnp.array([[1 + 2j, -3j], [2 - 1j, 0.5j]])
     jacobian = jnp.array([[[0.5j, 1.0], [-2 * (1 + 1j), 0.0]]])
-    response = ox.FocalResponse(nominal, jacobian, grid, 12.0, 500.0)
+    response = ox.FocalResponse(
+        nominal, jacobian, grid, 12.0, 500.0, wavelength_law="opd"
+    )
     e_pixel, g_pixel = response.per_pixel()
     np.testing.assert_allclose(
         [jnp.sum(jnp.abs(e_pixel) ** 2), jnp.sum(jnp.abs(g_pixel) ** 2)],
         [19.25 / 16.0, 9.25 / 16.0],
         rtol=1e-7,
     )
+
+
+@pytest.mark.parametrize(("law", "expected"), [("amplitude", 1.0), ("opd", 0.25)])
+def test_wavelength_law_halo_ratio(law, expected):
+    """Squared OPD phase and achromatic transmission give analytic halo ratios.
+
+    Float64 allows 1e-12 relative error. Scaling every sensitivity by
+    reference wavelength over wavelength incorrectly quarters the amplitude halo.
+    """
+    with jax.enable_x64():
+        grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
+        response = ox.FocalResponse(
+            jnp.zeros(grid.shape, dtype=complex),
+            jnp.full((1, *grid.shape), 0.3 + 0.2j),
+            grid,
+            1.0,
+            500.0,
+            wavelength_law=law,
+        )
+        field = SinusoidalSpeckle(response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1))
+        blue, red = field.realize(wavelength_nm=jnp.array([500, 1000])).data
+        np.testing.assert_allclose(red / blue, expected, rtol=1e-12, atol=0)
+
+
+def test_focal_response_requires_law_matching_layout(linear_speckle):
+    """The response layout contract is exact (mutation, no numeric tolerance).
+
+    Fails if the law defaults to OPD, accepts unknown values, or permits
+    scaling an already tabulated sensitivity.
+    """
+    r = linear_speckle.response
+    with pytest.raises(TypeError, match="wavelength_law"):
+        ox.FocalResponse(r.e_nom, r.G, r.grid, r.input_energy, 500.0)
+    with pytest.raises(ValueError, match=r"opd.*amplitude"):
+        replace(r, wavelength_law=None)
+    with pytest.raises(ValueError, match=r"opd.*amplitude"):
+        replace(r, wavelength_law="unknown")
+    with pytest.raises(ValueError, match="wavelength_law=None"):
+        replace(r, e_nom=r.e_nom[None], G=r.G[None])
 
 
 def test_law_and_cancellation(linear_speckle):
