@@ -1654,6 +1654,12 @@ def footprint_overlap(
     A single grid produces a gridded result. A sequence concatenates the cells
     of its grids in row-major order. Overlapping cells collect independently.
 
+    The overlap weights are computed in binary64 on the host and stored as
+    JAX arrays of the float dtype active at construction, so an overlap built
+    under float32 keeps float32 weights when it later integrates a float64
+    image. A float64 consumer builds the overlap, or rebuilds a reused one,
+    with ``jax_enable_x64`` on.
+
     Args:
         source: Source grid.
         cells: Target grid, or a sequence of grids whose cells are concatenated.
