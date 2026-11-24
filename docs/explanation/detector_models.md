@@ -9,14 +9,25 @@ Absent terms may be scalar zero. The terms are `planet`, `star_leakage`,
 
 One `Rates` type serves the whole chain. Its static `carrier` is `"photon"`
 or `"electron"`. Its `quadrature` is set while the fields are per-nm
-integrands at the nodes and is None once they are integrated over the bands;
-`unit` reads `photon/s/nm`, `photon/s` or `electron/s` accordingly. Every
-record carries the tuple of bands in `.bands`.
+integrands at the nodes and is None once they are integrated over the bands.
+Every record carries the tuple of bands in `.bands`.
 
-`rates.integrate()` returns a record in photons/s with the same fields and
-shape `(W, *spatial)`. It contains no detector effects. `total()` sums the
-fields with broadcasting.
-`Rates.zeros(quadrature, "photon", (ny, nx))` allocates six zero integrands.
+| Rate sampling | Leading image axis names | Component shape | Units |
+| --- | --- | --- | --- |
+| Spectral density at quadrature nodes | `wavelength`, `quadrature` | `(n_band, n_node, *spatial)` | photon/s/nm or electron/s/nm |
+| Integrated over each band | `band` | `(n_band, *spatial)` | photon/s or electron/s |
+
+Each row of quadrature nodes samples one band. `rates.integrate()` weights and
+reduces the `quadrature` axis and renames the surviving `wavelength` axis to
+`band`. It preserves the carrier and all spatial axes.
+
+`total()` sums the six sources. A scalar applies to every sample. All other
+components must include every leading and spatial axis. Leading lengths must
+match the sampling exactly. Each spatial length must be one or the full
+length for that axis. To migrate a per-band component of an integrated image,
+reshape it from `(n_band,)` to `(n_band, 1, 1)` so it repeats across rows and
+columns. `Rates.zeros(quadrature, "photon", (ny, nx))` allocates six full-sized
+zero integrands.
 
 Per-pixel records leave `n_pix` as None. A weighted aperture sets `n_pix` to
 the sum of its weights in detector pixels, and may carry a second record in

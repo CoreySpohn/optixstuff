@@ -15,7 +15,7 @@ from jaxtyping import Array
 
 from optixstuff.exposure import FramePlan
 from optixstuff.grids import PixelGrid
-from optixstuff.rates import RATE_FLOOR_RTOL, Rates, floor_rate
+from optixstuff.rates import RATE_FLOOR_RTOL, Rates, _component_shape, floor_rate
 from optixstuff.spectral import Knots, as_knots
 
 
@@ -38,9 +38,18 @@ def _per_band_pixels(n_pix, ndim):
 
 
 def _check_electrons(rates):
-    """Require band-integrated electron rates, the detector statistics' input."""
+    """Require the units used for detector statistics.
+
+    Args:
+        rates: Input rate record.
+
+    Raises:
+        ValueError: If the carrier is not electron or band integration is missing.
+    """
     if rates.carrier != "electron" or rates.spectral:
-        raise ValueError(f"rates must be in electron/s; got {rates.unit}")
+        raise ValueError(
+            f"rates must be band-integrated and in electron/s, got {rates.unit}"
+        )
 
 
 def _floored_total(rates):
@@ -60,14 +69,25 @@ def _floored_total(rates):
 
 
 def _floored(rates):
-    """Rates whose totals are floored, and the flag of a total beyond the floor."""
+    """Floor the total rate of each aperture moment.
+
+    Args:
+        rates: Source rates with optional variance rates.
+
+    Returns:
+        Rates with the input sampling and carrier, and a flag for totals below
+        the allowed floor.
+
+    Raises:
+        ValueError: If source components have incompatible axes.
+    """
     total, bad = _floored_total(rates)
     variance = rates.variance
     if variance is not None:
         variance, bad_variance = _floored(variance)
         bad = bad | bad_variance
     floored = Rates(
-        rates.bands,
+        rates.quadrature if rates.spectral else rates.bands,
         rates.carrier,
         planet=total,
         n_pix=rates.n_pix,
@@ -199,11 +219,15 @@ class AbstractDetector(eqx.Module):
 
         Returns:
             Band-integrated Rates in electron/s.
+
+        Raises:
+            ValueError: If the input is not spectral photon rates or its
+                components have incompatible axes.
         """
+        shape = _component_shape(rates)
         if rates.carrier != "photon" or not rates.spectral:
             raise ValueError(f"rates must be in photon/s/nm; got {rates.unit}")
         quadrature = rates.quadrature
-        shape = rates.total().shape
         yield_fraction = self.survival_fraction * self.quantum_efficiency(
             quadrature.nodes_nm
         )
@@ -318,7 +342,11 @@ class AbstractDetector(eqx.Module):
 
         Returns:
             Log density of ``observed``, with the broadcast shape.
+
+        Raises:
+            ValueError: If the rates are not band-integrated electron rates.
         """
+        _check_electrons(rates)
         floored, bad = _floored(rates)
         mean, variance = self.mean_and_variance(floored, plan)
         observed = jnp.asarray(observed, dtype=mean.dtype)
