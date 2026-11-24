@@ -170,33 +170,41 @@ def test_elapsed_s_is_exact_on_the_host_under_x32():
     basis floating-point: the binary64 sum ``epoch + 10 * s2d`` carries at most
     half an ulp of 60000 d (3.2e-7 s), and the float32 result at 10 s rounds by
     at most 4.8e-7 s; 1e-6 s covers both. Casting first returns 337.5 s or 0.
+    A big-endian binary64 array holds the same value and is accepted.
     """
     with jax.enable_x64(False):
         for epoch in _EPOCHS_D:
             field = make_linear_speckle(epoch_d=epoch)
-            elapsed = field.elapsed_s(epoch + 10 * s2d)
-            assert elapsed.dtype == jnp.float32
-            np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
+            for time in (epoch + 10 * s2d, np.asarray(epoch + 10 * s2d, ">f8")):
+                elapsed = field.elapsed_s(time)
+                assert elapsed.dtype == jnp.float32
+                np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
 
 
 def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
     """Fails if a float32 time near a nonzero epoch is subtracted silently.
 
     Under x32 a traced Python float, an eager JAX array and a NumPy float32
-    all hold the time in float32 and must raise; with ``epoch_d = 0`` nothing
-    cancels and all three are accepted. Fails if the dtype check is removed
-    (the jit call returns 337.5 s) or if it is keyed on the x64 flag rather
-    than the dtype (the NumPy float32 call passes). Exact (raise or not).
+    all hold the time in float32 and must raise, and so does a float64 JAX
+    array made under x64 (with x64 off it subtracts in float32: 337.5 s);
+    with ``epoch_d = 0`` nothing cancels and all are accepted. Fails if the
+    dtype check is removed (the jit call returns 337.5 s), if it is keyed on
+    the x64 flag rather than the dtype (the NumPy float32 call passes) or on
+    the dtype alone (the carried float64 array passes). Exact (raise or not).
     """
+    time = _EPOCHS_D[0] + 10 * s2d
+    with jax.enable_x64(True):
+        carried = jnp.asarray(time, dtype=jnp.float64)
     with jax.enable_x64(False):
         anchored = make_linear_speckle(epoch_d=_EPOCHS_D[0])
         zero = make_linear_speckle()
-        time = _EPOCHS_D[0] + 10 * s2d
         for field, refused in ((anchored, True), (zero, False)):
             calls = (
                 lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(t),
                 lambda t, f=field: f.elapsed_s(jnp.asarray(t)),
                 lambda t, f=field: f.elapsed_s(np.float32(t)),
+                lambda t, f=field: f.elapsed_s(carried),
+                lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(carried),
             )
             for call in calls:
                 if refused:
@@ -214,7 +222,9 @@ def test_elapsed_s_eager_equals_jit_under_x64():
     exactly, one rounding at most. Exact comparison for the host call, the
     eager call on a JAX array and the jit call; ``realize`` through each
     equals the field anchored at zero read at those seconds, eager against
-    eager and compiled against compiled. Fails if the
+    eager and compiled against compiled. Eager against compiled images agree
+    to 64 float64 eps of the largest pixel, not bitwise: the compiled program
+    fuses multiply-adds (8.7e-19 seen on 1e-3 pixels). Fails if the
     device path subtracts in float32 or forms ``time * d2s - epoch * d2s``.
     """
     with jax.enable_x64(True):
@@ -241,6 +251,8 @@ def test_elapsed_s_eager_equals_jit_under_x64():
                 field.realize(wavelength_nm=500.0, elapsed_s=elapsed).data, eager
             )
             np.testing.assert_array_equal(render(field, elapsed).data, compiled)
+        floor = 64 * np.finfo(np.float64).eps * np.max(np.abs(eager))
+        np.testing.assert_allclose(compiled, eager, rtol=0, atol=floor)
 
 
 @pytest.mark.parametrize("x64", [False, True], ids=["x32", "x64"])

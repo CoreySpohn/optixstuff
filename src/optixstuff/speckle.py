@@ -97,8 +97,10 @@ class FocalResponse(eqx.Module):
 
 
 def _reduced_time_message(dtype, epoch_d: float) -> str:
+    mode = "x64" if jax.config.jax_enable_x64 else "x32"
     return (
-        f"time_d of dtype {dtype} cannot be measured from epoch_d={epoch_d!r}: "
+        f"time_d of dtype {dtype} under {mode} cannot be measured from "
+        f"epoch_d={epoch_d!r}: "
         "the offset is already lost before the subtraction. Pass elapsed_s "
         "formed on the host, enable x64, or move the scene epoch to the "
         "observation so that epoch_d is zero."
@@ -121,12 +123,13 @@ class AbstractSpeckleField(eqx.Module):
     overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
     active dtype. With a nonzero ``epoch_d`` it subtracts in binary64 and
     requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
-    integer array (subtracted on the host), or a JAX float64 array
-    (subtracted on the device). Any other dtype raises ``ValueError``, at
-    trace time under ``jit``. A float32 time near a nonzero epoch has already
-    lost the offset; the ways out are to pass ``elapsed_s`` formed on the
-    host, to enable x64, or to move the scene epoch to the observation so
-    that ``epoch_d`` is zero.
+    integer array of either byte order (subtracted on the host), or a JAX
+    float64 array with x64 enabled (subtracted on the device). Anything else,
+    including a float64 JAX array passed while x64 is off, raises
+    ``ValueError``, at trace time under ``jit``. A float32 time near a
+    nonzero epoch has already lost the offset; the ways out are to pass
+    ``elapsed_s`` formed on the host, to enable x64, or to move the scene
+    epoch to the observation so that ``epoch_d`` is zero.
 
     The resolution of ``elapsed_s`` itself is the caller's: float32 seconds
     resolve ``elapsed_s * 2**-24``.
@@ -156,14 +159,16 @@ class AbstractSpeckleField(eqx.Module):
         Args:
             time_d: Scene time in days from the scene epoch, scalar or array.
                 Binary64 (a Python number, a NumPy float64 or integer array, or
-                a JAX float64 array) when ``epoch_d`` is nonzero.
+                a JAX float64 array with x64 enabled) when ``epoch_d`` is
+                nonzero.
 
         Returns:
             Seconds since the field's clock origin, in the active dtype.
 
         Raises:
             TypeError: If ``epoch_d`` is not a static host float.
-            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64.
+            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64,
+                or is a JAX array while x64 is off.
         """
         epoch_d = self.epoch_d
         if type(epoch_d) is not float:
@@ -171,11 +176,14 @@ class AbstractSpeckleField(eqx.Module):
         if epoch_d == 0.0:
             return jnp.asarray(time_d, dtype=float) * d2s
         if isinstance(time_d, jax.Array):
-            if time_d.dtype != jnp.float64:
+            # A float64 array made under x64 still subtracts in float32 when
+            # x64 is off, so the device path needs both; each is static.
+            if not jax.config.jax_enable_x64 or time_d.dtype != jnp.float64:
                 raise ValueError(_reduced_time_message(time_d.dtype, epoch_d))
             return (time_d - epoch_d) * d2s
         host = np.asarray(time_d)
-        if host.dtype != np.float64 and host.dtype.kind not in "iu":
+        kind, size = host.dtype.kind, host.dtype.itemsize
+        if not (kind in "iu" or (kind == "f" and size == 8)):
             raise ValueError(_reduced_time_message(host.dtype, epoch_d))
         return jnp.asarray((host.astype(np.float64) - epoch_d) * d2s, dtype=float)
 
