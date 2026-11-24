@@ -169,10 +169,15 @@ A band or a piece narrower than the wavelength tolerance is refused, because
 two edges that close are one wavelength to every comparison above and a rule
 on them would hold coincident nodes. The refusal does not depend on the
 precision: `Quadrature.build` also refuses a piece whose nodes at the
-requested order would collide at float32 resolution (measured for a piece starting at 450 nm:
-a 4-node piece needs about 0.67 tolerances of width, an 8-node piece about 1.7, a 16-node
-piece about 6.2 and a 32-node piece about 22), whether or not x64 is
-on. Widen the band, lower the order, or merge breaks that differ by rounding.
+requested order collide at float32 resolution, whether or not x64 is on. The
+refusal is not monotonic in width, because float32 spacing at 450 nm is about a
+quarter of the tolerance: a piece starting at 450 nm and a few tolerances wide
+may or may not be refused. Scanned in steps of 0.01 tolerances above one
+tolerance, the widest piece refused is 2.93 tolerances for 8 nodes, 10.93 for 16
+nodes and 42.18 for 32 nodes, so no refusal remains above those widths; a
+4-node piece is not refused at any width.
+Narrower pieces may or may not be refused. Widen the band, lower the order, or
+merge breaks that differ by rounding.
 Breaks that chain, each within the tolerance of the next but spanning more
 than one tolerance, are refused too, with the breaks named, since merging them
 would move a break farther than the tolerance. The limit is a resolving power

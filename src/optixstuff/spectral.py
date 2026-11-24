@@ -228,8 +228,8 @@ class ProductEdges(HostGrid):
             )
 
 
-# Keyed by the grids' digests; each entry is one merged knot array, so 32
-# entries stay far below a megabyte per thousand knots.
+# Keyed by the grids' digests; each entry is one merged knot array, about 14 MB
+# per grid at R = 1e6, so 32 entries hold about 450 MB in the extreme case.
 @functools.lru_cache(maxsize=32)
 def _union(grids: tuple[Knots, ...]) -> Knots:
     values = np.concatenate([grid.nm for grid in grids])
@@ -1034,8 +1034,9 @@ def _compose(interpolant, size, moments, points):
 
 
 # Host rules keyed by digests, never by array. Each entry holds the padded blocks
-# of one operator (about n_pieces x n_nodes x block width float64, a few MB for a
-# survey-size table), so 32 entries bound the cache at roughly a hundred MB.
+# of one operator (about n_pieces x n_nodes x block width float64: a few MB for a
+# survey-size table, about 14 MB per grid at R = 1e6), so 32 entries hold about
+# 450 MB in the extreme case.
 _RULE_CACHE: dict = {}
 _RULE_CACHE_SIZE = 32
 
