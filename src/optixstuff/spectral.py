@@ -901,9 +901,9 @@ class SpectralTable(Protocol):
     - ``spectral_degree``: the polynomial degree of the source between knots
       (1 for a linear table, 3 for a cubic one, the sum for a product).
 
-    A table also declares its knots as breaks: ``spectral_breaks_nm()``
-    returns ``knots.nm``. A table without a ``knots`` attribute is read from
-    ``spectral_breaks_nm()`` and its digest is checked against it.
+    ``spectral_breaks_nm()`` is not part of the contract: it is for sources
+    that declare breaks without being tables. A table that also declares its
+    knots as breaks returns ``knots.nm`` from it.
 
     Optionally, ``spectral_interpolant()`` returns the table's own
     interpolation as a function ``f(values, wavelength_nm)``, linear in the
@@ -912,20 +912,14 @@ class SpectralTable(Protocol):
     source evaluated at ``Reduction.fine_nm``.
 
     Attributes:
+        knots: The static knot grid.
         knot_digest: Digest of the knots and the interpolation method.
         spectral_degree: Polynomial degree of the source between knots.
     """
 
-    knot_digest: str | None
+    knots: Knots
+    knot_digest: str
     spectral_degree: int
-
-    def spectral_breaks_nm(self) -> np.ndarray:
-        """Return the concrete knots [nm] of the table.
-
-        Returns:
-            Strictly increasing knot wavelengths in nm.
-        """
-        ...
 
 
 def _lagrange(nodes, points):
@@ -1297,23 +1291,14 @@ def _build_arrays(quadrature, grid, degree, interpolant):
 
 
 def _table_grid(table, name):
-    """Knots and digest of a table, checking a digest stored beside raw knots."""
-    digest = table.knot_digest
-    if digest is None:
-        raise ValueError(
-            f"{name} was constructed under a trace and has no knot digest; "
-            "construct the table on the host"
+    """Static knots and digest of a table."""
+    knots = table.knots
+    if not isinstance(knots, Knots):
+        raise TypeError(
+            f"{name} holds its knots as {type(knots).__name__}; a SpectralTable "
+            "holds a static Knots"
         )
-    knots = getattr(table, "knots", None)
-    if isinstance(knots, Knots):
-        return knots, digest
-    knots = Knots(table.spectral_breaks_nm())
-    if digest.rpartition(":")[2] != knots.digest:
-        raise ValueError(
-            f"the knot digest of {name} does not match its knots: a knot grid "
-            "was replaced after construction; rebuild the table"
-        )
-    return knots, digest
+    return knots, table.knot_digest
 
 
 def _tuple(rows):
@@ -1445,10 +1430,7 @@ class Resolution(eqx.Module):
         digest = getattr(table, "knot_digest", None)
         name = type(table).__name__
         if digest is None:
-            raise LookupError(
-                f"{name} has no knot digest (it was constructed under a trace); "
-                "construct the table on the host"
-            )
+            raise LookupError(f"{name} declares no knots and has no rule")
         for key, rule in zip(self.keys, self.rules, strict=True):
             if key == (layout, digest):
                 self._check_nodes(quadrature, layout)
