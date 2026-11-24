@@ -107,3 +107,22 @@ def test_wavelength_grid_is_static():
     assert not any(leaf is pack.wavelengths_nm for leaf in jax.tree.leaves(pack))
     with pytest.raises(TypeError, match="not a leaf"):
         eqx.tree_at(lambda p: p.wavelengths_nm, pack, pack.wavelengths_nm)
+
+
+def test_one_wavelength_pack_is_allowed_and_static(tmp_path):
+    """Exact basis: a one-point grid is its single value; no break marks it.
+
+    A pack tabulated at one wavelength builds, round-trips through npz with an
+    equal static grid, declares no breaks (its template is constant, so the
+    interpolation never changes) and a nonpositive wavelength is refused.
+    Fails if a single wavelength is rejected as too short a grid.
+    """
+    pack = _pack(jnp.array([650.0]))
+    assert len(pack.wavelengths_nm) == 1
+    assert pack.spectral_breaks_nm().size == 0
+    assert not any(leaf is pack.wavelengths_nm for leaf in jax.tree.leaves(pack))
+    path = tmp_path / "one.npz"
+    save_psflet_pack(path, pack)
+    assert load_psflet_pack(path).wavelengths_nm == pack.wavelengths_nm
+    with pytest.raises(ValueError, match="positive"):
+        _pack(jnp.array([-1.0]))

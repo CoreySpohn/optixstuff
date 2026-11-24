@@ -129,7 +129,7 @@ class Exposure(eqx.Module):
     """
 
     time_d: jnp.ndarray | float = eqx.field(converter=as_float_leaf)
-    roll_deg: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
+    roll_deg: jnp.ndarray = eqx.field(converter=as_float_leaf)
     quadrature: Quadrature
     plan: FramePlan | None = None
     resolution: Resolution = eqx.field(default_factory=Resolution)

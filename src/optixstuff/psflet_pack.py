@@ -23,11 +23,32 @@ npz format, ``format_version = 1``:
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.leaves import HostGrid
 from jax import Array
 
-from optixstuff.spectral import Knots, as_knots
+from optixstuff.spectral import as_knots
 
 PACK_FORMAT_VERSION = 1
+
+
+def _pack_grid(wavelengths_nm) -> HostGrid:
+    """Return the static wavelength grid of a pack.
+
+    Two or more wavelengths are validated :class:`~optixstuff.spectral.Knots`.
+    A single wavelength is a one-point ``HostGrid`` (a pack tabulated at one
+    wavelength is allowed: its template is read at every wavelength).
+    """
+    n = (
+        len(wavelengths_nm)
+        if isinstance(wavelengths_nm, HostGrid)
+        else np.size(wavelengths_nm)
+    )
+    if n != 1:
+        return as_knots(wavelengths_nm)
+    grid = HostGrid(wavelengths_nm)
+    if grid.values[0] <= 0:
+        raise ValueError("the PSFlet wavelength must be positive")
+    return grid
 
 
 def _optional_asarray(x):
@@ -41,9 +62,10 @@ class PsfletPack(eqx.Module):
         templates: Template planes, shape ``(n_field, n_lam, n_off, n_off)``.
         offsets: Uniform ascending pixel-offset axis, shape ``(n_off,)``.
         wavelengths_nm: Ascending tabulation wavelengths in nm, shape ``(n_lam,)``,
-            a static :class:`~optixstuff.spectral.Knots` (at least two, each at
-            least the wavelength tolerance from the next); ``.nm`` is the
-            float64 array.
+            a static grid: :class:`~optixstuff.spectral.Knots` (each at least
+            the wavelength tolerance from the next), or a one-point
+            ``HostGrid`` for a pack tabulated at one wavelength; ``.values``
+            is the float64 array and ``.array()`` a JAX constant.
         field_xy: Field-anchor positions in lenslet-index coordinates, shape
             ``(n_field, 2)``.
         centroids: Optional ``(dx, dy)`` pixel corrections to the dispersion-model
@@ -53,7 +75,7 @@ class PsfletPack(eqx.Module):
 
     templates: Array = eqx.field(converter=jnp.asarray)
     offsets: Array = eqx.field(converter=jnp.asarray)
-    wavelengths_nm: Knots = eqx.field(static=True, converter=as_knots)
+    wavelengths_nm: HostGrid = eqx.field(static=True, converter=_pack_grid)
     field_xy: Array = eqx.field(converter=jnp.asarray)
     centroids: Array | None = eqx.field(converter=_optional_asarray, default=None)
     meta_json: str = eqx.field(static=True, default="")
@@ -61,10 +83,15 @@ class PsfletPack(eqx.Module):
     def spectral_breaks_nm(self) -> np.ndarray:
         """Return the wavelengths where template and centroid interpolation changes.
 
+        Interpolation is linear between the tabulated wavelengths, so they are
+        the breaks. A one-wavelength pack is constant, with no change to mark.
+
         Returns:
-            The tabulation wavelengths in nm.
+            The tabulation wavelengths in nm; empty for a one-wavelength pack.
         """
-        return self.wavelengths_nm.nm
+        if len(self.wavelengths_nm) == 1:
+            return np.empty(0)
+        return self.wavelengths_nm.values
 
     def __check_init__(self):
         """Validate shapes and grid conventions at construction (eager only)."""
@@ -102,7 +129,7 @@ def save_psflet_pack(path, pack):
         format_version=np.int64(PACK_FORMAT_VERSION),
         templates=np.asarray(pack.templates),
         offsets=np.asarray(pack.offsets),
-        wavelengths_nm=pack.wavelengths_nm.nm,
+        wavelengths_nm=pack.wavelengths_nm.values,
         field_xy=np.asarray(pack.field_xy),
     )
     if pack.centroids is not None:

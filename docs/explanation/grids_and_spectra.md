@@ -169,9 +169,9 @@ A band or a piece narrower than the wavelength tolerance is refused, because
 two edges that close are one wavelength to every comparison above and a rule
 on them would hold coincident nodes. The refusal does not depend on the
 precision: `Quadrature.build` also refuses a piece whose nodes at the
-requested order would collide at float32 resolution (at 450 nm a 16-node piece needs
-about 10 tolerances of width and a 32-node piece about 40; a 4-node piece
-needs less than one), whether or not x64 is
+requested order would collide at float32 resolution (measured for a piece starting at 450 nm:
+a 4-node piece needs about 0.67 tolerances of width, an 8-node piece about 1.7, a 16-node
+piece about 6.2 and a 32-node piece about 22), whether or not x64 is
 on. Widen the band, lower the order, or merge breaks that differ by rounding.
 Breaks that chain, each within the tolerance of the next but spanning more
 than one tolerance, are refused too, with the breaks named, since merging them

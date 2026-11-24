@@ -26,6 +26,7 @@ from optixstuff.grids import Image
 __all__ = [
     "Band",
     "Knots",
+    "ProductEdges",
     "Quadrature",
     "Reduction",
     "Resolution",
@@ -196,20 +197,54 @@ class Knots(HostGrid):
         return _union((self, *others))
 
 
-@functools.lru_cache(maxsize=8)
+class ProductEdges(HostGrid):
+    """The cell edges [nm] of a product of tables, static host data.
+
+    For a table whose edges are the raw union of its component tables' knots,
+    such as a planet spectrum times its star: edges closer than the wavelength
+    tolerance are allowed, so each cell of the product is integrated exactly.
+    Built only by product tables; every other grid is :class:`Knots`. The
+    edges must be finite, positive and strictly increasing, at least two.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, edges_nm):
+        """Validate concrete edges and store them as read-only float64.
+
+        Args:
+            edges_nm: Edge wavelengths [nm], any concrete 1D array-like.
+
+        Raises:
+            TypeError: If the edges are traced.
+            ValueError: If the edges are not a valid grid.
+        """
+        super().__init__(edges_nm)
+        edges = self.values
+        if edges.size < 2 or np.any(edges <= 0) or np.any(np.diff(edges) <= 0):
+            raise ValueError(
+                "the edges of a product table must be a finite, positive, "
+                "strictly increasing 1D array of at least two wavelengths"
+            )
+
+
+# Keyed by the grids' digests; each entry is one merged knot array, so 32
+# entries stay far below a megabyte per thousand knots.
+@functools.lru_cache(maxsize=32)
 def _union(grids: tuple[Knots, ...]) -> Knots:
     values = np.concatenate([grid.nm for grid in grids])
     return Knots(_merge_breaks(np.unique(values), np.empty(0)))
 
 
-def _as_grid(grid) -> HostGrid:
-    """A ``HostGrid`` (``Knots`` included) unchanged, else validated ``Knots``.
+def _as_grid(grid) -> Knots | ProductEdges:
+    """``Knots`` or ``ProductEdges`` unchanged, else validated ``Knots``.
 
-    A composite table, such as a planet times its star, holds the raw union
-    of its components' knots as a plain ``HostGrid``: its cell edges may lie
-    closer than the wavelength tolerance, which ``Knots`` refuses.
+    A product table, such as a planet times its star, holds the raw union of
+    its components' knots as ``ProductEdges``: its cell edges may lie closer
+    than the wavelength tolerance, which ``Knots`` refuses. A plain
+    ``HostGrid`` is validated as ``Knots`` like any array.
     """
-    return grid if isinstance(grid, HostGrid) else Knots(grid)
+    return grid if isinstance(grid, Knots | ProductEdges) else Knots(grid)
 
 
 def as_knots(knots_nm) -> Knots:
@@ -903,8 +938,8 @@ def digest_knots(knots_nm, method: str) -> str:
     be looked up for the table inside a traced program.
 
     Args:
-        knots_nm: A ``Knots`` or ``HostGrid``, or concrete table wavelengths
-            in nm.
+        knots_nm: A ``Knots`` or ``ProductEdges``, or concrete table
+            wavelengths in nm.
         method: Name of the interpolation between the knots, such as
             ``"linear"`` or ``"cubic"``; it must not contain a colon.
 
@@ -998,8 +1033,11 @@ def _compose(interpolant, size, moments, points):
     return blocks
 
 
+# Host rules keyed by digests, never by array. Each entry holds the padded blocks
+# of one operator (about n_pieces x n_nodes x block width float64, a few MB for a
+# survey-size table), so 32 entries bound the cache at roughly a hundred MB.
 _RULE_CACHE: dict = {}
-_RULE_CACHE_SIZE = 64
+_RULE_CACHE_SIZE = 32
 
 
 class Reduction(eqx.Module):
@@ -1327,10 +1365,10 @@ def _build_arrays(quadrature, grid, degree, interpolant):
 def _table_grid(table, name):
     """Static knots and digest of a table."""
     knots = table.knots
-    if not isinstance(knots, HostGrid):
+    if not isinstance(knots, Knots | ProductEdges):
         raise TypeError(
             f"{name} holds its knots as {type(knots).__name__}; a SpectralTable "
-            "holds a static Knots (a composite, a static HostGrid)"
+            "holds a static Knots (a product table, ProductEdges)"
         )
     return knots, table.knot_digest
 

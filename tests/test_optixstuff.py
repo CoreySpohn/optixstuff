@@ -5,6 +5,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.jax_config import float_dtype
+from hwoutils.leaves import check_tree
 
 import optixstuff as ox
 from optixstuff.spectral import Transmission, spectral_breaks
@@ -198,6 +200,12 @@ def test_exposure_is_a_record_of_one_observation():
     exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)
     assert exposure.plan is None
     assert exposure.roll_deg == 15.0
+    for x64 in (False, True):
+        with jax.enable_x64(x64):
+            rule = Quadrature.build((Band(500.0, 600.0),), order=2)
+            built = ox.Exposure(time_d=3.0, roll_deg=15.0, quadrature=rule)
+            assert check_tree(built) == ()
+            assert built.roll_deg.dtype == float_dtype()
     assert not hasattr(exposure, "ecliptic_latitude_deg")
     assert not hasattr(exposure, "solar_longitude_deg")
     assert exposure.roll_deg in jax.tree.leaves(exposure)

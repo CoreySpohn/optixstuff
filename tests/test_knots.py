@@ -342,11 +342,11 @@ def test_merge_refuses_a_chain_longer_than_one_tolerance():
 
 
 def test_union_cache_is_bounded():
-    """Exact basis: after 20 distinct grids the union cache holds at most 8
+    """Exact basis: after 40 distinct grids the union cache holds at most 32
     entries. Fails if the cache is unbounded."""
     from optixstuff.spectral import _union
 
     _union.cache_clear()
-    for i in range(20):
+    for i in range(40):
         Knots([400.0, 500.0 + i]).union(Knots([450.0, 560.0 + i]))
-    assert _union.cache_info().currsize <= 8
+    assert _union.cache_info().currsize <= 32

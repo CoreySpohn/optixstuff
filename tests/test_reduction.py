@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hwoutils.leaves import as_float_leaf
+from hwoutils.leaves import HostGrid, as_float_leaf
 from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
@@ -27,6 +27,7 @@ from optixstuff.spectral import (
     _RULE_CACHE,
     Band,
     Knots,
+    ProductEdges,
     Quadrature,
     Reduction,
     Resolution,
@@ -208,12 +209,37 @@ def test_fine_kind_integrates_a_product_of_two_tables():
     with jax.enable_x64():
         rule = Quadrature.build((band,), order=4)
         for degree in (2, 0):
-            reduction = Reduction.build(rule, knots, degree=degree)
+            reduction = Reduction.build(rule, ProductEdges(knots), degree=degree)
             assert reduction.kind == "fine"
             node_values = reduction.apply(product(np.asarray(reduction.fine_nm)))
             errors[degree] = band_sums(rule, node_values, cubic(band))[0] / truth - 1
     assert abs(errors[2]) < 1e-13
     assert abs(errors[0]) > 1e-7
+
+
+def test_build_refuses_a_plain_host_grid_that_knots_refuse():
+    """Exact message basis: a plain ``HostGrid`` is validated as ``Knots``.
+
+    Near-duplicate, non-monotonic and negative grids raise the messages
+    ``Knots`` gives; ``ProductEdges`` accepts the near-duplicate edge that a
+    product of tables needs but refuses the other two. Mutation: ``_as_grid``
+    accepting any ``HostGrid`` lets the plain grids through.
+    """
+    rule = Quadrature.build((Band(500.0, 510.0),), order=2)
+    cases = {
+        "closer than the wavelength tolerance": [499.0, 505.0, 505.0 + 1e-6, 511.0],
+        "strictly increasing": [499.0, 505.0, 503.0, 511.0],
+        "positive": [-1.0, 505.0, 511.0],
+    }
+    for message, values in cases.items():
+        with pytest.raises(ValueError, match=message.split()[0]):
+            Knots(values)
+        with pytest.raises(ValueError, match=message.split()[0]):
+            Reduction.build(rule, HostGrid(values), degree=1)
+    close = cases["closer than the wavelength tolerance"]
+    assert Reduction.build(rule, ProductEdges(close), degree=1).kind == "fine"
+    with pytest.raises(ValueError, match="strictly increasing"):
+        ProductEdges(cases["strictly increasing"])
 
 
 def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
