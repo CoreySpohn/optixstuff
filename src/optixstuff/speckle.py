@@ -107,6 +107,15 @@ def _reduced_time_message(dtype, epoch_d: float) -> str:
     )
 
 
+def _x32_execution_message(epoch_d: float) -> str:
+    return (
+        "time_d is a float64 JAX array but x64 is off, so its subtraction from "
+        f"epoch_d={epoch_d!r} would run in float32; the array itself still "
+        "holds the time. Rerun under x64 (jax.enable_x64), or pass elapsed_s "
+        "formed on the host."
+    )
+
+
 class AbstractSpeckleField(eqx.Module):
     """Interface for deterministic time-driven speckles, including replayed cubes.
 
@@ -123,13 +132,20 @@ class AbstractSpeckleField(eqx.Module):
     overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
     active dtype. With a nonzero ``epoch_d`` it subtracts in binary64 and
     requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
-    integer array of either byte order (subtracted on the host), or a JAX
-    float64 array with x64 enabled (subtracted on the device). Anything else,
-    including a float64 JAX array passed while x64 is off, raises
-    ``ValueError``, at trace time under ``jit``. A float32 time near a
-    nonzero epoch has already lost the offset; the ways out are to pass
-    ``elapsed_s`` formed on the host, to enable x64, or to move the scene
-    epoch to the observation so that ``epoch_d`` is zero.
+    integer array (subtracted on the host), or a JAX float64 array with x64
+    enabled (subtracted on the device). Anything else raises ``ValueError``,
+    at trace time under ``jit``. A float32 time near a nonzero epoch has
+    already lost the offset; the ways out are to pass ``elapsed_s`` formed on
+    the host, to enable x64, or to move the scene epoch to the observation so
+    that ``epoch_d`` is zero. A float64 JAX array passed while x64 is off
+    still holds the time but would be subtracted in float32; it raises with
+    its own message, and rerunning under x64 recovers it.
+
+    A NumPy array of either byte order is accepted in a concrete (eager)
+    call, where the subtraction runs on the host. Under ``jit`` JAX itself
+    misreads a non-native byte-order array as it enters the compiled
+    function, before ``elapsed_s`` runs, so pass native float64 there (for
+    example ``time_d.astype(np.float64)``) or form ``elapsed_s`` on the host.
 
     The resolution of ``elapsed_s`` itself is the caller's: float32 seconds
     resolve ``elapsed_s * 2**-24``.
@@ -160,15 +176,18 @@ class AbstractSpeckleField(eqx.Module):
             time_d: Scene time in days from the scene epoch, scalar or array.
                 Binary64 (a Python number, a NumPy float64 or integer array, or
                 a JAX float64 array with x64 enabled) when ``epoch_d`` is
-                nonzero.
+                nonzero. Either byte order in a concrete call; native float64
+                under ``jit``, where JAX misreads a byte-swapped array before
+                this method runs.
 
         Returns:
             Seconds since the field's clock origin, in the active dtype.
 
         Raises:
             TypeError: If ``epoch_d`` is not a static host float.
-            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64,
-                or is a JAX array while x64 is off.
+            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64
+                (the offset is already lost), or is a float64 JAX array while
+                x64 is off (rerun under x64); the two messages differ.
         """
         epoch_d = self.epoch_d
         if type(epoch_d) is not float:
@@ -178,8 +197,10 @@ class AbstractSpeckleField(eqx.Module):
         if isinstance(time_d, jax.Array):
             # A float64 array made under x64 still subtracts in float32 when
             # x64 is off, so the device path needs both; each is static.
-            if not jax.config.jax_enable_x64 or time_d.dtype != jnp.float64:
+            if time_d.dtype != jnp.float64:
                 raise ValueError(_reduced_time_message(time_d.dtype, epoch_d))
+            if not jax.config.jax_enable_x64:
+                raise ValueError(_x32_execution_message(epoch_d))
             return (time_d - epoch_d) * d2s
         host = np.asarray(time_d)
         kind, size = host.dtype.kind, host.dtype.itemsize

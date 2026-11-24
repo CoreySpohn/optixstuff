@@ -170,7 +170,9 @@ def test_elapsed_s_is_exact_on_the_host_under_x32():
     basis floating-point: the binary64 sum ``epoch + 10 * s2d`` carries at most
     half an ulp of 60000 d (3.2e-7 s), and the float32 result at 10 s rounds by
     at most 4.8e-7 s; 1e-6 s covers both. Casting first returns 337.5 s or 0.
-    A big-endian binary64 array holds the same value and is accepted.
+    A big-endian binary64 array holds the same value and is accepted; a
+    complex64 (eight bytes, float32 parts) is refused, so a guard keyed on
+    the size alone fails.
     """
     with jax.enable_x64(False):
         for epoch in _EPOCHS_D:
@@ -179,6 +181,10 @@ def test_elapsed_s_is_exact_on_the_host_under_x32():
                 elapsed = field.elapsed_s(time)
                 assert elapsed.dtype == jnp.float32
                 np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
+            # Eight bytes is not binary64: complex64 holds two float32 parts.
+            for time in (np.complex64(epoch + 10 * s2d), np.float16(1.0)):
+                with pytest.raises(ValueError, match="already lost"):
+                    field.elapsed_s(time)
 
 
 def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
@@ -190,7 +196,10 @@ def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
     with ``epoch_d = 0`` nothing cancels and all are accepted. Fails if the
     dtype check is removed (the jit call returns 337.5 s), if it is keyed on
     the x64 flag rather than the dtype (the NumPy float32 call passes) or on
-    the dtype alone (the carried float64 array passes). Exact (raise or not).
+    the dtype alone (the carried float64 array passes). The carried array is
+    refused for x32 execution, with its own message, and the same array under
+    x64 gives 10 s (1e-6 s, the binary64 rounding of the sum). Exact (raise
+    or not, and which message).
     """
     time = _EPOCHS_D[0] + 10 * s2d
     with jax.enable_x64(True):
@@ -206,12 +215,17 @@ def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
                 lambda t, f=field: f.elapsed_s(carried),
                 lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(carried),
             )
-            for call in calls:
+            for i, call in enumerate(calls):
                 if refused:
-                    with pytest.raises(ValueError, match="epoch_d"):
+                    # The carried float64 still holds the time: x32 execution,
+                    # not a lost offset, and the message says to rerun.
+                    match = "rerun under x64" if i >= 3 else "already lost"
+                    with pytest.raises(ValueError, match=f"(?i)epoch_d.*{match}"):
                         call(time)
                 else:
                     assert call(time).dtype == jnp.float32
+    with jax.enable_x64(True):
+        np.testing.assert_allclose(anchored.elapsed_s(carried), 10.0, atol=1e-6)
 
 
 def test_elapsed_s_eager_equals_jit_under_x64():
