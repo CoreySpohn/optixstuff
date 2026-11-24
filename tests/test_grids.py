@@ -2,6 +2,7 @@
 
 from dataclasses import FrozenInstanceError, replace
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -1300,12 +1301,12 @@ def test_coverage_data_mask_contract():
 
     class Bare(AbstractSpeckleField):
         grid: PixelGrid = native
-        epoch_d: float = 0.0
+        epoch_d: float = eqx.field(static=True, default=0.0)
 
         def spectral_breaks_nm(self):
             return np.empty(0)
 
-        def realize(self, *, wavelength_nm, time_d=0.0):
+        def realize(self, *, wavelength_nm, elapsed_s=0.0):
             return Image(jnp.zeros((n, n)), native, (), Measure.integral(), "x")
 
     assert Bare().data_mask() is None

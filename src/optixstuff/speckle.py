@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
-from hwoutils.constants import s2d
+from hwoutils.constants import d2s
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -96,23 +96,88 @@ class FocalResponse(eqx.Module):
         return jnp.sqrt(self.grid.pixel_area)
 
 
+def _reduced_time_message(dtype, epoch_d: float) -> str:
+    return (
+        f"time_d of dtype {dtype} cannot be measured from epoch_d={epoch_d!r}: "
+        "the offset is already lost before the subtraction. Pass elapsed_s "
+        "formed on the host, enable x64, or move the scene epoch to the "
+        "observation so that epoch_d is zero."
+    )
+
+
 class AbstractSpeckleField(eqx.Module):
     """Interface for deterministic time-driven speckles, including replayed cubes.
 
-    All wavelengths are nm and timestamps are days from the scene epoch.
-    Implementations own their native lod grid and its diameter/wavelength
-    Frame. They return Images, leaving detector resampling to the consumer.
-    The realization is fixed at construction, preserving temporal correlation
-    across exposures without a per-call random key.
+    A field runs on its own clock. Every method takes ``elapsed_s``: seconds
+    since the field's clock origin, keyword-only, converted to the active
+    dtype and used as given. Implementations never read ``epoch_d`` and never
+    subtract a time origin.
+
+    ``epoch_d`` places the clock origin on the scene clock, in days from the
+    scene epoch. It is a static host binary64 float
+    (``eqx.field(static=True, converter=float)``), never a leaf, and finite.
+
+    ``elapsed_s(time_d)`` is the only conversion from scene time and is not
+    overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
+    active dtype. With a nonzero ``epoch_d`` it subtracts in binary64 and
+    requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
+    integer array (subtracted on the host), or a JAX float64 array
+    (subtracted on the device). Any other dtype raises ``ValueError``, at
+    trace time under ``jit``. A float32 time near a nonzero epoch has already
+    lost the offset; the ways out are to pass ``elapsed_s`` formed on the
+    host, to enable x64, or to move the scene epoch to the observation so
+    that ``epoch_d`` is zero.
+
+    The resolution of ``elapsed_s`` itself is the caller's: float32 seconds
+    resolve ``elapsed_s * 2**-24``.
+
+    All wavelengths are nm. Implementations own their native lod grid and its
+    diameter/wavelength Frame. They return Images, leaving detector
+    resampling to the consumer. The realization is fixed at construction,
+    preserving temporal correlation across exposures without a per-call
+    random key.
 
     Attributes:
         grid: Native lambda/D sampling, including center, basis and Frame.
-        epoch_d: Clock origin in days from the scene epoch, subtracted by
-            implementations.
+        epoch_d: Clock origin in days from the scene epoch; static host
+            metadata, read only by ``elapsed_s``.
     """
 
     grid: AbstractVar[PixelGrid]
     epoch_d: AbstractVar[float]
+
+    def elapsed_s(self, time_d: ArrayLike) -> Array:
+        """Convert scene time to seconds on this field's clock.
+
+        The refusal is decided from static facts (the dtype of ``time_d`` and
+        the host value of ``epoch_d``), so it holds at trace time inside
+        ``jit``, ``vmap`` and ``grad``.
+
+        Args:
+            time_d: Scene time in days from the scene epoch, scalar or array.
+                Binary64 (a Python number, a NumPy float64 or integer array, or
+                a JAX float64 array) when ``epoch_d`` is nonzero.
+
+        Returns:
+            Seconds since the field's clock origin, in the active dtype.
+
+        Raises:
+            TypeError: If ``epoch_d`` is not a static host float.
+            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64.
+        """
+        epoch_d = self.epoch_d
+        if type(epoch_d) is not float:
+            raise TypeError("epoch_d must be a static host float, not a leaf")
+        if epoch_d == 0.0:
+            return jnp.asarray(time_d, dtype=float) * d2s
+        if isinstance(time_d, jax.Array):
+            if time_d.dtype != jnp.float64:
+                raise ValueError(_reduced_time_message(time_d.dtype, epoch_d))
+            return (time_d - epoch_d) * d2s
+        host = np.asarray(time_d)
+        if host.dtype != np.float64 and host.dtype.kind not in "iu":
+            raise ValueError(_reduced_time_message(host.dtype, epoch_d))
+        return jnp.asarray((host.astype(np.float64) - epoch_d) * d2s, dtype=float)
 
     def data_mask(self) -> Array | None:
         """Cells of ``grid`` that hold data, or None when every cell does.
@@ -138,7 +203,7 @@ class AbstractSpeckleField(eqx.Module):
         """
 
     @abc.abstractmethod
-    def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
+    def realize(self, *, wavelength_nm: ArrayLike, elapsed_s: ArrayLike = 0.0) -> Image:
         """Return cell-integrated stellar_flux_fraction excess on the field's grid.
 
         The nominal coronagraph leakage must not be included again. Concrete
@@ -146,7 +211,7 @@ class AbstractSpeckleField(eqx.Module):
 
         Args:
             wavelength_nm: Wavelength in nm, scalar or array.
-            time_d: Time in days from the scene epoch.
+            elapsed_s: Seconds since the field's clock origin.
 
         Returns:
             Stellar flux fraction excess per cell on the field's grid.
@@ -157,21 +222,22 @@ class AbstractSpeckleField(eqx.Module):
         *,
         wavelength_nm: ArrayLike,
         exposure_s: ArrayLike,
-        start_time_d: ArrayLike = 0.0,
+        start_elapsed_s: ArrayLike = 0.0,
         n_sub: int = 8,
     ) -> Image:
         """Time-average realized Images at n_sub exposure midpoints.
 
-        exposure_s is seconds; start_time_d is days from the scene epoch.
-        This second-order midpoint rule averages intensities, not coefficients.
-        Only one image accumulator is held, irrespective of n_sub. All image
-        metadata and wavelength leading axes are retained. Enable JAX x64 when
-        sub-exposure offsets need more precision than the absolute day clock.
+        Samples ``realize`` at ``start_elapsed_s + (index + 0.5) * step_s``
+        with ``step_s = exposure_s / n_sub``, all in seconds on the field's
+        clock. This second-order midpoint rule averages intensities, not
+        coefficients. Only one image accumulator is held, irrespective of
+        n_sub. All image metadata and wavelength leading axes are retained.
 
         Args:
             wavelength_nm: Wavelength in nm, scalar or array.
             exposure_s: Exposure duration in seconds.
-            start_time_d: Start of the exposure in days from the scene epoch.
+            start_elapsed_s: Start of the exposure in seconds since the field's
+                clock origin.
             n_sub: Number of exposure midpoints averaged.
 
         Returns:
@@ -183,12 +249,12 @@ class AbstractSpeckleField(eqx.Module):
         if int(n_sub) < 1 or int(n_sub) != n_sub:
             raise ValueError(f"n_sub must be a positive integer, got {n_sub}")
         n_sub = int(n_sub)
-        start = jnp.asarray(start_time_d, dtype=float)
-        step = jnp.asarray(exposure_s, dtype=float) * s2d / n_sub
+        start = jnp.asarray(start_elapsed_s, dtype=float)
+        step = jnp.asarray(exposure_s, dtype=float) / n_sub
 
         def sample(index):
             return self.realize(
-                wavelength_nm=wavelength_nm, time_d=start + (index + 0.5) * step
+                wavelength_nm=wavelength_nm, elapsed_s=start + (index + 0.5) * step
             )
 
         def accumulate(index, total):
@@ -218,17 +284,16 @@ class LinearSpeckleField(AbstractSpeckleField):
     coronagraph products; their stored reference grid is not itself a request
     to rescale a monochromatic coronagraph table.
 
-    epoch_d is a static host binary64 float. Implement coefficients(time_d)
-    by subtracting epoch_d before reducing precision, then convert days with
-    hwoutils constants if needed. A float32 absolute timestamp has already
-    lost information; enable JAX x64 and promote to float64 BEFORE adding a
-    small offset to an absolute epoch on device. Deep-contrast accuracy also
-    requires x64 arrays; this class does not change global JAX precision.
+    ``epoch_d`` is placement metadata, a static host binary64 float,
+    keyword-only, default zero. ``coefficients(*, elapsed_s)`` is a function
+    of the field's own clock and does not read ``epoch_d``. Deep-contrast
+    accuracy also requires x64 arrays; this class does not change global JAX
+    precision.
 
     Attributes:
         response: Focal amplitudes and their photometric reference.
-        epoch_d: Clock origin in days from the scene epoch; keyword-only, default
-            zero.
+        epoch_d: Clock origin in days from the scene epoch; static host
+            metadata, keyword-only, default zero.
     """
 
     response: FocalResponse
@@ -258,20 +323,22 @@ class LinearSpeckleField(AbstractSpeckleField):
             raise ValueError("epoch_d must be finite")
 
     @abc.abstractmethod
-    def coefficients(self, time_d: ArrayLike) -> Array:
-        """Return eps, shape ``(*time_shape, n_modes)``, at absolute scene days.
+    def coefficients(self, *, elapsed_s: ArrayLike) -> Array:
+        """Return eps, shape ``(*time_shape, n_modes)``, at ``elapsed_s``.
 
-        The implementation forms elapsed time time_d - epoch_d. Coefficient
-        units are those used to define G (for example nm of wavefront error).
+        ``elapsed_s`` is seconds since the clock origin. Coefficient units are
+        those used to define G (for example nm of wavefront error). The
+        implementation converts ``elapsed_s`` with
+        ``jnp.asarray(elapsed_s, dtype=float)`` and does not read ``epoch_d``.
 
         Args:
-            time_d: Time in days from the scene epoch.
+            elapsed_s: Seconds since the field's clock origin, any shape.
 
         Returns:
             Coefficients eps of shape ``(*time_shape, n_modes)``.
         """
 
-    def realize(self, *, wavelength_nm: ArrayLike, time_d: ArrayLike = 0.0) -> Image:
+    def realize(self, *, wavelength_nm: ArrayLike, elapsed_s: ArrayLike = 0.0) -> Image:
         """Evaluate ``[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy``.
 
         Positive wavelength_nm may be scalar or an array, including (W, Q)
@@ -285,14 +352,14 @@ class LinearSpeckleField(AbstractSpeckleField):
         Args:
             wavelength_nm: Positive wavelength in nm, scalar or array, including (W, Q)
                 quadrature nodes.
-            time_d: Time in days from the scene epoch, scalar or array.
+            elapsed_s: Seconds since the field's clock origin, scalar or array.
 
         Returns:
             Stellar flux fraction excess per cell, shape
             ``(*wavelength_shape, *time_shape, ny, nx)``.
         """
         wavelengths = jnp.asarray(wavelength_nm)
-        eps = self.coefficients(time_d)
+        eps = self.coefficients(elapsed_s=elapsed_s)
         # Contract densities first to avoid a per-realization copy of G.
         pixel_scale = self.response._pixel_amplitude_scale()
         e_nom = self.response.e_nom * pixel_scale
@@ -316,7 +383,7 @@ class LinearSpeckleField(AbstractSpeckleField):
             reconstruction="band_limited",
         )
 
-    def broadened(self, *, quadrature: Quadrature, time_d: ArrayLike = 0.0) -> Image:
+    def broadened(self, *, quadrature: Quadrature, elapsed_s: ArrayLike = 0.0) -> Image:
         """Integrate realized nodes with unit-sum weights in each band.
 
         The response weights sum to the represented band width in nm.
@@ -332,12 +399,12 @@ class LinearSpeckleField(AbstractSpeckleField):
 
         Args:
             quadrature: Wavelength nodes and weights of the bands.
-            time_d: Time in days from the scene epoch, scalar or array.
+            elapsed_s: Seconds since the field's clock origin, scalar or array.
 
         Returns:
             Band-mean stellar flux fraction excess per cell, shape
             ``(W, *time_shape, ny, nx)``.
         """
-        nodes = self.realize(wavelength_nm=quadrature.nodes_nm, time_d=time_d)
+        nodes = self.realize(wavelength_nm=quadrature.nodes_nm, elapsed_s=elapsed_s)
         mean = quadrature.mean(nodes.data)
         return replace(nodes, data=mean, leading_axes=("band", *nodes.leading_axes[2:]))

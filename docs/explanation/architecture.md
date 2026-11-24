@@ -283,9 +283,12 @@ edge. A wavelength outside all calibrated intervals raises `ValueError`.
 `AbstractSpeckleField` owns a native `lod` `grid` with its `Frame` and an
 `epoch_d` clock origin. It remains the interface for nonlinear implementations,
 including replayed intensity cubes. `LinearSpeckleField` supplies the common
-law for coefficient-driven fields; subclasses implement `coefficients(time_d)`
-and subtract `epoch_d` internally. Wavelengths are nm, absolute times are days
-from the scene epoch, and exposure durations are seconds.
+law for coefficient-driven fields; subclasses implement
+`coefficients(*, elapsed_s)` and never read `epoch_d`. A field runs on its own
+clock: every method takes `elapsed_s`, seconds since the field's clock origin.
+`epoch_d` places that origin on the scene clock, in days from the scene epoch,
+and `field.elapsed_s(time_d)` is the one conversion from scene days. Wavelengths
+are nm and exposure durations are seconds.
 
 A `FocalResponse` stores the linear family's nominal amplitude density
 `e_nom` and sensitivity density `G` with shapes `(ny, nx)` and
@@ -294,7 +297,7 @@ A `FocalResponse` stores the linear family's nominal amplitude density
 `[2 Re(conj(e_nom) G eps) + |G eps|^2] / input_energy`. The shared law scales
 `G` by `reference_wavelength_nm / wavelength_nm`.
 
-`realize(wavelength_nm=..., time_d=...)` returns an `Image` on `self.grid`,
+`realize(wavelength_nm=..., elapsed_s=...)` returns an `Image` on `self.grid`,
 with `Measure.integral()`, `stellar_flux_fraction`, `band_limited`, and `zero`
 metadata. Wavelength and time arrays form an outer product; wavelength axes
 lead time axes, followed by `(y, x)`. A `(W, Q)` wavelength array has axes
@@ -304,11 +307,11 @@ Convert each node grid with `grid.to_arcsec(node_nm)` before resampling to a
 fixed detector. The same Frame conversion applies to native coronagraph
 products, whose stored reference grid remains explicit.
 
-`broadened(quadrature=..., time_d=...)` integrates all realized nodes at fixed
+`broadened(quadrature=..., elapsed_s=...)` integrates all realized nodes at fixed
 native lambda/D coordinates, dividing the nm weights by their per-band sum.
 The output retains flux-fraction units and the band axis. It cannot replace
 node-level resampling and spectral weighting for a fixed angular detector.
-`realize_average(..., start_time_d=..., exposure_s=..., n_sub=8)` averages
+`realize_average(..., start_elapsed_s=..., exposure_s=..., n_sub=8)` averages
 realized Images with the midpoint rule, retaining metadata.
 
 A speckle field is a product too, and its grid usually covers less of the
@@ -330,7 +333,11 @@ zero elsewhere) says so through `data_mask()`, and
 pixel whose read reaches a cell without data. A mask is accepted only for
 reconstructions of finite reach.
 
-`epoch_d` is a static host float64 origin. Enable JAX x64 and promote absolute
-timestamps before adding small offsets on device; subtracting the epoch cannot
-recover precision lost in a float32 absolute time. Deep-contrast calculations
-also require float64/complex128 arrays.
+`epoch_d` is a static host float64 origin, never a leaf. `elapsed_s(time_d)`
+subtracts it in binary64: with a nonzero `epoch_d`, `time_d` must be a Python
+number, a NumPy float64 or integer array, or a JAX float64 array, and any other
+dtype raises `ValueError` (at trace time under `jit`), because a float32 time
+near a nonzero epoch has already lost the offset. The ways out are to pass
+`elapsed_s` formed on the host, to enable x64, or to move the scene epoch to the
+observation so that `epoch_d` is zero. Deep-contrast calculations also require
+float64/complex128 arrays.

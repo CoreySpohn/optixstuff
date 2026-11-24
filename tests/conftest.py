@@ -220,42 +220,46 @@ class SinusoidalSpeckle(ox.LinearSpeckleField):
 
     offset_nm: object
     amplitude_nm: object
-    angular_frequency_per_d: object
+    angular_frequency_per_s: object
 
-    def coefficients(self, time_d):
+    def coefficients(self, *, elapsed_s):
         import jax.numpy as jnp
 
-        # Subtract on the host when concrete; traced absolute times need x64.
-        elapsed_d = jnp.asarray(time_d - self.epoch_d)
+        t = jnp.asarray(elapsed_s, dtype=float)
         return self.offset_nm + self.amplitude_nm * jnp.sin(
-            elapsed_d[..., None] * self.angular_frequency_per_d
+            t[..., None] * self.angular_frequency_per_s
         )
+
+
+def make_linear_speckle(epoch_d=0.0):
+    """Small asymmetric complex field in the active precision."""
+    import jax.numpy as jnp
+
+    primary = ox.SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+    grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=primary.frame(500.0))
+    y, x = np.indices(grid.shape)
+    return SinusoidalSpeckle(
+        ox.FocalResponse(
+            (1 + 0.1 * x) + 1j * (0.4 - 0.2 * y),
+            np.stack([(0.3 + 0.2j) * (x + 1), (-0.2 + 0.4j) * (y + 1)]),
+            grid,
+            7.3,
+            500.0,
+        ),
+        offset_nm=jnp.array([0.03, -0.02]),
+        amplitude_nm=jnp.array([0.05, 0.04]),
+        angular_frequency_per_s=jnp.array([2.0, 3.0]),
+        epoch_d=epoch_d,
+    )
 
 
 @pytest.fixture
 def linear_speckle():
     """Small asymmetric complex field; scoped x64, never import-order precision."""
     import jax
-    import jax.numpy as jnp
 
     with jax.enable_x64():
-        primary = ox.SimplePrimary(
-            circumscribed_diameter_m=6.0, collecting_area_m2=28.0
-        )
-        grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=primary.frame(500.0))
-        y, x = np.indices(grid.shape)
-        yield SinusoidalSpeckle(
-            ox.FocalResponse(
-                (1 + 0.1 * x) + 1j * (0.4 - 0.2 * y),
-                np.stack([(0.3 + 0.2j) * (x + 1), (-0.2 + 0.4j) * (y + 1)]),
-                grid,
-                7.3,
-                500.0,
-            ),
-            offset_nm=jnp.array([0.03, -0.02]),
-            amplitude_nm=jnp.array([0.05, 0.04]),
-            angular_frequency_per_d=jnp.array([2.0, 3.0]),
-        )
+        yield make_linear_speckle()
 
 
 @pytest.fixture

@@ -7,7 +7,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from conftest import SinusoidalSpeckle, make_instrument, table_coronagraph
+from conftest import (
+    SinusoidalSpeckle,
+    make_instrument,
+    make_linear_speckle,
+    table_coronagraph,
+)
 from hwoutils.constants import s2d
 
 import optixstuff as ox
@@ -48,7 +53,7 @@ def test_law_and_cancellation(linear_speckle):
         * field.grid.pixel_area
         / 7.3
     )
-    got = field.realize(wavelength_nm=500.0, time_d=time).data
+    got = field.realize(wavelength_nm=500.0, elapsed_s=time).data
     np.testing.assert_allclose(
         got, expected, rtol=0, atol=1e-10 * np.max(np.abs(nominal) ** 2) / 7.3
     )
@@ -155,39 +160,141 @@ def test_broadened_node_integral(linear_speckle):
     )
 
 
-def test_epoch_and_float32_offset_resolution(linear_speckle):
-    """Fails if epoch subtraction or float64 absolute-clock precision is lost.
+_EPOCHS_D = (60000.123, 60000.125)
 
-    A float32 1e-6 day offset added AFTER float64 promotion at epoch 10 days
-    survives subtraction to 2e-9 relative (binary64 roundoff / 1e-6).
-    Adding in float32 has >1% error. This does not promise recovery from an
-    already rounded float32 absolute timestamp.
+
+def test_elapsed_s_is_exact_on_the_host_under_x32():
+    """Fails if the kernel casts ``time_d`` to the active dtype before subtracting.
+
+    Truth: 10 s after each epoch, formed in binary64 on the host. Tolerance
+    basis floating-point: the binary64 sum ``epoch + 10 * s2d`` carries at most
+    half an ulp of 60000 d (3.2e-7 s), and the float32 result at 10 s rounds by
+    at most 4.8e-7 s; 1e-6 s covers both. Casting first returns 337.5 s or 0.
     """
-    field = replace(linear_speckle, epoch_d=np.float64(10.0))
-    assert type(field.epoch_d) is float
-    assert not any(leaf is field.epoch_d for leaf in jax.tree.leaves(field))
-    time = 10.23
-    np.testing.assert_array_equal(
-        field.realize(wavelength_nm=500.0, time_d=time).data,
-        linear_speckle.realize(wavelength_nm=500.0, time_d=time - 10.0).data,
-    )
-    offset = jnp.asarray(1e-6, dtype=jnp.float32)
-    timestamp = jnp.asarray(field.epoch_d, dtype=jnp.float64) + offset
-    resolved = timestamp - field.epoch_d
-    np.testing.assert_allclose(resolved, offset, rtol=2e-9, atol=0)
-    rounded = (jnp.float32(field.epoch_d) + offset) - jnp.float32(field.epoch_d)
-    assert abs(float(rounded / offset) - 1) > 0.01
-    expected_change = np.array([0.05, 0.04]) * np.sin(
-        float(offset) * np.array([2.0, 3.0])
-    )
-    actual_change = field.coefficients(timestamp) - field.coefficients(field.epoch_d)
-    np.testing.assert_allclose(actual_change, expected_change, rtol=2e-9, atol=0)
-    np.testing.assert_allclose(
-        eqx.filter_jit(field.realize)(wavelength_nm=500.0, time_d=timestamp).data,
-        linear_speckle.realize(wavelength_nm=500.0, time_d=float(offset)).data,
-        rtol=0,
-        atol=1e-15,
-    )
+    with jax.enable_x64(False):
+        for epoch in _EPOCHS_D:
+            field = make_linear_speckle(epoch_d=epoch)
+            elapsed = field.elapsed_s(epoch + 10 * s2d)
+            assert elapsed.dtype == jnp.float32
+            np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
+
+
+def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
+    """Fails if a float32 time near a nonzero epoch is subtracted silently.
+
+    Under x32 a traced Python float, an eager JAX array and a NumPy float32
+    all hold the time in float32 and must raise; with ``epoch_d = 0`` nothing
+    cancels and all three are accepted. Fails if the dtype check is removed
+    (the jit call returns 337.5 s) or if it is keyed on the x64 flag rather
+    than the dtype (the NumPy float32 call passes). Exact (raise or not).
+    """
+    with jax.enable_x64(False):
+        anchored = make_linear_speckle(epoch_d=_EPOCHS_D[0])
+        zero = make_linear_speckle()
+        time = _EPOCHS_D[0] + 10 * s2d
+        for field, refused in ((anchored, True), (zero, False)):
+            calls = (
+                lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(t),
+                lambda t, f=field: f.elapsed_s(jnp.asarray(t)),
+                lambda t, f=field: f.elapsed_s(np.float32(t)),
+            )
+            for call in calls:
+                if refused:
+                    with pytest.raises(ValueError, match="epoch_d"):
+                        call(time)
+                else:
+                    assert call(time).dtype == jnp.float32
+
+
+def test_elapsed_s_eager_equals_jit_under_x64():
+    """Fails if the host, device and traced paths of the kernel disagree.
+
+    Times ``epoch + k * 2**-20`` d are exact in binary64, so ``time - epoch``
+    is exact (Sterbenz) and the elapsed seconds are ``k * 86400 / 2**20``
+    exactly, one rounding at most. Exact comparison for the host call, the
+    eager call on a JAX array and the jit call; ``realize`` through each
+    equals the field anchored at zero read at those seconds, eager against
+    eager and compiled against compiled. Fails if the
+    device path subtracts in float32 or forms ``time * d2s - epoch * d2s``.
+    """
+    with jax.enable_x64(True):
+        epoch = _EPOCHS_D[0]
+        field = make_linear_speckle(epoch_d=epoch)
+        zero = make_linear_speckle()
+        k = np.array([1.0, 3.0, 7.0, 121.0, 1001.0, 12345.0])
+        times = epoch + k * 2.0**-20
+        np.testing.assert_array_equal(times - epoch, k * 2.0**-20)
+        exact = k * 2.0**-20 * 86400.0
+        host = field.elapsed_s(times)
+        device = field.elapsed_s(jnp.asarray(times))
+        traced = jax.jit(lambda t: field.elapsed_s(t))(times)
+        for got in (host, device, traced):
+            assert got.dtype == jnp.float64
+            np.testing.assert_array_equal(got, exact)
+        render = eqx.filter_jit(
+            lambda f, t: f.realize(wavelength_nm=500.0, elapsed_s=t)
+        )
+        eager = zero.realize(wavelength_nm=500.0, elapsed_s=exact).data
+        compiled = render(zero, exact).data
+        for elapsed in (host, device, traced):
+            np.testing.assert_array_equal(
+                field.realize(wavelength_nm=500.0, elapsed_s=elapsed).data, eager
+            )
+            np.testing.assert_array_equal(render(field, elapsed).data, compiled)
+
+
+@pytest.mark.parametrize("x64", [False, True], ids=["x32", "x64"])
+def test_coefficients_eager_equals_jit(x64):
+    """Fails if ``coefficients(elapsed_s=)`` branches on the argument's type.
+
+    Truth: the eager call, against ``eqx.filter_jit`` for Python floats, NumPy
+    arrays and JAX arrays, in each precision. Tolerance basis floating-point:
+    the compiled program contracts ``offset + amplitude * sin`` into one fused
+    multiply-add, which drops one rounding, so the two agree to 4 eps of the
+    term scale ``|offset| + |amplitude|`` (0.08 nm), not bitwise. A branch that
+    casts a JAX array through float32 moves the x64 result by about 1e-9 nm.
+    """
+    with jax.enable_x64(x64):
+        field = make_linear_speckle()
+        coefficients = eqx.filter_jit(field.coefficients)
+        dtype = jnp.float64 if x64 else jnp.float32
+        floor = 4 * float(jnp.finfo(dtype).eps) * 0.08
+        for elapsed in (0.1, np.array([0.1, 0.7, 2.3]), jnp.array([0.1, 0.7, 2.3])):
+            eager = field.coefficients(elapsed_s=elapsed)
+            assert eager.dtype == dtype
+            np.testing.assert_allclose(
+                coefficients(elapsed_s=elapsed), eager, rtol=0, atol=floor
+            )
+
+
+def test_epoch_is_static_metadata_checked_by_the_kernel():
+    """Fails if ``epoch_d`` becomes a leaf or the kernel stops checking its type.
+
+    Two fields that differ only in ``epoch_d`` have the same leaves, bitwise,
+    and different tree structures (a static field is part of the structure);
+    with ``epoch_d`` a leaf the leaves differ and the structures agree. A field
+    whose ``epoch_d`` was swapped for an array raises ``TypeError`` from
+    ``elapsed_s``. Exact.
+    """
+    with jax.enable_x64(True):
+        field = make_linear_speckle(epoch_d=np.float64(_EPOCHS_D[0]))
+        other = make_linear_speckle(epoch_d=5.0)
+        assert type(field.epoch_d) is float
+        leaves = jax.tree_util.tree_leaves(field)
+        assert not any(leaf is field.epoch_d for leaf in leaves)
+        others = jax.tree_util.tree_leaves(other)
+        assert len(leaves) == len(others)
+        for a, b in zip(leaves, others, strict=True):
+            np.testing.assert_array_equal(a, b)
+        assert jax.tree_util.tree_structure(field) != jax.tree_util.tree_structure(
+            other
+        )
+        with pytest.raises(TypeError):
+            eqx.tree_at(lambda f: f.epoch_d, field, jnp.asarray(1.0))
+        swapped = replace(field)
+        object.__setattr__(swapped, "epoch_d", jnp.asarray(_EPOCHS_D[0]))
+        with pytest.raises(TypeError, match="epoch_d"):
+            swapped.elapsed_s(_EPOCHS_D[0] + 10 * s2d)
 
 
 def test_image_geometry_jit_and_time_batching(linear_speckle):
@@ -198,7 +305,7 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     """
     field = linear_speckle
     nodes = jnp.array([[400.0, 600.0], [700.0, 800.0]])
-    image = field.realize(wavelength_nm=nodes, time_d=0.2)
+    image = field.realize(wavelength_nm=nodes, elapsed_s=0.2)
     assert isinstance(image, Image)
     assert image.grid == field.grid
     assert image.grid.step == 0.37
@@ -224,15 +331,19 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     )
     far = resample(image, shifted)
     np.testing.assert_array_equal(far.data, 0.0)
-    compiled = eqx.filter_jit(field.realize)(wavelength_nm=nodes, time_d=jnp.array(0.2))
+    compiled = eqx.filter_jit(field.realize)(
+        wavelength_nm=nodes, elapsed_s=jnp.array(0.2)
+    )
     np.testing.assert_allclose(compiled.data, image.data, rtol=32 * np.finfo(float).eps)
     assert compiled.grid == image.grid
     times = jnp.array([0.0, 0.2, 0.7])
-    loop = np.stack([field.realize(wavelength_nm=nodes, time_d=t).data for t in times])
-    mapped = jax.vmap(lambda t: field.realize(wavelength_nm=nodes, time_d=t).data)(
+    loop = np.stack(
+        [field.realize(wavelength_nm=nodes, elapsed_s=t).data for t in times]
+    )
+    mapped = jax.vmap(lambda t: field.realize(wavelength_nm=nodes, elapsed_s=t).data)(
         times
     )
-    batched = field.realize(wavelength_nm=nodes, time_d=times)
+    batched = field.realize(wavelength_nm=nodes, elapsed_s=times)
     assert batched.leading_axes == ("band", "quadrature", "time_0")
     floor = 32 * np.finfo(float).eps * np.max(np.abs(loop))
     np.testing.assert_allclose(mapped, loop, rtol=0, atol=floor)
@@ -272,19 +383,18 @@ def test_coefficient_gradient(linear_speckle):
 
 
 def test_exposure_average(linear_speckle):
-    """Fails if averaging coefficients, seconds/days confusion or metadata loss.
+    """Fails if averaging coefficients, a step left in days or metadata loss.
 
+    Truth: the mean of ``realize`` at ``s0 + (i + 0.5) * T / n`` seconds.
     Midpoint sum/JIT: 32 float64 eps. Three refinements (4, 8, 16) of a
     smooth sinusoidal quadratic must give second-order ratios in [3.8,4.2].
     """
     field = linear_speckle
-    # Shared conversion is rounded by a few binary64 ULPs.
-    np.testing.assert_allclose(s2d, 1 / 86400, rtol=4 * np.finfo(float).eps)
     nodes = jnp.array([[450.0, 550.0]])
-    keywords = dict(wavelength_nm=nodes, exposure_s=86400.0, start_time_d=0.1)
+    keywords = dict(wavelength_nm=nodes, exposure_s=1.0, start_elapsed_s=0.1)
     expected = np.mean(
         [
-            field.realize(wavelength_nm=nodes, time_d=0.1 + (i + 0.5) / 8).data
+            field.realize(wavelength_nm=nodes, elapsed_s=0.1 + (i + 0.5) / 8).data
             for i in range(8)
         ],
         axis=0,
@@ -298,7 +408,7 @@ def test_exposure_average(linear_speckle):
     np.testing.assert_allclose(compiled.data, expected, rtol=32 * np.finfo(float).eps)
     np.testing.assert_allclose(
         field.realize_average(**keywords, n_sub=1).data,
-        field.realize(wavelength_nm=nodes, time_d=0.6).data,
+        field.realize(wavelength_nm=nodes, elapsed_s=0.6).data,
         rtol=32 * np.finfo(float).eps,
     )
     levels = [field.realize_average(**keywords, n_sub=n).data for n in [4, 8, 16]]
@@ -307,7 +417,9 @@ def test_exposure_average(linear_speckle):
     )
     assert 3.8 < ratio < 4.2
     # Averaging the coefficient trajectory omits its nonzero quadratic variance.
-    mean_eps = jnp.mean(field.coefficients(0.1 + (jnp.arange(8) + 0.5) / 8), axis=0)
+    mean_eps = jnp.mean(
+        field.coefficients(elapsed_s=0.1 + (jnp.arange(8) + 0.5) / 8), axis=0
+    )
     mean_field = eqx.tree_at(
         lambda f: (f.offset_nm, f.amplitude_nm), field, (mean_eps, jnp.zeros(2))
     )
@@ -337,6 +449,11 @@ def test_construction_and_optical_path(linear_speckle):
             cls()
     with pytest.raises(TypeError):
         field.realize(500.0)
+    # Days passed positionally would be read as seconds; the keyword is required.
+    with pytest.raises(TypeError):
+        field.coefficients(1.0)
+    with pytest.raises(TypeError):
+        field.realize(wavelength_nm=500.0, time_d=1.0)
     for changes in [
         {"input_energy": 0.0},
         {"input_energy": [1.0]},
