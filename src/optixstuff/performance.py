@@ -1401,11 +1401,16 @@ class PerformanceCurves(eqx.Module):
             is interpolated; the accuracy there is limited by the spacing of the
             table (see the architecture page), not by the read. A record of
             None is read for any star without a check.
+        uniform_sky: Annular mean of the coronagraph's dimensionless uniform-sky
+            transmission map against separation in lambda/D of ``frame``.
+            Consumers read it for extended sources such as local zodi and
+            exozodi. None when the record carries no profile.
         interpolation: Immutable quantity-to-space mapping. PCHIP within the
             sampled interval and linear end-segment tails in that same space.
             The tails only continue the interpolant; the record holds data where
-            :meth:`supported` is True. Exact zeros use a 1e-300 floor for log
-            interpolation and remain zero at their knots.
+            :meth:`supported` is True. Log interpolation uses a positive floor
+            for zeros. A read at a tabulated diameter returns that row's
+            separation profile, including exact zeros at its measured knots.
 
     Throughput and core area are functions of separation. The leakage fields
     and ``raw_contrast`` are functions of separation and of the stellar
@@ -1465,6 +1470,7 @@ class PerformanceCurves(eqx.Module):
     stellar_diameters_lod: np.ndarray | None
     _diameter_basis: np.ndarray | None
     _fits: dict
+    uniform_sky: SampledProfile | None = None
 
     interpolation: ClassVar = MappingProxyType(
         {
@@ -1499,6 +1505,7 @@ class PerformanceCurves(eqx.Module):
         core_area_variance_lod2,
         leakage_fraction_variance,
         leakage_density_variance_lod2,
+        uniform_sky: SampledProfile | None = None,
         _diameter_basis=None,
         _fits=None,
     ):
@@ -1529,6 +1536,7 @@ class PerformanceCurves(eqx.Module):
                 shape (K, S) or (S,).
             leakage_density_variance_lod2: Variance leakage per variance area, shape
                 (K, S) or (S,).
+            uniform_sky: Optional annular mean sky transmission in ``frame``.
             _diameter_basis: Carried through ``dataclasses.replace``; leave None.
             _fits: Precomputed fits carried through ``dataclasses.replace``; leave
                 None.
@@ -1537,6 +1545,12 @@ class PerformanceCurves(eqx.Module):
             raise TypeError("rule must be Circular or HalfMaximum")
         if leakage_rule not in LEAKAGE_RULES:
             raise ValueError(f"unknown leakage_rule; expected one of {LEAKAGE_RULES}")
+        if uniform_sky is not None:
+            if not isinstance(uniform_sky, SampledProfile):
+                raise TypeError("uniform_sky must be a SampledProfile")
+            if uniform_sky.frame != frame:
+                raise ValueError("uniform_sky must be in the record's lambda/D frame")
+        self.uniform_sky = uniform_sky
         x = _separation_axis(np.asarray(separation_lod))
         self.separation_lod = x
         self.frame, self.rule = frame, rule
@@ -1670,8 +1684,11 @@ class PerformanceCurves(eqx.Module):
                 f"{name} of a record tabulated over diameter needs stellar_diameter_lod"
             )
         traced = (jax.Array, jax.core.Tracer)
-        use_jax = isinstance(separation_lod, traced) or isinstance(
-            stellar_diameter_lod, traced
+        use_jax = (
+            isinstance(separation_lod, traced)
+            or isinstance(stellar_diameter_lod, traced)
+            or isinstance(diameters, jax.core.Tracer)
+            or isinstance(rows, jax.core.Tracer)
         )
         xp = jnp if use_jax else np
         q, d = xp.broadcast_arrays(
@@ -1684,11 +1701,21 @@ class PerformanceCurves(eqx.Module):
             "the stellar diameter is outside the tabulated range of the record",
         )
         per_row = xp.stack([profile(k, q) for k in range(n_rows)], axis=-1)
+        knots = xp.asarray(diameters)
+        k = xp.minimum(xp.searchsorted(knots, d), n_rows - 1)
+        at_knot = d == knots[k]
+        measured = xp.take_along_axis(per_row, k[..., None], axis=-1)[..., 0]
         weights = _diameter_weights(diameters, self._diameter_basis, d)
         tiny = np.finfo(per_row.dtype).tiny
         logs = xp.log(xp.maximum(per_row, tiny))
         value = xp.exp(xp.sum(weights * logs, axis=-1))
-        return xp.where(xp.all(per_row <= 0, axis=-1), 0.0, value)
+        interpolated = xp.where(xp.all(per_row <= 0, axis=-1), 0.0, value)
+        if use_jax:
+            # The measured value at a knot, with the interpolant's derivatives.
+            measured = jax.lax.stop_gradient(measured) + (
+                interpolated - jax.lax.stop_gradient(interpolated)
+            )
+        return xp.where(at_knot, measured, interpolated)
 
     def supported(self, separation_lod):
         """Report where the record holds data for this record's aperture rule.
@@ -1739,6 +1766,7 @@ def performance_curves(
     leakage_rule="aperture_mean",
     stellar_diameter_lod=None,
     stellar_diameters_lod=None,
+    uniform_sky: SampledProfile | Image | None = None,
 ) -> PerformanceCurves:
     """Tabulate one aperture rule on one axis.
 
@@ -1784,6 +1812,8 @@ def performance_curves(
         stellar_diameters_lod: Increasing diameters in lambda/D of the stellar
             Image's frame, one per map of a diameter-axis ``stellar``; excludes
             ``stellar_diameter_lod``.
+        uniform_sky: Optional dimensionless uniform-sky Image or annular mean
+            profile in the off-axis Image's lambda/D frame.
 
     Returns:
         The photometric record on the separation axis.
@@ -1805,6 +1835,7 @@ def performance_curves(
         leakage_rule=leakage_rule,
         stellar_diameter_lod=stellar_diameter_lod,
         stellar_diameters_lod=stellar_diameters_lod,
+        uniform_sky=uniform_sky,
     )
 
 
@@ -1818,6 +1849,7 @@ def _performance_curves(
     leakage_rule="aperture_mean",
     stellar_diameter_lod=None,
     stellar_diameters_lod=None,
+    uniform_sky: SampledProfile | Image | None = None,
     oversample=CORE_OVERSAMPLE,
 ):
 
@@ -1936,6 +1968,8 @@ def _performance_curves(
     else:
         # The record's axis is in lambda/D of its own (planet) frame.
         diameters = np.asarray(stellar_diameters_lod, dtype=float) / angular_ratio
+    if isinstance(uniform_sky, Image):
+        uniform_sky = SampledProfile.from_uniform_sky(uniform_sky)
     return PerformanceCurves(
         separations,
         grid.frame,
@@ -1953,4 +1987,5 @@ def _performance_curves(
         core_area_variance_lod2=area,
         leakage_fraction_variance=leakage,
         leakage_density_variance_lod2=density,
+        uniform_sky=uniform_sky,
     )

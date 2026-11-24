@@ -1,5 +1,7 @@
 """Absolute photometry and the shared curve record."""
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,7 +10,11 @@ import pytest
 from optixstuff import SampledProfile
 from optixstuff.apertures import Circular, HalfMaximum
 from optixstuff.grids import Frame, Image, Measure, PixelGrid
-from optixstuff.performance import PerformanceCurves, performance_curves
+from optixstuff.performance import (
+    DIAMETER_QUANTITIES,
+    PerformanceCurves,
+    performance_curves,
+)
 
 
 def test_circular_centre_offset_gaussian(displaced_gaussian_source):
@@ -636,14 +642,110 @@ def _diameter_record(diameters=DIAMETERS, **kwargs):
     )
 
 
+def test_record_uniform_sky_uses_the_record_frame():
+    """Exact radial-map samples catch a lost or misframed profile."""
+    source, _, _, grid = _gaussian_source()
+    stellar = Image(
+        np.full(grid.shape, 1e-8), grid, (), Measure.integral(), "stellar_flux_fraction"
+    )
+    sky = Image(
+        np.linspace(0.0, 1.0, np.prod(grid.shape)).reshape(grid.shape),
+        grid,
+        (),
+        Measure.intensive(),
+        "uniform_sky_response",
+    )
+    profile = SampledProfile.from_uniform_sky(sky)
+    record = performance_curves(
+        source, stellar, Circular(0.7), separations_lod=[1.0], uniform_sky=sky
+    )
+    assert record.uniform_sky.frame == grid.frame
+    np.testing.assert_array_equal(
+        record.uniform_sky.separation_lod, profile.separation_lod
+    )
+    np.testing.assert_array_equal(record.uniform_sky.values, profile.values)
+    assert replace(record, uniform_sky=profile).uniform_sky is profile
+    with pytest.raises(ValueError, match="record's lambda/D frame"):
+        replace(
+            record, uniform_sky=replace(profile, frame=Frame(400, 6, "circumscribed"))
+        )
+    with pytest.raises(TypeError, match=r"uniform_sky.*SampledProfile"):
+        replace(record, uniform_sky=sky)
+
+
+def test_diameter_knots_read_the_measured_rows_exactly():
+    """Single-row reads give the exact-algebra oracle and catch log-floor leakage.
+
+    Match the previous between-knot log spline to float64 roundoff.
+    At a knot the separation slope equals the row's own (counted once), to
+    1e-9 relative (spline-weight roundoff).
+    """
+    from scipy.interpolate import CubicSpline
+
+    diameters = np.array([0.0, 0.2, 0.5])
+    q = np.array([1.0, 1.25, 2.0])
+    base = _short_record(Circular(0.7), last=2.0, extent=4.0)
+    rows = np.array([[0.0, 0.0], [1e-8, 2e-8], [3e-8, 4e-8]])
+    record = replace(
+        base,
+        stellar_diameters_lod=diameters,
+        **dict.fromkeys(DIAMETER_QUANTITIES, rows),
+    )
+    singles = [replace(base, **dict.fromkeys(DIAMETER_QUANTITIES, row)) for row in rows]
+
+    # Every leakage quantity shares this read; two of them suffice.
+    names = ("leakage_fraction", "raw_contrast")
+
+    def read(radius, diameter):
+        return tuple(record.evaluate(name, radius, diameter) for name in names)
+
+    def read_rows(radius):
+        return tuple(
+            tuple(single.evaluate(name, radius) for single in singles) for name in names
+        )
+
+    with jax.enable_x64():
+        for evaluate, expected, axis, separations in (
+            (read, read_rows, diameters, q),
+            (jax.jit(read), jax.jit(read_rows), jnp.asarray(diameters), jnp.asarray(q)),
+        ):
+            actual = evaluate(separations + np.zeros((3, 1)), axis[:, None])
+            np.testing.assert_array_equal(actual, expected(separations))
+            np.testing.assert_array_equal(np.asarray(actual)[:, 0, [0, 2]], 0.0)
+        assert np.all(np.isfinite(jax.grad(lambda d: read(1.25, d)[0])(0.0)))
+        # At a knot the separation slope is the row's own, counted once.
+        positive = replace(
+            base,
+            stellar_diameters_lod=np.array([0.1, 0.2]),
+            **dict.fromkeys(
+                DIAMETER_QUANTITIES, np.array([[1e-9, 4e-9], [2e-9, 8e-9]])
+            ),
+        )
+        row = replace(base, **dict.fromkeys(DIAMETER_QUANTITIES, (1e-9, 4e-9)))
+        slope = jax.grad(lambda s: positive.evaluate("leakage_fraction", s, 0.1))(1.5)
+        np.testing.assert_allclose(
+            slope,
+            jax.grad(lambda s: row.evaluate("leakage_fraction", s))(1.5),
+            rtol=1e-9,
+        )
+
+        samples = np.asarray(read_rows(q)[0])
+        spline = CubicSpline(
+            [np.finfo(np.float32).eps, *diameters[1:]],
+            np.log(np.maximum(samples, np.finfo(np.float64).tiny)),
+        )
+        between = read(q, 0.1)[0]
+        np.testing.assert_allclose(between, np.exp(spline(0.1)), rtol=5e-13, atol=0)
+        assert np.all(np.isfinite(between) & (between > 0))
+
+
 def test_record_tabulates_the_leakage_at_each_diameter():
     """Fails if a leakage profile is read from the wrong diameter plane.
 
     Each row of the record is the aperture sum of its own plane; the aperture
     is covered entirely by the uniform map, so the sum is the level times the
-    aperture's pixel count, floating-point exact to 256 eps. The read at a
-    knot is the spline weights' roundoff: 1.6e-9 measured at a zero diameter,
-    whose abscissa is nudged to float32 eps, so 1e-8 bounds it.
+    aperture's pixel count to within 256 eps of float64 roundoff. Each row
+    is returned exactly at the measured separation and diameter knots.
     """
     with jax.enable_x64():
         levels, record = _diameter_record()
@@ -657,10 +759,9 @@ def test_record_tabulates_the_leakage_at_each_diameter():
             atol=0,
         )
         for k, diameter in enumerate(DIAMETERS):
-            np.testing.assert_allclose(
+            np.testing.assert_array_equal(
                 record.evaluate("leakage_fraction", record.separation_lod, diameter),
                 record.leakage_fraction[k],
-                rtol=1e-8,
             )
 
 
