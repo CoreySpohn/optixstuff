@@ -245,6 +245,7 @@ def make_linear_speckle(epoch_d=0.0):
             grid,
             7.3,
             500.0,
+            wavelength_law="opd",
         ),
         offset_nm=jnp.array([0.03, -0.02]),
         amplitude_nm=jnp.array([0.05, 0.04]),
