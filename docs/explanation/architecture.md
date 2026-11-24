@@ -183,6 +183,20 @@ query its throughput and QE, and produce rates. `snr` and `exposure_time`
 reduce those rates to science-level outputs. [How an exposure time is
 computed](exposure_time.md) follows both producers to that reduction.
 
+## PSFlet template packs
+
+`LensletDisperser.psflet_pack_path` points to a version 2 `.npz` file. At each
+field anchor and wavelength, the template is centered on the PSFlet centroid.
+The optional `centroids` entry gives the `(dx, dy)` offset in detector pixels
+from the dispersion-model centroid to that template origin. If a tilt
+displaces a PSFlet by 0.3 pixel in positive x, its `centroids` entry is
+`(0.3, 0)` and its template is centered on zero. Regenerate version 1 packs
+before loading them with `load_psflet_pack`.
+
+External writers must declare `template_origin = "centroid"` as a string in
+the format 2 archive. `load_psflet_pack` refuses packs from earlier format 2
+writers that omitted this field. Regenerate those packs before loading.
+
 ## Photon rates, electrons, and detector noise
 
 Scene readers supply photon `Rates` at `optixstuff.spectral.Quadrature` nodes.

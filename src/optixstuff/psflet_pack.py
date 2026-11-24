@@ -3,11 +3,13 @@
 A pack tabulates the pixel-integrated PSFlet response on a fine sub-pixel
 offset grid, per field anchor and per wavelength: ``templates[f, l, iy, ix]``
 is the flux falling in a unit detector pixel whose center sits at offset
-``(dy, dx) = (offsets[iy], offsets[ix])`` px from the PSFlet centroid. A
-wave-optics generator writes the npz format below and a spectrograph model
-reads it; ``LensletDisperser.psflet_pack_path`` points at such a file.
+``(dy, dx) = (offsets[iy], offsets[ix])`` px from the PSFlet centroid. A renderer
+places it at the dispersion-model centroid plus the optional ``centroids``
+correction. A measured pack can use its wavelength-calibrated centroid even
+when the template has a nonzero first moment. ``LensletDisperser.psflet_pack_path``
+points at the pack file.
 
-npz format, ``format_version = 1``:
+The npz format requires ``format_version`` as the scalar integer ``2``.
 
 - ``templates``: ``(n_field, n_lam, n_off, n_off)`` template planes.
 - ``offsets``: ``(n_off,)`` uniform ascending pixel-offset axis, shared by the
@@ -15,6 +17,8 @@ npz format, ``format_version = 1``:
 - ``wavelengths_nm``: ``(n_lam,)`` ascending tabulation wavelengths.
 - ``field_xy``: ``(n_field, 2)`` field-anchor positions in lenslet-index
   coordinates; each lenslet uses its nearest anchor's templates.
+- ``template_origin``: required string declaring the template origin.
+  ``"centroid"`` is the only origin supported by format 2.
 - ``centroids`` (optional): ``(n_field, n_lam, 2)`` per-anchor ``(dx, dy)``
   pixel corrections to the dispersion-model centroid (the wavecal residual).
 - ``meta_json`` (optional): provenance string, not interpreted.
@@ -28,7 +32,9 @@ from jax import Array
 
 from optixstuff.spectral import as_knots
 
-PACK_FORMAT_VERSION = 1
+PACK_FORMAT_VERSION = 2
+# The only declared template origin in format 2.
+TEMPLATE_ORIGIN = "centroid"
 
 
 def _pack_grid(wavelengths_nm) -> HostGrid:
@@ -68,6 +74,7 @@ class PsfletPack(eqx.Module):
             is the float64 array and ``.array()`` a JAX constant.
         field_xy: Field-anchor positions in lenslet-index coordinates, shape
             ``(n_field, 2)``.
+        template_origin: Required origin declaration, equal to ``TEMPLATE_ORIGIN``.
         centroids: Optional ``(dx, dy)`` pixel corrections to the dispersion-model
             centroid, shape ``(n_field, n_lam, 2)``.
         meta_json: Provenance string, not interpreted.
@@ -77,6 +84,7 @@ class PsfletPack(eqx.Module):
     offsets: Array = eqx.field(converter=jnp.asarray)
     wavelengths_nm: HostGrid = eqx.field(static=True, converter=_pack_grid)
     field_xy: Array = eqx.field(converter=jnp.asarray)
+    template_origin: str = eqx.field(static=True)
     centroids: Array | None = eqx.field(converter=_optional_asarray, default=None)
     meta_json: str = eqx.field(static=True, default="")
 
@@ -95,6 +103,11 @@ class PsfletPack(eqx.Module):
 
     def __check_init__(self):
         """Validate shapes and grid conventions at construction (eager only)."""
+        if self.template_origin != TEMPLATE_ORIGIN:
+            raise ValueError(
+                f"unsupported PSFlet template origin {self.template_origin!r}. "
+                "For legacy origin-relative templates, regenerate the pack"
+            )
         if (
             self.templates.ndim != 4
             or self.templates.shape[2] != self.templates.shape[3]
@@ -119,7 +132,7 @@ class PsfletPack(eqx.Module):
 
 
 def save_psflet_pack(path, pack):
-    """Write a pack to the documented npz format (``format_version`` 1).
+    """Write a pack to the documented npz format.
 
     Args:
         path: Destination of the npz file.
@@ -131,6 +144,7 @@ def save_psflet_pack(path, pack):
         offsets=np.asarray(pack.offsets),
         wavelengths_nm=pack.wavelengths_nm.values,
         field_xy=np.asarray(pack.field_xy),
+        template_origin=np.asarray(pack.template_origin),
     )
     if pack.centroids is not None:
         data["centroids"] = np.asarray(pack.centroids)
@@ -149,17 +163,32 @@ def load_psflet_pack(path):
         The pack read from the file.
     """
     with np.load(path, allow_pickle=False) as data:
-        version = int(data["format_version"]) if "format_version" in data else None
+        version = None
+        if "format_version" in data:
+            version_tag = data["format_version"]
+            if version_tag.ndim != 0 or version_tag.dtype.kind not in "iu":
+                raise ValueError("PSFlet pack format_version must be a scalar integer")
+            version = int(version_tag)
         if version != PACK_FORMAT_VERSION:
+            if version == 1:
+                raise ValueError(
+                    "unsupported PSFlet pack format 1: the template convention "
+                    "changed, regenerate the pack"
+                )
             raise ValueError(
                 f"unsupported PSFlet pack format {version!r}; this reader "
                 f"supports format {PACK_FORMAT_VERSION}"
+            )
+        if "template_origin" not in data:
+            raise ValueError(
+                "PSFlet pack declares no template origin. Please regenerate the pack"
             )
         return PsfletPack(
             templates=data["templates"],
             offsets=data["offsets"],
             wavelengths_nm=data["wavelengths_nm"],
             field_xy=data["field_xy"],
+            template_origin=str(data["template_origin"]),
             centroids=data["centroids"] if "centroids" in data else None,
             meta_json=str(data["meta_json"]) if "meta_json" in data else "",
         )

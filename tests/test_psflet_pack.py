@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from optixstuff import PsfletPack, load_psflet_pack, save_psflet_pack
+from optixstuff import TEMPLATE_ORIGIN, PsfletPack, load_psflet_pack, save_psflet_pack
 
 
 def _pack(lam, sigma=0.7, **kwargs):
@@ -20,23 +20,39 @@ def _pack(lam, sigma=0.7, **kwargs):
         offsets=offsets,
         wavelengths_nm=lam,
         field_xy=jnp.zeros((1, 2)),
+        template_origin=TEMPLATE_ORIGIN,
         **kwargs,
     )
 
 
-def test_pack_roundtrip(tmp_path):
-    """save/load round-trips every pack field, including provenance."""
-    lam = jnp.array([640.0, 660.0, 680.0])
-    centroids = jnp.zeros((1, 3, 2)).at[:, :, 0].set(1.5)
-    pack = _pack(lam, centroids=centroids, meta_json='{"generator": "test"}')
+def test_v2_pack_roundtrip_bitwise(tmp_path):
+    """A calibration-defined origin can give the template a nonzero moment."""
+    pack = PsfletPack(
+        templates=np.array([[[[0, 0, 0], [0, 0.7, 0.3], [0, 0, 0]]]], dtype=np.float32),
+        offsets=[-1.0, 0.0, 1.0],
+        wavelengths_nm=[650.25],
+        field_xy=[[2, -1]],
+        template_origin=TEMPLATE_ORIGIN,
+        centroids=[[[0.3, -0.0]]],
+        meta_json='{"generator": "test"}',
+    )
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, pack)
+    with np.load(path, allow_pickle=False) as data:
+        assert data["format_version"].item() == 2
+        assert data["template_origin"].item() == TEMPLATE_ORIGIN
     loaded = load_psflet_pack(path)
-    assert jnp.allclose(loaded.templates, pack.templates)
-    assert jnp.allclose(loaded.offsets, pack.offsets)
-    assert loaded.wavelengths_nm == pack.wavelengths_nm
-    assert jnp.allclose(loaded.field_xy, pack.field_xy)
-    assert jnp.allclose(loaded.centroids, pack.centroids)
+    for actual, expected in (
+        (loaded.templates, pack.templates),
+        (loaded.offsets, pack.offsets),
+        (loaded.wavelengths_nm.values, pack.wavelengths_nm.values),
+        (loaded.field_xy, pack.field_xy),
+        (np.asarray(loaded.template_origin), np.asarray(pack.template_origin)),
+        (loaded.centroids, pack.centroids),
+    ):
+        assert actual.shape == expected.shape
+        assert actual.dtype == expected.dtype
+        assert actual.tobytes() == expected.tobytes()
     assert loaded.meta_json == pack.meta_json
 
 
@@ -59,6 +75,7 @@ def test_pack_validation_rejects_bad_shapes():
             offsets=good.offsets,
             wavelengths_nm=lam,
             field_xy=good.field_xy,
+            template_origin=TEMPLATE_ORIGIN,
         )
     with pytest.raises(ValueError, match="uniform"):
         PsfletPack(
@@ -66,6 +83,7 @@ def test_pack_validation_rejects_bad_shapes():
             offsets=jnp.array([0.0, 1.0, 3.0]),
             wavelengths_nm=lam,
             field_xy=good.field_xy,
+            template_origin=TEMPLATE_ORIGIN,
         )
     with pytest.raises(ValueError, match="strictly increasing"):
         PsfletPack(
@@ -73,6 +91,7 @@ def test_pack_validation_rejects_bad_shapes():
             offsets=good.offsets,
             wavelengths_nm=lam[::-1],
             field_xy=good.field_xy,
+            template_origin=TEMPLATE_ORIGIN,
         )
     with pytest.raises(ValueError, match="centroids"):
         PsfletPack(
@@ -80,19 +99,105 @@ def test_pack_validation_rejects_bad_shapes():
             offsets=good.offsets,
             wavelengths_nm=lam,
             field_xy=good.field_xy,
+            template_origin=TEMPLATE_ORIGIN,
             centroids=jnp.zeros((2, 2, 2)),
         )
 
 
-def test_loader_rejects_unknown_format(tmp_path):
-    """A pack file with an unknown format version fails loudly."""
+def test_pack_requires_template_origin():
+    """A writer must explicitly declare the template origin."""
+    with pytest.raises(TypeError, match="template_origin"):
+        PsfletPack(
+            templates=np.ones((1, 1, 3, 3)),
+            offsets=[-1.0, 0.0, 1.0],
+            wavelengths_nm=[650.0],
+            field_xy=[[0, 0]],
+        )
+
+
+def test_pack_rejects_legacy_template_origin():
+    """Origin-relative templates are refused at construction."""
+    with pytest.raises(ValueError, match=r"legacy origin-relative.*regenerate"):
+        PsfletPack(
+            templates=np.ones((1, 1, 3, 3)),
+            offsets=[-1.0, 0.0, 1.0],
+            wavelengths_nm=[650.0],
+            field_xy=[[0, 0]],
+            template_origin="origin",
+        )
+
+
+@pytest.fixture
+def pack_data():
+    """Return the required entries for a pack from an external writer."""
+    return {
+        "format_version": np.int64(2),
+        "templates": np.ones((1, 1, 3, 3)),
+        "offsets": np.array([-1.0, 0.0, 1.0]),
+        "wavelengths_nm": np.array([650.0]),
+        "field_xy": np.array([[0, 0]]),
+        "template_origin": np.asarray("centroid"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("version", "message"),
+    [
+        (None, "unsupported PSFlet pack format None; this reader supports format 2"),
+        (1, "template convention changed.*regenerate"),
+        (99, "format"),
+    ],
+)
+def test_loader_rejects_unsupported_format(tmp_path, pack_data, version, message):
+    """Preserve format compatibility errors, including a missing tag."""
     path = tmp_path / "pack.npz"
-    save_psflet_pack(path, _pack(jnp.array([640.0, 680.0])))
-    data = dict(np.load(path, allow_pickle=False))
-    data["format_version"] = np.int64(99)
-    np.savez(path, **data)
-    with pytest.raises(ValueError, match="format"):
+    if version is None:
+        del pack_data["format_version"]
+    else:
+        pack_data["format_version"] = np.int64(version)
+    np.savez(path, **pack_data)
+    with pytest.raises(ValueError, match=message):
         load_psflet_pack(path)
+
+
+def test_loader_requires_template_origin(tmp_path, pack_data):
+    """Earlier format-2 archives must be regenerated with a declaration."""
+    path = tmp_path / "pack.npz"
+    del pack_data["template_origin"]
+    np.savez(path, **pack_data)
+    with pytest.raises(ValueError, match=r"declares no template origin.*regenerate"):
+        load_psflet_pack(path)
+
+
+def test_loader_rejects_legacy_template_origin(tmp_path, pack_data):
+    """A format-2 tag alone does not make an origin-relative template valid."""
+    path = tmp_path / "pack.npz"
+    pack_data["template_origin"] = np.asarray("origin")
+    np.savez(path, **pack_data)
+    with pytest.raises(ValueError, match=r"legacy origin-relative.*regenerate"):
+        load_psflet_pack(path)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [2.9, 2.0, np.array([2]), np.timedelta64(2, "ns")],
+    ids=["fractional", "float", "vector", "timedelta"],
+)
+def test_loader_rejects_non_scalar_integer_version(tmp_path, pack_data, version):
+    """Require both a scalar shape and an integer dtype for the version."""
+    path = tmp_path / "pack.npz"
+    pack_data["format_version"] = version
+    np.savez(path, **pack_data)
+    with pytest.raises(ValueError, match="format_version must be a scalar integer"):
+        load_psflet_pack(path)
+
+
+def test_loader_accepts_int32_version(tmp_path, pack_data):
+    """An external writer may use an integer dtype other than int64."""
+    path = tmp_path / "pack.npz"
+    pack_data["format_version"] = np.int32(2)
+    np.savez(path, **pack_data)
+    assert load_psflet_pack(path).template_origin == "centroid"
 
 
 def test_wavelength_grid_is_static():

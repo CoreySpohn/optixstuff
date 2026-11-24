@@ -42,12 +42,18 @@ from optixstuff.performance import (
     performance_curves,
 )
 from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
-from optixstuff.psflet_pack import PsfletPack, load_psflet_pack, save_psflet_pack
+from optixstuff.psflet_pack import (
+    TEMPLATE_ORIGIN,
+    PsfletPack,
+    load_psflet_pack,
+    save_psflet_pack,
+)
 from optixstuff.rates import Rates
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 from optixstuff.spectral import Band, Quadrature, Reduction, Resolution
 
-__all__ = [
+# Keep the PSFlet origin constant next to the pack class.
+__all__ = [  # noqa: RUF022
     "DEFAULT_APERTURE_RULE",
     "AbstractCoronagraph",
     "AbstractDetector",
@@ -80,6 +86,7 @@ __all__ = [
     "PostProcessing",
     "ProductGrids",
     "PsfletPack",
+    "TEMPLATE_ORIGIN",
     "Quadrature",
     "Rates",
     "Reduction",
