@@ -14,10 +14,10 @@ BANDS = (Band(450, 500), Band(500, 550))
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_frames_for_time(dtype):
-    """Fails at rounded multiples, positive subframes, or integer casts in JIT.
+    """Fails if tolerance rounds down, subframes vanish, or JIT casts to integer.
 
-    Exact counts against an independently written tolerance rule; float64
-    random cases use seed 0. The discrete count derivative is exactly zero.
+    NumPy products in the working dtype give exact counts from the first
+    covering candidate. The discrete count derivative is exactly zero.
     """
     with jax.enable_x64():
         integer = np.array(3.0, dtype=np.dtype(dtype))
@@ -27,15 +27,15 @@ def test_frames_for_time(dtype):
                 0.1,
                 1.0,
                 3.0,
-                np.nextafter(integer, -np.inf),
-                np.nextafter(integer, np.inf),
+                np.nextafter(integer, -np.inf, dtype=dtype),
+                np.nextafter(integer, np.inf, dtype=dtype),
             ],
             dtype=np.dtype(dtype),
         )
         plan = eqx.filter_jit(ox.frames_for_time)(
             jnp.array(ratios), jnp.array(1.0, dtype=dtype)
         )
-        np.testing.assert_array_equal(plan.n_frames, [0, 1, 1, 3, 3, 3])
+        np.testing.assert_array_equal(plan.n_frames, [0, 1, 1, 3, 3, 4])
         assert jnp.issubdtype(plan.n_frames.dtype, jnp.floating)
         rng = np.random.default_rng(0)
         frame = rng.uniform(0.01, 100.0, 2000)
@@ -45,14 +45,11 @@ def test_frames_for_time(dtype):
             * frame[:1000]
             * (1 + rng.uniform(-2e-12, 2e-12, 1000))
         )
-        x = duration / frame
-        k = np.rint(x)
-        close = (k >= 1) & (
-            np.abs(x - k) / np.maximum(k, 1) <= max(1e-12, 4 * np.finfo(float).eps)
-        )
-        expected = np.where(
-            duration == 0, 0.0, np.maximum(1.0, np.ceil(np.where(close, k, x)))
-        )
+        frame, duration = frame.astype(dtype), duration.astype(dtype)
+        ceiling = np.ceil(duration / frame)
+        candidates = ceiling[:, None] + np.array([-1.0, 0.0, 1.0], dtype=dtype)
+        covers = (candidates >= 1) & (candidates * frame[:, None] >= duration[:, None])
+        expected = np.min(np.where(covers, candidates, np.inf), axis=1)
         np.testing.assert_array_equal(
             ox.frames_for_time(duration, frame).n_frames, expected
         )
@@ -63,6 +60,75 @@ def test_frames_for_time(dtype):
             ox.frames_for_time(jnp.ones((2, 1)), frame)
         with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
             ox.frames_for_time(jnp.ones(1), jnp.ones(2))
+
+
+@pytest.mark.parametrize(
+    "make_plan", [ox.frames_for_time, eqx.filter_jit(ox.frames_for_time)]
+)
+def test_frames_for_invalid_and_zero_time(make_plan):
+    """Exact frame-plan rules catch invalid requests reported as zero frames."""
+    times = jnp.array([jnp.nan, jnp.inf, -jnp.inf, -1.0, 0.0])
+    plan = make_plan(times, jnp.array(1.0))
+    expected = [np.nan, np.nan, np.nan, np.nan, 0.0]
+    np.testing.assert_array_equal(plan.n_frames, expected)
+    np.testing.assert_array_equal(plan.live_time_s, expected)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "time_s", "frame_time_s", "expected"),
+    [
+        (jnp.float32, 655360.25, 1.0, 655361),
+        (jnp.float64, 0.3, 0.1, 3),
+        (jnp.float64, 0.7, 0.1, 7),
+    ],
+)
+def test_frames_cover_the_request_in_the_working_dtype(
+    dtype, time_s, frame_time_s, expected
+):
+    """Hand values give exact counts and catch tolerant or division-only rounding."""
+    with jax.enable_x64():
+        request = jnp.asarray(time_s, dtype=dtype)
+        plan = ox.frames_for_time(request, jnp.asarray(frame_time_s, dtype=dtype))
+        assert plan.n_frames == expected
+        assert plan.live_time_s >= request
+        assert (plan.n_frames - 1) * plan.frame_time_s < request
+
+
+def test_frames_cover_a_request_past_the_float32_integer_range():
+    """Exact float32 products catch a count step that cannot advance past 2**24.
+
+    3963.617431640625 s at 0.00021 s needs more than 2**24 frames, where adding
+    one frame rounds back to the same float32 count; the plan must still cover
+    the request and its next lower representable count must not.
+    """
+    request = np.float32(3963.617431640625)
+    frame = np.float32(0.00021)
+    for make_plan in (ox.frames_for_time, eqx.filter_jit(ox.frames_for_time)):
+        plan = make_plan(jnp.float32(request), jnp.float32(frame))
+        count = np.float32(plan.n_frames)
+        assert count > 2**24
+        assert count * frame >= request
+        assert np.nextafter(count, np.float32(-np.inf)) * frame < request
+
+
+def test_frame_plan_validates_concrete_values_only():
+    """Exact value checks catch invalid concrete fields and validation of tracers."""
+    for frame_time_s, n_frames, field in (
+        (-1, 1, "frame_time_s"),
+        (0, 1, "frame_time_s"),
+        (np.inf, 1, "frame_time_s"),
+        (1 + 1j, 1, "frame_time_s"),
+        (1, 2.5, "n_frames"),
+        (1, -1, "n_frames"),
+        (1, np.inf, "n_frames"),
+        (1, 1 + 1j, "n_frames"),
+    ):
+        with pytest.raises(ValueError, match=field):
+            ox.FramePlan(frame_time_s, n_frames)
+    assert np.isnan(ox.FramePlan(1, np.nan).n_frames)
+    plan = jax.jit(ox.FramePlan)(-1.0, 2.5)
+    assert plan.frame_time_s == -1
+    assert plan.n_frames == 2.5
 
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())

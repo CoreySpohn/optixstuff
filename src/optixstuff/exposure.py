@@ -1,7 +1,9 @@
 """Whole-frame detector integration plans."""
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
+import numpy as np
 from hwoutils.leaves import as_float_leaf
 
 from optixstuff.spectral import Quadrature, Resolution
@@ -20,22 +22,33 @@ def _band_shape(first, second):
 class FramePlan(eqx.Module):
     """Whole-frame integration plan with array-valued times and counts.
 
-    ``frame_time_s`` is strictly positive; ``n_frames`` is a nonnegative
-    integral count stored as a float. Each field is scalar or shape (W,),
-    with one value per band on axis 0 of the rates. Use vmap for other
-    batching.
+    ``frame_time_s`` is finite and strictly positive. ``n_frames`` is a
+    nonnegative whole number stored as a float, or NaN for an unreachable
+    request. Each field is scalar or shape (W,), with one value per band on
+    axis 0 of the rates. Use vmap for other batching.
 
     Attributes:
-        frame_time_s: Seconds per frame, strictly positive, scalar or shape (W,).
-        n_frames: Whole number of frames, stored as a float, scalar or shape (W,).
+        frame_time_s: Finite positive seconds per frame, scalar or shape (W,).
+        n_frames: Float count or NaN, scalar or shape (W,).
     """
 
     frame_time_s: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
     n_frames: jnp.ndarray = eqx.field(converter=lambda x: jnp.asarray(x) * 1.0)
 
     def __check_init__(self):
-        """Validate field shapes before the plan is used."""
+        """Validate field shapes and concrete values before the plan is used."""
         _band_shape(self.frame_time_s.shape, self.n_frames.shape)
+        if not isinstance(self.frame_time_s, jax.core.Tracer):
+            frame = np.asarray(self.frame_time_s)
+            if np.iscomplexobj(frame) or not np.all(np.isfinite(frame) & (frame > 0)):
+                raise ValueError("frame_time_s must be finite and strictly positive")
+        if not isinstance(self.n_frames, jax.core.Tracer):
+            count = np.asarray(self.n_frames)
+            if np.iscomplexobj(count) or not np.all(
+                np.isnan(count)
+                | (np.isfinite(count) & (count >= 0) & (count == np.floor(count)))
+            ):
+                raise ValueError("n_frames must be a nonnegative whole number or NaN")
 
     def _for_bands(self, rate_bands, ndim):
         """Return live time and frame counts aligned to the rates' band axis."""
@@ -76,15 +89,14 @@ class FramePlan(eqx.Module):
 def frames_for_time(time_s, frame_time_s) -> FramePlan:
     """Round requested collecting seconds up to a whole-frame plan.
 
-    Inputs are scalar or (W,), with ``time_s >= 0`` and ``frame_time_s > 0``.
-    Ratios within relative tolerance ``max(1e-12, 4 * eps)`` of a positive integer
-    are exact multiples. Every positive sub-frame duration takes one frame;
-    zero duration takes zero frames. Counts remain floating under JIT,
-    with zero derivative, including at boundaries (JAX rounding convention).
+    For positive finite requests, the frame count is at least one and its
+    product with the frame duration covers the request in the working dtype.
+    Zero seconds takes zero frames. Non-finite or negative requests give NaN
+    counts and live times. Counts remain floating under JIT with zero derivative.
 
     Args:
-        time_s: Requested collecting seconds, scalar or shape (W,), at least zero.
-        frame_time_s: Seconds per frame, scalar or shape (W,), positive.
+        time_s: Requested collecting seconds, scalar or shape (W,).
+        frame_time_s: Finite positive seconds per frame, scalar or shape (W,).
 
     Returns:
         Plan with the smallest whole number of frames covering ``time_s``.
@@ -92,11 +104,21 @@ def frames_for_time(time_s, frame_time_s) -> FramePlan:
     time_s, frame_time_s = jnp.asarray(time_s), jnp.asarray(frame_time_s)
     _band_shape(time_s.shape, frame_time_s.shape)
     ratio = time_s / frame_time_s
-    nearest = jnp.round(ratio)
-    rtol = max(1e-12, 4 * jnp.finfo(ratio.dtype).eps)
-    exact = (nearest > 0) & (jnp.abs(ratio - nearest) <= rtol * nearest)
-    count = jnp.maximum(jnp.ceil(jnp.where(exact, nearest, ratio)), 1.0)
-    return FramePlan(frame_time_s, jnp.where(time_s > 0, count, 0.0))
+    time_s, frame_time_s = time_s.astype(ratio.dtype), frame_time_s.astype(ratio.dtype)
+    count = jnp.maximum(jnp.ceil(ratio), 1.0)
+    # Division and multiplication round separately in this dtype.
+    # Past the integer range of the dtype the neighbouring counts are its spacing away.
+    following = jnp.maximum(count + 1.0, jnp.nextafter(count, jnp.inf))
+    count = jnp.where(count * frame_time_s < time_s, following, count)
+    previous = jnp.minimum(count - 1.0, jnp.nextafter(count, -jnp.inf))
+    count = jnp.where(
+        (previous >= 1) & (previous * frame_time_s >= time_s), previous, count
+    )
+    count = jnp.where(time_s == 0, 0.0, count)
+    valid = jnp.isfinite(time_s) & (time_s >= 0)
+    return FramePlan(
+        frame_time_s, jax.lax.stop_gradient(jnp.where(valid, count, jnp.nan))
+    )
 
 
 class Exposure(eqx.Module):

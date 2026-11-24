@@ -73,11 +73,13 @@ Frame duration belongs to the observation's `FramePlan(frame_time_s, n_frames)`.
 Each field is scalar or a vector with one entry per band. Vectors align with
 axis 0 of the electron rates, including when the rates are images. Use
 `jax.vmap` to batch independent plans and their rates.
-`frames_for_time` rounds requested live time up to whole frames. Ratios
-within relative tolerance `max(1e-12, 4 * eps)` of a positive integer count
-as exact multiples. Every positive sub-frame request takes one frame;
-zero time takes zero. Counts remain floats under JIT and have zero derivative.
-The final frame collects for its entire duration.
+Frame duration must be finite and strictly positive. A frame count must
+be a nonnegative whole number or NaN. A positive finite time request
+takes the smallest whole number of frames whose live time covers it
+in the working dtype. Zero seconds takes zero frames. A non-finite or negative
+request gives a NaN count and live time, as for an unreachable exposure target.
+Counts remain floats under JIT and have zero derivative. The final frame
+collects for its entire duration.
 
 `plan.live_time_s = n_frames * frame_time_s` is collecting time.
 `plan.occupied_time_s(detector)` additionally pays one `read_time_s` per
