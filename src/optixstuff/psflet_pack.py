@@ -3,11 +3,14 @@
 A pack tabulates the pixel-integrated PSFlet response on a fine sub-pixel
 offset grid, per field anchor and per wavelength: ``templates[f, l, iy, ix]``
 is the flux falling in a unit detector pixel whose center sits at offset
-``(dy, dx) = (offsets[iy], offsets[ix])`` px from the PSFlet centroid. A
-wave-optics generator writes the npz format below and a spectrograph model
-reads it; ``LensletDisperser.psflet_pack_path`` points at such a file.
+``(dy, dx) = (offsets[iy], offsets[ix])`` px from the PSFlet centroid. The
+template origin is that centroid. A renderer places it at the dispersion-model
+centroid plus the optional ``centroids`` correction. A measured pack may define
+its centroid by wavelength calibration, so ``PsfletPack`` does not require the
+template's first moment to vanish. ``LensletDisperser.psflet_pack_path`` points
+at the pack file.
 
-npz format, ``format_version = 1``:
+npz format, ``format_version = 2``:
 
 - ``templates``: ``(n_field, n_lam, n_off, n_off)`` template planes.
 - ``offsets``: ``(n_off,)`` uniform ascending pixel-offset axis, shared by the
@@ -28,7 +31,7 @@ from jax import Array
 
 from optixstuff.spectral import as_knots
 
-PACK_FORMAT_VERSION = 1
+PACK_FORMAT_VERSION = 2
 
 
 def _pack_grid(wavelengths_nm) -> HostGrid:
@@ -119,7 +122,7 @@ class PsfletPack(eqx.Module):
 
 
 def save_psflet_pack(path, pack):
-    """Write a pack to the documented npz format (``format_version`` 1).
+    """Write a pack to the documented npz format.
 
     Args:
         path: Destination of the npz file.
@@ -151,6 +154,11 @@ def load_psflet_pack(path):
     with np.load(path, allow_pickle=False) as data:
         version = int(data["format_version"]) if "format_version" in data else None
         if version != PACK_FORMAT_VERSION:
+            if version == 1:
+                raise ValueError(
+                    "unsupported PSFlet pack format 1: the template convention "
+                    "changed, regenerate the pack"
+                )
             raise ValueError(
                 f"unsupported PSFlet pack format {version!r}; this reader "
                 f"supports format {PACK_FORMAT_VERSION}"

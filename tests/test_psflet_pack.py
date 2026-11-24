@@ -24,19 +24,31 @@ def _pack(lam, sigma=0.7, **kwargs):
     )
 
 
-def test_pack_roundtrip(tmp_path):
-    """save/load round-trips every pack field, including provenance."""
-    lam = jnp.array([640.0, 660.0, 680.0])
-    centroids = jnp.zeros((1, 3, 2)).at[:, :, 0].set(1.5)
-    pack = _pack(lam, centroids=centroids, meta_json='{"generator": "test"}')
+def test_v2_pack_roundtrip_bitwise(tmp_path):
+    """A calibration-defined origin can give the template a nonzero moment."""
+    pack = PsfletPack(
+        templates=np.array([[[[0, 0, 0], [0, 0.7, 0.3], [0, 0, 0]]]], dtype=np.float32),
+        offsets=[-1.0, 0.0, 1.0],
+        wavelengths_nm=[650.25],
+        field_xy=[[2, -1]],
+        centroids=[[[0.3, -0.0]]],
+        meta_json='{"generator": "test"}',
+    )
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, pack)
+    with np.load(path, allow_pickle=False) as data:
+        assert data["format_version"].item() == 2
     loaded = load_psflet_pack(path)
-    assert jnp.allclose(loaded.templates, pack.templates)
-    assert jnp.allclose(loaded.offsets, pack.offsets)
-    assert loaded.wavelengths_nm == pack.wavelengths_nm
-    assert jnp.allclose(loaded.field_xy, pack.field_xy)
-    assert jnp.allclose(loaded.centroids, pack.centroids)
+    for actual, expected in (
+        (loaded.templates, pack.templates),
+        (loaded.offsets, pack.offsets),
+        (loaded.wavelengths_nm.values, pack.wavelengths_nm.values),
+        (loaded.field_xy, pack.field_xy),
+        (loaded.centroids, pack.centroids),
+    ):
+        assert actual.shape == expected.shape
+        assert actual.dtype == expected.dtype
+        assert actual.tobytes() == expected.tobytes()
     assert loaded.meta_json == pack.meta_json
 
 
@@ -84,14 +96,18 @@ def test_pack_validation_rejects_bad_shapes():
         )
 
 
-def test_loader_rejects_unknown_format(tmp_path):
-    """A pack file with an unknown format version fails loudly."""
+@pytest.mark.parametrize(
+    ("version", "message"),
+    [(1, "template convention changed.*regenerate"), (99, "format")],
+)
+def test_loader_rejects_unsupported_format(tmp_path, version, message):
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, _pack(jnp.array([640.0, 680.0])))
-    data = dict(np.load(path, allow_pickle=False))
-    data["format_version"] = np.int64(99)
+    with np.load(path, allow_pickle=False) as archive:
+        data = dict(archive)
+    data["format_version"] = np.int64(version)
     np.savez(path, **data)
-    with pytest.raises(ValueError, match="format"):
+    with pytest.raises(ValueError, match=message):
         load_psflet_pack(path)
 
 
