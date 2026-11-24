@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.leaves import require_tree
 
 from optixstuff.grids import (
     Image,
@@ -43,7 +44,8 @@ def test_downsampling_integrates_every_source_pixel(row, col):
 
 
 def test_clipped_rotated_cell_and_disjoint_grid_sequence():
-    """Fails if a rotated square is collected by its enclosing rectangle.
+    """Fails if a rotated square is collected by its enclosing rectangle, or
+    the sparse overlap holds NumPy or weakly typed weights.
 
     The two unit squares differ by 45 degrees. Four isosceles triangles
     of leg 1 - 1/sqrt(2) are outside their intersection.
@@ -58,6 +60,9 @@ def test_clipped_rotated_cell_and_disjoint_grid_sequence():
     )
     distant = PixelGrid.regular((1, 2), 1, "pixel", center=(10, 10))
     overlap = footprint_overlap(source.grid, (source.grid, diamond, distant))
+    # The sparse triples are strong leaves: indices stay int32.
+    require_tree(overlap)
+    assert [a.dtype for a in overlap.sparse] == [jnp.int32, jnp.int32, jnp.float64]
     got = jax.jit(integrate_footprints)(source, overlap)
     np.testing.assert_allclose(got, [1, area, 0, 0], atol=2e-15, rtol=0)
 
@@ -71,10 +76,13 @@ def test_rebin_partial_coverage():
 
 
 def test_rebin_noninteger_ratio_and_gradient():
-    """Fails if non-integer tiling loses flux or detaches it from gradients."""
+    """Fails if non-integer tiling loses flux or detaches it from gradients, or
+    the per-axis overlap holds NumPy weights."""
     source = _integral(jnp.arange(225.0).reshape(15, 15))
     target = PixelGrid.regular((6, 6), 2.5, "pixel")
     overlap = footprint_overlap(source.grid, target)
+    require_tree(overlap)
+    assert overlap.axes is not None
     result = integrate_footprints(source, overlap)
     assert result.measure == Measure.integral()
     np.testing.assert_array_equal(result.data.sum(), source.data.sum())

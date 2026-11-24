@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from hwoutils.constants import arcsec2rad
 from hwoutils.conversions import lambda_d_to_arcsec
+from hwoutils.leaves import as_leaf
 from hwoutils.map_coordinates import map_coordinates
 from hwoutils.radial import get_center
 
@@ -1619,7 +1620,9 @@ def _axis_overlaps(n_source, n_target, source_center, target_center, step):
 class CellOverlap:
     """Reusable overlap operator with static geometry and numeric weight leaves.
 
-    Construct with footprint_overlap. The matrix shape is (cells, source pixels).
+    Construct with footprint_overlap, which stores the weights as strong JAX
+    leaves (indices int32, fractions in the active float dtype). The matrix
+    shape is (cells, source pixels).
 
     Attributes:
         source: Source grid.
@@ -1687,7 +1690,9 @@ def footprint_overlap(
                 source.shape[0], grid.shape[0], source.center_y, grid.center_y, sy
             )
             if target is not None:
-                return CellOverlap(source, target, shape, flat, axes=(wy, wx))
+                return CellOverlap(
+                    source, target, shape, flat, axes=(as_leaf(wy), as_leaf(wx))
+                )
             # Form only products of nonzero intervals for a sequence of grids.
             ty, y = np.nonzero(wy)
             tx, x = np.nonzero(wx)
@@ -1701,9 +1706,9 @@ def footprint_overlap(
                 fractions.append(area)
         offset += math.prod(grid.shape)
     sparse = (
-        np.asarray(rows, dtype=np.int32),
-        np.asarray(cols, dtype=np.int32),
-        np.asarray(fractions, dtype=np.float64),
+        as_leaf(np.asarray(rows, dtype=np.int32)),
+        as_leaf(np.asarray(cols, dtype=np.int32)),
+        as_leaf(np.asarray(fractions, dtype=np.float64)),
     )
     return CellOverlap(source, target, shape, flat, sparse=sparse)
 
