@@ -166,6 +166,23 @@ def test_unknown_rates_stay_unknown():
         assert np.isnan(solved.time_s).all()
 
 
+def test_an_undefined_frame_time_reads_unreachable():
+    """Fails if an undefined cadence raises in the internal plan or reads as a number.
+
+    Basis: exact; a NaN, infinite or non-positive frame time (the photon-counting
+    cadence of an unsupported or dark aperture) gives NaN S/N and an invalid time,
+    eagerly and under jit, instead of a refused FramePlan.
+    """
+    rates, detector = _rates(), _detector()
+    for frame_time_s in (jnp.nan, jnp.inf, 0.0, -1.0):
+        kwargs = dict(frame_time_s=frame_time_s, post_processing=reference)
+        assert jnp.isnan(ox.snr(rates, detector, 3600.0, **kwargs)).all()
+        for solve in (ox.exposure_time, eqx.filter_jit(ox.exposure_time)):
+            solved = solve(rates, detector, 5.0, **kwargs)
+            assert not solved.valid.any()
+            assert np.isnan(solved.time_s).all()
+
+
 def test_per_band_targets_and_frame_times():
     """Fails if (W,) targets, times or frame times mix bands.
 

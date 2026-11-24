@@ -114,8 +114,17 @@ def _supported(rates, shape):
 def _statistics(rates, detector, frame_time_s, post_processing):
     """Return planet electrons/s, variance per live second and squared floor."""
     electrons = detector.electrons(rates) if rates.carrier == "photon" else rates
-    _, one_frame = detector.mean_and_variance(electrons, FramePlan(frame_time_s, 1))
-    b = one_frame / _per_band(frame_time_s, one_frame.ndim)
+    frame_time_s = jnp.asarray(frame_time_s)
+    # An undefined cadence (NaN, infinite or not positive) gives NaN statistics,
+    # so the target reads as unreachable instead of raising in the plan.
+    usable = jnp.isfinite(frame_time_s) & (frame_time_s > 0)
+    plan = FramePlan(jnp.where(usable, frame_time_s, 1.0), 1)
+    _, one_frame = detector.mean_and_variance(electrons, plan)
+    b = jnp.where(
+        _per_band(usable, one_frame.ndim),
+        one_frame / _per_band(frame_time_s, one_frame.ndim),
+        jnp.nan,
+    )
     floor_sq = jnp.zeros_like(b)
     speckle = _per_band(post_processing.speckle_residual_fraction, b.ndim)
     exozodi = _per_band(post_processing.exozodi_residual_fraction, b.ndim)
