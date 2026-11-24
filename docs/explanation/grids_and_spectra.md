@@ -83,9 +83,11 @@ that map on the host from the nodes and the knots, never from a value, by
 transposing the source's interpolant; `apply` acts on the live values inside a
 traced program, so a fitted table or a scale keeps its gradient.
 
-A source declares the protocol `SpectralTable`: its knots through
-`spectral_breaks_nm()`, a static `knot_digest` made with `digest_knots`, its
-polynomial degree between knots and, optionally, `spectral_interpolant()`.
+A source declares the protocol `SpectralTable`: its `knots`, a `Knots` on a
+static field (immutable float64 host data, hashed by its digest, never a leaf),
+a `knot_digest` property made with `digest_knots`, its polynomial degree
+between knots and, optionally, `spectral_interpolant()`. The values are the
+table's only leaves, so a fit can move them and never the knots.
 `Resolution.build` builds one rule for every pair of a quadrature and a table
 grid, and `Resolution.rule` finds it by the two static digests, also under
 `jit`:
@@ -96,25 +98,32 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from optixstuff.spectral import Band, Quadrature, Resolution, digest_knots
+from hwoutils.leaves import as_float_leaf
+
+from optixstuff.spectral import (
+    Band,
+    Knots,
+    Quadrature,
+    Resolution,
+    as_knots,
+    digest_knots,
+)
 
 
 class Table(eqx.Module):
-    wavelength_nm: jax.Array
-    values: jax.Array
-    knot_digest: str = eqx.field(static=True)
+    knots: Knots = eqx.field(static=True, converter=as_knots)
+    values: jax.Array = eqx.field(converter=as_float_leaf)
     spectral_degree = 1
 
-    def __init__(self, wavelength_nm, values):
-        self.wavelength_nm = jnp.asarray(wavelength_nm)
-        self.values = jnp.asarray(values)
-        self.knot_digest = digest_knots(self.wavelength_nm, "linear")
+    @property
+    def knot_digest(self):
+        return digest_knots(self.knots, "linear")
 
     def spectral_breaks_nm(self):
-        return np.asarray(self.wavelength_nm)
+        return self.knots.nm
 
     def spectral_interpolant(self):
-        return lambda values, nm: jnp.interp(nm, self.wavelength_nm, values)
+        return lambda values, nm: jnp.interp(nm, self.knots.array(), values)
 
 
 knots = np.linspace(480.0, 620.0, 1401)
@@ -140,6 +149,13 @@ np.testing.assert_allclose(band_flux(resolution, star), exact, rtol=1e-6)
 Every piece of every band must lie inside each table, from its first knot to
 its last: a band that leaves a table, or straddles its end, is refused when the
 rule is built. End the band at the table end, or load the table over the band.
+Two wavelengths from different sources are compared with `same_wavelength`,
+which is true within four float32 ULPs (`merge_tolerance_nm`) in x32 and x64
+alike: breaks that close merge, a break that close to a band edge is dropped,
+and a table end that close to a band edge is at the edge. The layout, its
+digest and every operator are therefore the same in both precisions. A table
+whose own adjacent knots are that close is refused by `Knots`, which caps a
+table's resolving power at about 2e6 to 4e6.
 A table whose knots are all piece edges takes the `"identity"` kind, which
 holds no arrays, because a Gauss rule on each piece is already exact there; a
 source that is not one table (a product of two tables) takes the `"fine"`

@@ -5,6 +5,7 @@ the response is read over. Evaluate integrands at its nodes and reduce the
 values with JAX transformations.
 """
 
+import functools
 import hashlib
 import math
 from collections.abc import Sequence
@@ -17,20 +18,25 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.leaves import HostGrid, as_float_leaf, is_traced
 from numpy.polynomial.legendre import leggauss
 
 from optixstuff.grids import Image
 
 __all__ = [
     "Band",
+    "Knots",
     "Quadrature",
     "Reduction",
     "Resolution",
     "SpectralBreaks",
     "SpectralTable",
     "Transmission",
+    "as_knots",
     "digest_knots",
+    "merge_tolerance_nm",
     "rebin_bands",
+    "same_wavelength",
     "spectral_breaks",
     "trapezoid_weights",
 ]
@@ -75,6 +81,139 @@ def spectral_breaks(*models: SpectralBreaks) -> np.ndarray:
             )
         tables.append(_break_array(model.spectral_breaks_nm()))
     return np.unique(np.concatenate(tables)) if tables else np.empty(0)
+
+
+MERGE_TOLERANCE_ULPS = 4
+"""Float32 ULPs of a wavelength within which two wavelengths are one."""
+
+_TOLERANCE_FLOOR_NM = 1e-9
+
+
+def merge_tolerance_nm(wavelength_nm):
+    """Distance [nm] within which two wavelengths are the same, at a wavelength.
+
+    Four float32 ULPs of the wavelength, floored at 1e-9 nm, in x32 and in x64
+    alike, so a quadrature layout and every digest built on it do not depend
+    on the precision flag: about 1.2e-4 nm at 450 nm, 4.8e-7 relative. Host
+    float64 arithmetic.
+
+    Args:
+        wavelength_nm: Wavelength [nm], scalar or array.
+
+    Returns:
+        The tolerance [nm], float64, with the shape of the input.
+    """
+    wave = np.abs(np.asarray(wavelength_nm, dtype=np.float64))
+    spacing = np.spacing(wave.astype(np.float32)).astype(np.float64)
+    return np.maximum(MERGE_TOLERANCE_ULPS * spacing, _TOLERANCE_FLOOR_NM)
+
+
+def same_wavelength(a, b):
+    """Whether two host wavelengths [nm] are closer than the merge tolerance.
+
+    The one comparison of two wavelengths from different sources: a table
+    knot against a band edge, a break against another break, a header
+    wavelength against a band. The tolerance is taken at the larger of the
+    two, so the test is symmetric. Never compare such wavelengths with ``==``,
+    ``<`` or a literal tolerance.
+
+    Args:
+        a: Wavelength [nm], scalar or array.
+        b: Wavelength [nm], scalar or array, broadcast against ``a``.
+
+    Returns:
+        A NumPy bool, or bool array of the broadcast shape.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    return np.abs(a - b) < merge_tolerance_nm(np.maximum(a, b))
+
+
+class Knots(HostGrid):
+    """The wavelength grid [nm] of a tabulated spectrum, static host data.
+
+    Immutable float64, hashed and compared by its SHA-256, so it is stored on
+    a ``static=True`` field and is never a leaf: no fit can free a knot, and
+    an operator built on the host for these knots can be found by their
+    digest inside a traced program. The knots must be concrete, finite,
+    positive and strictly increasing, at least two, and adjacent knots must
+    not be within :func:`merge_tolerance_nm` of each other (a ceiling on the
+    resolving power of a table of about 2e6 to 4e6). The float32 cast of such
+    a grid stays strictly increasing.
+
+    Build from file knots as host arrays, never through ``jnp``: under x32 a
+    ``jnp`` array has already rounded them, and its digest differs from that
+    of the float64 file. ``nm`` is the float64 host array; ``array()`` is a
+    JAX constant in the active dtype for traced reads.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, knots_nm):
+        """Validate concrete knots and store them as read-only float64.
+
+        Args:
+            knots_nm: Knot wavelengths [nm], any concrete 1D array-like.
+
+        Raises:
+            TypeError: If the knots are traced.
+            ValueError: If the knots are not a valid grid.
+        """
+        super().__init__(knots_nm)
+        knots = self.values
+        if knots.size < 2 or np.any(knots <= 0) or np.any(np.diff(knots) <= 0):
+            raise ValueError(
+                "the knots of a spectral table must be a finite, positive, "
+                "strictly increasing 1D array of at least two wavelengths"
+            )
+        close = np.flatnonzero(same_wavelength(knots[:-1], knots[1:]))
+        if close.size:
+            a, b = knots[close[0]], knots[close[0] + 1]
+            raise ValueError(
+                f"the knots {float(a)!r} and {float(b)!r} nm are closer than the "
+                f"wavelength tolerance of {float(merge_tolerance_nm(b)):.3g} nm "
+                "(four float32 ULPs); a table cannot resolve them"
+            )
+
+    @property
+    def nm(self) -> np.ndarray:
+        """The read-only float64 knots [nm]."""
+        return self.values
+
+    def union(self, *others: "Knots") -> "Knots":
+        """Return the merged grid of this and other knot grids.
+
+        Knots of different grids that are within the merge tolerance are one
+        knot, the smallest of them, so the union is a valid grid. Cached on
+        the digests.
+
+        Args:
+            *others: Further knot grids.
+
+        Returns:
+            The merged knots.
+        """
+        return _union((self, *others))
+
+
+@functools.lru_cache(maxsize=256)
+def _union(grids: tuple[Knots, ...]) -> Knots:
+    values = np.concatenate([grid.nm for grid in grids])
+    return Knots(_merge_breaks(np.unique(values), np.empty(0)))
+
+
+def as_knots(knots_nm) -> Knots:
+    """Return knots unchanged, or build :class:`Knots` from an array-like.
+
+    The converter for a ``knots`` field.
+
+    Args:
+        knots_nm: A ``Knots`` or concrete knot wavelengths [nm].
+
+    Returns:
+        The ``Knots``.
+    """
+    return knots_nm if isinstance(knots_nm, Knots) else Knots(knots_nm)
 
 
 @dataclass(frozen=True)
@@ -226,39 +365,42 @@ class Transmission:
     allowed (relative responses and opaque elements). Values at endpoints
     retain the tabulated response, with no extrapolated wings.
 
-    The wavelength table retains host edge precision. Evaluation uses the
-    configured JAX precision. Both arrays are dynamic PyTree leaves for
-    jit, vmap and parameter gradients.
-    Transformed tables must preserve the construction constraints. A photon
+    The wavelength table is a static :class:`Knots`, kept at host float64
+    precision and carried in the pytree's auxiliary data, so the breaks it
+    declares never depend on a leaf. ``transmission`` is the one leaf, in the
+    active float dtype, for jit, vmap and parameter gradients; evaluation uses
+    the configured JAX precision. Transformed tables must preserve the
+    construction constraints. A photon
     spectrum multiplied by this response integrates detected photons; no
     energy-to-photon weighting or normalization is implicit.
 
     Attributes:
-        wavelength_nm: Strictly increasing wavelengths in nm of the table.
+        wavelength_nm: Strictly increasing wavelengths of the table [nm].
         transmission: Dimensionless response at those wavelengths.
     """
 
-    wavelength_nm: jax.Array
+    wavelength_nm: Knots
     transmission: jax.Array
 
     def __post_init__(self):
-        """Preserve host wavelength geometry and validate the response table."""
-        wave = np.asarray(self.wavelength_nm, dtype=float)
-        response = np.asarray(jnp.asarray(self.transmission, dtype=float))
-        if wave.ndim != 1 or wave.size < 2 or response.shape != wave.shape:
-            raise ValueError("tables must share shape (N,) with N >= 2")
-        if (
-            not np.all(np.isfinite(wave))
-            or np.any(wave <= 0)
-            or np.any(np.diff(wave) <= 0)
-        ):
-            raise ValueError("wavelength_nm must be finite, positive and increasing")
-        if not np.all(np.isfinite(response)) or np.any(response < 0):
-            raise ValueError("transmission must be finite and nonnegative")
-        # Retain the supplied break coordinates even when evaluations use float32.
-        with jax.enable_x64():
-            object.__setattr__(self, "wavelength_nm", jnp.asarray(wave))
-        object.__setattr__(self, "transmission", jnp.asarray(response, dtype=float))
+        """Store the wavelengths as static knots and validate the response table."""
+        if not isinstance(self.wavelength_nm, Knots):
+            wave = np.asarray(self.wavelength_nm, dtype=float)
+            if wave.ndim != 1 or wave.size < 2:
+                raise ValueError("tables must share shape (N,) with N >= 2")
+            try:
+                object.__setattr__(self, "wavelength_nm", Knots(wave))
+            except ValueError as error:
+                raise ValueError(
+                    f"wavelength_nm must be finite, positive and increasing: {error}"
+                ) from None
+        if not is_traced(self.transmission):
+            response = np.asarray(self.transmission, dtype=float)
+            if response.shape != (len(self.wavelength_nm),):
+                raise ValueError("tables must share shape (N,) with N >= 2")
+            if not np.all(np.isfinite(response)) or np.any(response < 0):
+                raise ValueError("transmission must be finite and nonnegative")
+        object.__setattr__(self, "transmission", as_float_leaf(self.transmission))
 
     @classmethod
     def from_band(cls, band: Band) -> "Transmission":
@@ -284,8 +426,8 @@ class Transmission:
         """
         return jnp.interp(
             wavelength_nm,
-            jnp.asarray(self.wavelength_nm, dtype=float),
-            jnp.asarray(self.transmission, dtype=float),
+            self.wavelength_nm.array(),
+            self.transmission,
             left=0.0,
             right=0.0,
         )
@@ -296,17 +438,17 @@ class Transmission:
         Returns:
             The tabulated wavelengths in nm.
         """
-        return np.asarray(self.wavelength_nm)
+        return self.wavelength_nm.nm
 
     @property
-    def low_nm(self):
+    def low_nm(self) -> float:
         """Lower edge of the tabulated support [nm]."""
-        return self.wavelength_nm[0]
+        return float(self.wavelength_nm.nm[0])
 
     @property
-    def high_nm(self):
+    def high_nm(self) -> float:
         """Upper edge of the tabulated support [nm]."""
-        return self.wavelength_nm[-1]
+        return float(self.wavelength_nm.nm[-1])
 
     @property
     def mean_nm(self):
@@ -315,8 +457,8 @@ class Transmission:
         Exact linear-segment area and quadratic first moment; this is the
         detected mean for a flat incident photon flux density.
         """
-        wave = jnp.asarray(self.wavelength_nm, dtype=float)
-        response = jnp.asarray(self.transmission, dtype=float)
+        wave = self.wavelength_nm.array()
+        response = self.transmission
         a, b = wave[:-1], wave[1:]
         ta, tb = response[:-1], response[1:]
         area = jnp.sum((b - a) * (ta + tb) / 2)
@@ -347,27 +489,27 @@ class Transmission:
         return rule.integrate(values[None])[0]
 
     def tree_flatten(self):
-        """Expose both table arrays as dynamic leaves.
+        """Expose the response as the one leaf and the knots as static data.
 
         Returns:
-            The wavelength and transmission arrays as leaves, and None for metadata.
+            The transmission array as the leaf, and the knots as auxiliary data.
         """
-        return (self.wavelength_nm, self.transmission), None
+        return (self.transmission,), self.wavelength_nm
 
     @classmethod
     def tree_unflatten(cls, metadata, arrays):
         """Rebuild transformed tables without host validation.
 
         Args:
-            metadata: Auxiliary data from ``tree_flatten``; unused.
-            arrays: The wavelength and transmission arrays.
+            metadata: The knots, from ``tree_flatten``.
+            arrays: The transmission array.
 
         Returns:
             The rebuilt Transmission.
         """
         result = object.__new__(cls)
-        object.__setattr__(result, "wavelength_nm", arrays[0])
-        object.__setattr__(result, "transmission", arrays[1])
+        object.__setattr__(result, "wavelength_nm", metadata)
+        object.__setattr__(result, "transmission", arrays[0])
         return result
 
 
@@ -403,9 +545,6 @@ def _piece_order(order, cycles):
     return max(order, 2 * math.ceil((order + NODES_PER_CYCLE * cycles) / 2))
 
 
-_BREAK_MERGE_NM = 1e-9
-
-
 def _is_traced(quadrature):
     return any(
         isinstance(x, jax.core.Tracer)
@@ -414,23 +553,26 @@ def _is_traced(quadrature):
 
 
 def _merge_breaks(declared, extra):
-    """Sorted breaks of both sources; breaks closer than 1e-9 nm merge.
+    """Sorted breaks of both sources; breaks within the merge tolerance merge.
 
-    Within a run of breaks each closer than the tolerance to the next, a
+    Host float64, with the tolerance of :func:`same_wavelength` in x32 and x64
+    alike. Within a run of breaks each within the tolerance of the next, a
     declared break is kept over an extra one, and among several declared
-    breaks the smallest is kept, so two breaks that differ by rounding never
-    make a piece of zero width.
+    breaks the smallest is kept, so two breaks that differ by rounding (a
+    float32 copy of a float64 grid, say) never make a sliver piece. The kept
+    value is bitwise one of the inputs.
     """
-    values = np.concatenate([declared, extra])
+    values = np.concatenate([declared, extra]).astype(np.float64)
     is_declared = np.concatenate(
         [np.ones(declared.size, bool), np.zeros(extra.size, bool)]
     )
     order = np.argsort(values, kind="stable")
     values, is_declared = values[order], is_declared[order]
+    close = same_wavelength(values[:-1], values[1:])
     kept = []
     start = 0
     for i in range(1, values.size + 1):
-        if i == values.size or values[i] - values[i - 1] >= _BREAK_MERGE_NM:
+        if i == values.size or not close[i - 1]:
             cluster = slice(start, i)
             first = start + int(np.argmax(is_declared[cluster]))
             kept.append(values[first])
@@ -535,9 +677,12 @@ class Quadrature(eqx.Module):
         Everything here is concrete host data.
 
         Declared breaks, from ``models`` and ``breaks_nm``, split a band into
-        pieces. Breaks closer than 1e-9 nm are one break (the model's knot is
-        kept over the one in ``breaks_nm``, and the smallest of several model
-        knots), and a break within 1e-9 nm of a band edge is dropped. Declare a
+        pieces. Breaks within :func:`merge_tolerance_nm` of each other are one
+        break (the model's knot is kept over the one in ``breaks_nm``, and the
+        smallest of several model knots), and a break within it of a band edge
+        is dropped and the edge kept, so no piece is narrower than the
+        tolerance. The tolerance is fixed at float32 resolution in both
+        precisions, so the layout does not depend on the x64 flag. Declare a
         break for any factor that is evaluated at the nodes and has a kink or a
         feature narrower than about the band width over ``order``; such a
         feature is otherwise integrated to a few percent at any practical
@@ -585,8 +730,10 @@ class Quadrature(eqx.Module):
             if band.width_nm == 0:
                 raise ValueError("use Quadrature.monochromatic for a zero-width band")
             inside = breaks[
-                (breaks - band.low_nm >= _BREAK_MERGE_NM)
-                & (band.high_nm - breaks >= _BREAK_MERGE_NM)
+                (breaks > band.low_nm)
+                & (breaks < band.high_nm)
+                & ~same_wavelength(breaks, band.low_nm)
+                & ~same_wavelength(breaks, band.high_nm)
             ]
             edges = np.concatenate(([band.low_nm], inside, [band.high_nm]))
             layout, waves, weights = [], [], []
@@ -717,14 +864,13 @@ class Quadrature(eqx.Module):
 def digest_knots(knots_nm, method: str) -> str:
     """Return the knot digest of a tabulated spectrum: its method and its knots.
 
-    The digest has the form ``"<method>:<hash>"``. A table computes it once, on
-    the host, from its concrete knots and the name of its interpolation, and
-    keeps it as a static field, so a rule can be looked up for the table inside
-    a traced program. ``Resolution.build`` recomputes the hash from the knots
-    to catch a digest that no longer matches them.
+    The digest has the form ``"<method>:<hash>"``, with the hash of
+    ``Knots.digest``. A table's ``knot_digest`` is this, computed from its
+    static knots whenever it is read, so it can never go stale and a rule can
+    be looked up for the table inside a traced program.
 
     Args:
-        knots_nm: Concrete, strictly increasing table wavelengths in nm.
+        knots_nm: A ``Knots``, or concrete table wavelengths in nm.
         method: Name of the interpolation between the knots, such as
             ``"linear"`` or ``"cubic"``; it must not contain a colon.
 
@@ -733,31 +879,7 @@ def digest_knots(knots_nm, method: str) -> str:
     """
     if ":" in method:
         raise ValueError("the interpolation method name must not contain ':'")
-    return f"{method}:{_knot_hash(_knot_array(knots_nm))}"
-
-
-def _knot_array(knots_nm):
-    if isinstance(knots_nm, jax.core.Tracer):
-        raise TypeError(
-            "the knots of a spectral table must be concrete; construct the "
-            "table on the host, outside any traced function"
-        )
-    knots = np.asarray(knots_nm, dtype=float)
-    if (
-        knots.ndim != 1
-        or knots.size < 2
-        or not np.all(np.isfinite(knots))
-        or np.any(np.diff(knots) <= 0)
-    ):
-        raise ValueError(
-            "the knots of a spectral table must be a finite, strictly "
-            "increasing 1D array of at least two wavelengths"
-        )
-    return knots
-
-
-def _knot_hash(knots):
-    return hashlib.sha256(knots.tobytes()).hexdigest()[:16]
+    return f"{method}:{as_knots(knots_nm).digest}"
 
 
 @runtime_checkable
@@ -768,15 +890,20 @@ class SpectralTable(Protocol):
     integral of the source against each node's Lagrange polynomial is a fixed
     linear map of the values. The protocol carries what the host build needs:
 
-    - ``spectral_breaks_nm()``: the concrete knots. The first and the last are
-      the ends of the interval on which the table is defined.
-    - ``knot_digest``: a static ``digest_knots(knots, method)`` computed at
-      construction from the knots as the table stores them, or None for a
-      table constructed under a trace (no rule can be built for it). It is
-      computed once, so a knot leaf replaced afterwards leaves it stale;
-      ``Resolution.build`` catches that.
+    - ``knots``: the table's :class:`Knots`, a static field (or a property
+      over static data, for a composite). The first and the last are the ends
+      of the interval on which the table is defined. The values of the table
+      are its leaves; the knots never are, so no fit can move them.
+    - ``knot_digest``: ``digest_knots(knots, method)``, a property computed
+      from the static knots and the name of the interpolation, never stored.
+      Replacing the knots gives another digest, for which a built
+      ``Resolution`` has no rule.
     - ``spectral_degree``: the polynomial degree of the source between knots
       (1 for a linear table, 3 for a cubic one, the sum for a product).
+
+    A table also declares its knots as breaks: ``spectral_breaks_nm()``
+    returns ``knots.nm``. A table without a ``knots`` attribute is read from
+    ``spectral_breaks_nm()`` and its digest is checked against it.
 
     Optionally, ``spectral_interpolant()`` returns the table's own
     interpolation as a function ``f(values, wavelength_nm)``, linear in the
@@ -785,8 +912,7 @@ class SpectralTable(Protocol):
     source evaluated at ``Reduction.fine_nm``.
 
     Attributes:
-        knot_digest: Static digest of the knots and the interpolation method,
-            or None for a table constructed under a trace.
+        knot_digest: Digest of the knots and the interpolation method.
         spectral_degree: Polynomial degree of the source between knots.
     """
 
@@ -930,8 +1056,22 @@ class Reduction(eqx.Module):
         Runs in float64 on concrete data and refuses tracers. Every piece of
         every band must lie inside the table, from its first knot to its last;
         a piece outside it, or one that straddles its end, is refused, because
-        the table says nothing there. End the band at the table end, or load
-        the table over the band.
+        the table says nothing there. An end within :func:`merge_tolerance_nm`
+        of the piece's edge is at the edge. End the band at the table end, or
+        load the table over the band.
+
+        A knot within the tolerance of a piece edge is that edge only when
+        ``(d / h) ** 2 <= 1e-12``, with ``d`` its distance from the edge and
+        ``h`` the smaller of the table's two knot spacings beside it; the
+        error of treating it so is then below 1e-12 of the cells it touches.
+        Otherwise it stays an interior knot and its cell edges are the true
+        knots, which is exact. A fine table (a line-by-line spectrum) that
+        meets another grid's knot within the tolerance therefore loses the
+        identity kind for an exact rule. That costs build time, memory and
+        source evaluations, not accuracy: for a table of resolving power
+        1.5e5 over one 50 nm band (15,806 knots), the build takes 1.65 s
+        against 0.35 s, the operator holds 1.9 MB (x32) or 3.8 MB (x64)
+        against none, and a read evaluates the source 1.5 times as often.
 
         The moments use ``ceil((order + degree) / 2)`` Gauss points on every
         cell between knots, which is exact for a source of polynomial degree
@@ -943,7 +1083,7 @@ class Reduction(eqx.Module):
 
         Args:
             quadrature: A rule from ``Quadrature.build`` (its ``pieces`` set).
-            knots_nm: Concrete, strictly increasing table wavelengths in nm.
+            knots_nm: The table's ``Knots``, or concrete table wavelengths in nm.
             degree: Polynomial degree of the source between knots.
             interpolant: The source's interpolation ``f(values, wavelength_nm)``,
                 linear in values of shape (T,); None for the fine kind.
@@ -966,9 +1106,10 @@ class Reduction(eqx.Module):
         degree = index(degree)
         if degree < 0:
             raise ValueError("degree must be a nonnegative integer")
-        knots = _knot_array(knots_nm)
+        grid = as_knots(knots_nm)
+        knots = grid.nm
         if knot_digest is None:
-            knot_digest = digest_knots(knots, f"degree {degree}")
+            knot_digest = digest_knots(grid, f"degree {degree}")
         all_nodes = np.asarray(quadrature.nodes_nm, dtype=float)
         for w, (band, row) in enumerate(
             zip(quadrature.bands, quadrature.pieces, strict=True)
@@ -977,17 +1118,23 @@ class Reduction(eqx.Module):
             for lo, hi, n in row:
                 piece_nodes = all_nodes[w, first : first + n]
                 first += n
-                if hi - lo < _BREAK_MERGE_NM or np.any(np.diff(piece_nodes) <= 0):
+                # Quadrature.build makes no such piece; a hand-made rule can.
+                if (
+                    hi <= lo
+                    or same_wavelength(lo, hi)
+                    or np.any(np.diff(piece_nodes) <= 0)
+                ):
                     raise ValueError(
                         f"band {band.low_nm:g} to {band.high_nm:g} nm: the piece "
-                        f"{lo!r} to {hi!r} nm is narrower than {_BREAK_MERGE_NM:g} "
-                        "nm or its nodes are not distinct, so the operator would "
-                        "be NaN. Merge breaks that differ by rounding."
+                        f"{lo!r} to {hi!r} nm is narrower than the wavelength "
+                        f"tolerance of {float(merge_tolerance_nm(hi)):.3g} nm or "
+                        "its nodes are not distinct, so the operator would be "
+                        "NaN. Merge breaks that differ by rounding."
                     )
-                if lo < knots[0] or hi > knots[-1]:
-                    word, end = (
-                        ("begins", knots[0]) if lo < knots[0] else ("ends", knots[-1])
-                    )
+                before = lo < knots[0] and not same_wavelength(lo, knots[0])
+                after = hi > knots[-1] and not same_wavelength(hi, knots[-1])
+                if before or after:
+                    word, end = ("begins", knots[0]) if before else ("ends", knots[-1])
                     # Shortest round-trip digits, so a one-ULP overrun reads as one.
                     raise ValueError(
                         f"band {float(band.low_nm)!r} to {float(band.high_nm)!r} "
@@ -1005,7 +1152,7 @@ class Reduction(eqx.Module):
         )
         cached = _RULE_CACHE.get(key)
         if cached is None:
-            cached = _build_arrays(quadrature, knots, degree, interpolant)
+            cached = _build_arrays(quadrature, grid, degree, interpolant)
             if len(_RULE_CACHE) >= _RULE_CACHE_SIZE:
                 _RULE_CACHE.pop(next(iter(_RULE_CACHE)))
             _RULE_CACHE[key] = cached
@@ -1060,8 +1207,36 @@ class Reduction(eqx.Module):
         return flat[slots]
 
 
-def _build_arrays(quadrature, knots, degree, interpolant):
+EDGE_GUARD = 1e-12
+"""Largest ``(d / h) ** 2`` at which a knot near a piece edge counts as the edge."""
+
+
+def _interior_knots(knots, lo, hi):
+    """Knots strictly inside a piece, less those that count as its edges.
+
+    A knot within the merge tolerance of an edge counts as that edge when
+    ``(d / h) ** 2 <= EDGE_GUARD``, with ``d`` its distance from the edge and
+    ``h`` the smaller of the table's knot spacings beside it. The test is
+    geometric, so it needs no table values and is the same in both precisions.
+    """
+    index = np.flatnonzero((knots > lo) & (knots < hi))
+    inside = knots[index]
+    edge = np.where(np.abs(inside - lo) <= np.abs(hi - inside), lo, hi)
+    near = same_wavelength(inside, edge)
+    if not near.any():
+        return inside
+    gaps = np.diff(knots)
+    left = np.where(index > 0, gaps[np.maximum(index - 1, 0)], np.inf)
+    right = np.where(
+        index < knots.size - 1, gaps[np.minimum(index, gaps.size - 1)], np.inf
+    )
+    ratio = np.abs(inside - edge) / np.minimum(left, right)
+    return inside[~(near & (ratio**2 <= EDGE_GUARD))]
+
+
+def _build_arrays(quadrature, grid, degree, interpolant):
     """Host arrays of a Reduction: its kind, its slots and its padded blocks."""
+    knots = as_knots(grid).nm
     nodes = np.asarray(quadrature.nodes_nm, dtype=float)
     weights = np.asarray(quadrature.weights_nm, dtype=float)
     n_bands, n_nodes = nodes.shape
@@ -1070,7 +1245,7 @@ def _build_arrays(quadrature, knots, degree, interpolant):
     for w, row in enumerate(quadrature.pieces):
         start = 0
         for lo, hi, n in row:
-            inside = knots[(knots > lo) & (knots < hi)]
+            inside = _interior_knots(knots, lo, hi)
             # Gauss on a piece is exact for the source times a response of
             # degree n - 1 only while the source's degree is at most n.
             identity &= inside.size == 0 and degree <= n
@@ -1121,6 +1296,26 @@ def _build_arrays(quadrature, knots, degree, interpolant):
     return "table", _tuple(slots), {"blocks": table_blocks, "columns": columns}
 
 
+def _table_grid(table, name):
+    """Knots and digest of a table, checking a digest stored beside raw knots."""
+    digest = table.knot_digest
+    if digest is None:
+        raise ValueError(
+            f"{name} was constructed under a trace and has no knot digest; "
+            "construct the table on the host"
+        )
+    knots = getattr(table, "knots", None)
+    if isinstance(knots, Knots):
+        return knots, digest
+    knots = Knots(table.spectral_breaks_nm())
+    if digest.rpartition(":")[2] != knots.digest:
+        raise ValueError(
+            f"the knot digest of {name} does not match its knots: a knot grid "
+            "was replaced after construction; rebuild the table"
+        )
+    return knots, digest
+
+
 def _tuple(rows):
     return tuple(tuple(int(x) for x in row) for row in rows)
 
@@ -1162,10 +1357,9 @@ class Resolution(eqx.Module):
     ) -> Self:
         """Build one rule per pair of a quadrature and a table, on the host.
 
-        Checks every table first: its digest must exist (a table constructed
-        under a trace has none) and match its concrete knots. Rules are cached
-        on the digests, so a runner that builds an exposure per roll pays for
-        each operator once. Tables that share a knot grid share a rule.
+        Reads each table's static knots. Rules are cached on the digests, so a
+        runner that builds an exposure per roll pays for each operator once.
+        Tables that share a knot grid share a rule.
 
         Args:
             quadratures: The exposure's quadrature, or a sequence of quadratures
@@ -1194,18 +1388,7 @@ class Resolution(eqx.Module):
             name = type(table).__name__
             if not isinstance(table, SpectralTable):
                 raise TypeError(f"{name} does not implement SpectralTable")
-            digest = table.knot_digest
-            if digest is None:
-                raise ValueError(
-                    f"{name} was constructed under a trace and has no knot "
-                    "digest; construct the table on the host"
-                )
-            knots = _knot_array(table.spectral_breaks_nm())
-            if digest.rpartition(":")[2] != _knot_hash(knots):
-                raise ValueError(
-                    f"the knot digest of {name} does not match its knots: a knot "
-                    "grid was replaced after construction; rebuild the table"
-                )
+            knots, digest = _table_grid(table, name)
             get = getattr(table, "spectral_interpolant", None)
             interpolant = get() if callable(get) else None
             for quadrature in quadratures:

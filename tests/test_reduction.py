@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.leaves import as_float_leaf
 from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
@@ -25,11 +26,13 @@ from optixstuff import Exposure
 from optixstuff.spectral import (
     _RULE_CACHE,
     Band,
+    Knots,
     Quadrature,
     Reduction,
     Resolution,
     SpectralTable,
     _build_arrays,
+    as_knots,
     digest_knots,
 )
 
@@ -37,27 +40,23 @@ from optixstuff.spectral import (
 class Tabulated(eqx.Module):
     """A tabulated spectrum, linear or cubic between knots, as a source declares it."""
 
-    wavelength_nm: jax.Array
-    values: jax.Array
-    method: str = eqx.field(static=True)
-    knot_digest: str | None = eqx.field(static=True)
+    knots: Knots = eqx.field(static=True, converter=as_knots)
+    values: jax.Array = eqx.field(converter=as_float_leaf)
+    method: str = eqx.field(static=True, default="linear")
 
-    def __init__(self, wavelength_nm, values, method="linear"):
-        self.method = method
-        self.wavelength_nm = jnp.asarray(wavelength_nm)
-        self.values = jnp.asarray(values)
-        traced = isinstance(self.wavelength_nm, jax.core.Tracer)
-        self.knot_digest = None if traced else digest_knots(self.wavelength_nm, method)
+    @property
+    def knot_digest(self):
+        return digest_knots(self.knots, self.method)
 
     @property
     def spectral_degree(self):
         return 1 if self.method == "linear" else 3
 
     def spectral_breaks_nm(self):
-        return np.asarray(self.wavelength_nm)
+        return self.knots.nm
 
     def spectral_interpolant(self):
-        knots, method = self.wavelength_nm, self.method
+        knots, method = self.knots.array(), self.method
         return lambda values, wave: interpax.interp1d(wave, knots, values, method)
 
 
@@ -293,8 +292,9 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
     Exact (the refusal). A piece wholly beyond the last knot, a piece that
     straddles it and a band starting below the first knot each raise and name
     the table end; through ``Resolution.build`` the message also names the
-    table. At the boundary, a band one ULP inside the last knot builds and one
-    ULP beyond it is refused, with enough digits that the two ends differ in
+    table. At the boundary, a band one ULP inside or one ULP beyond the last
+    knot builds (within the wavelength tolerance the end is the edge) and one
+    1 nm beyond it is refused, with enough digits that the two ends differ in
     the message. Mutation: a build that zero-fills beyond the table returns a
     value and fails here. The same band ended at the table end gives the exact
     per-cell integral (floating-point, 1e-12).
@@ -314,10 +314,10 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
                 Reduction.build(rule, knots, degree=1)
             with pytest.raises(ValueError, match="Tabulated: band"):
                 Resolution.build(rule, table)
-        inside = float(np.nextafter(end, -np.inf))
-        rule = Quadrature.build((Band(650.0, inside),), order=4)
-        Reduction.build(rule, knots, degree=1)
-        beyond = float(np.nextafter(end, np.inf))
+        for near in (np.nextafter(end, -np.inf), np.nextafter(end, np.inf)):
+            rule = Quadrature.build((Band(650.0, float(near)),), order=4)
+            Reduction.build(rule, knots, degree=1)
+        beyond = float(end + 1.0)
         rule = Quadrature.build((Band(650.0, beyond),), order=4)
         message = f"to {beyond!r} nm leaves the table, which ends at {float(end)!r}"
         with pytest.raises(ValueError, match=re.escape(message)):
@@ -457,8 +457,8 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     Exact. A rule is found under jit by the static digests; a table that
     was not resolved on the quadrature, a band slice and a hand-made rule
     raise at trace time; a table constructed under a trace has no digest and
-    its lookup names the remedy; a knot grid replaced after construction
-    fails the build's digest check; two tables on one grid share one rule;
+    is refused; the knots are not a leaf, so ``eqx.tree_at`` cannot reach
+    them; two tables on one grid share one rule;
     a table whose knots are all piece edges takes the identity kind and holds
     no arrays (exact Gauss per piece: the cubic-response integral to 1e-12),
     unless a piece has fewer nodes than the source's degree.
@@ -494,11 +494,11 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
         def traced_table(wavelength_nm):
             resolution.rule(rule, Tabulated(wavelength_nm, values))
 
-        with pytest.raises(LookupError, match="construct the table on the host"):
+        with pytest.raises(TypeError, match="concrete"):
             traced_table(jnp.asarray(knots))
-        stale = eqx.tree_at(lambda t: t.wavelength_nm, star, star.wavelength_nm + 0.01)
-        with pytest.raises(ValueError, match="does not match its knots"):
-            Resolution.build(rule, stale)
+        assert jax.tree.leaves(star) == [star.values]
+        with pytest.raises(TypeError, match="not a leaf"):
+            eqx.tree_at(lambda t: t.knots, star, Knots(knots + 0.01))
 
         inside = knots[(knots > band.low_nm) & (knots < band.high_nm)]
         exact_rule = Quadrature.build((band,), order=4, breaks_nm=inside)
