@@ -320,3 +320,43 @@ def test_frame_plan_band_axis(detector_cls):
         det.mean_and_variance(rates, mismatched)
     with pytest.raises(ValueError, match="leading"):
         det.draw(jax.random.key(0), rates, mismatched)
+
+
+@pytest.mark.parametrize("x64", [False, True])
+def test_detector_noise_fields_are_strong_leaves_of_the_active_dtype(x64):
+    """Python numbers given to the detector are stored as strong float arrays.
+
+    Truth source: definitional (the leaf rule: every float leaf is a strong array of
+    the active dtype). The six noise fields and the scalar quantum efficiency are set
+    from Python floats under each precision. Tolerance basis: exact. Fails if any
+    field keeps a weak type or a dtype other than the active one.
+    """
+    from hwoutils.leaves import check_tree
+
+    with jax.enable_x64(x64):
+        det = ox.Detector(
+            pixel_scale_arcsec=0.01,
+            shape=(1, 1),
+            qe=0.9,
+            survival_fraction=0.95,
+            dark_current_e_per_pixel_s=1e-4,
+            clock_induced_charge_e_per_pixel_frame=1e-3,
+            read_noise_e_rms=0.0,
+            excess_noise_factor_sq=1.0,
+            read_time_s=0.1,
+        )
+        want = jnp.zeros(()).dtype
+        names = (
+            "_qe",
+            "survival_fraction",
+            "dark_current_e_per_pixel_s",
+            "clock_induced_charge_e_per_pixel_frame",
+            "read_noise_e_rms",
+            "excess_noise_factor_sq",
+            "read_time_s",
+        )
+        for name in names:
+            leaf = getattr(det, name)
+            assert isinstance(leaf, jax.Array), name
+            assert leaf.dtype == want and not leaf.weak_type, name
+        assert check_tree(det) == ()

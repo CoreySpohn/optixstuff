@@ -129,14 +129,14 @@ class AbstractDetector(eqx.Module):
 
     pixel_scale_arcsec: float = eqx.field(static=True, converter=float)
     shape: tuple[int, int] = eqx.field(static=True)
-    survival_fraction: Array = eqx.field(default=1.0, converter=jnp.asarray)
-    dark_current_e_per_pixel_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
+    survival_fraction: Array = eqx.field(default=1.0, converter=as_float_leaf)
+    dark_current_e_per_pixel_s: Array = eqx.field(default=0.0, converter=as_float_leaf)
     clock_induced_charge_e_per_pixel_frame: Array = eqx.field(
-        default=0.0, converter=jnp.asarray
+        default=0.0, converter=as_float_leaf
     )
-    read_noise_e_rms: Array = eqx.field(default=0.0, converter=jnp.asarray)
-    excess_noise_factor_sq: Array = eqx.field(default=1.0, converter=jnp.asarray)
-    read_time_s: Array = eqx.field(default=0.0, converter=jnp.asarray)
+    read_noise_e_rms: Array = eqx.field(default=0.0, converter=as_float_leaf)
+    excess_noise_factor_sq: Array = eqx.field(default=1.0, converter=as_float_leaf)
+    read_time_s: Array = eqx.field(default=0.0, converter=as_float_leaf)
     overlaps_read: bool = eqx.field(default=False, static=True)
     photon_counting: bool = eqx.field(default=False, static=True)
 
@@ -580,7 +580,7 @@ class Detector(AbstractDetector):
             photon_counting: Whether ``log_prob`` takes the Poisson form; requires
                 zero read noise and F2 of one.
         """
-        self._qe = jnp.asarray(qe)
+        self._qe = as_float_leaf(qe)
         if qe_curve is None:
             self._qe_knots, self._qe_values = None, None
         else:
