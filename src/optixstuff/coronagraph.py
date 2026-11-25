@@ -1,6 +1,7 @@
 """The coronagraph slot and its image products on explicit shared grids."""
 
 import abc
+import math
 from dataclasses import replace
 from typing import NamedTuple
 
@@ -22,6 +23,10 @@ from optixstuff.grids import (
     resample,
 )
 from optixstuff.spectral import Band, spectral_breaks
+
+# Under-blur grows with the difference of squared fractional widths. For a 10%
+# product, a 12.5% band has about 0.19 of the under-blur of a 20% band.
+WIDE_BAND_FACTOR = 1.25
 
 
 def on_grid(image: Image, grid: PixelGrid) -> Image:
@@ -138,17 +143,77 @@ class AbstractCoronagraph(eqx.Module):
     The slot carries the image capability only (see AbstractImagingCoronagraph).
     Summary curves are a characterization record, PerformanceCurves, read with
     PerformanceCurves.evaluate; no simulation reads them from the slot.
-    Separations use the native lambda/D frame. Wavelength selects a band;
-    monochromatic tables have no further chromatic dependence.
+    Separations use the native lambda/D frame. A flat band average already
+    includes the chromatic blur across its product band (Stark and Krist 2019,
+    "Standardized Coronagraph Parameters for Input into Yield Calculations").
 
     Attributes:
         frame: Definition of lambda/D for the coronagraph's native coordinates.
         bandpass: Calibrated wavelength interval in nm, or None for unknown
             coverage.
+        band_averaged: True for a band-averaged product scaled once per observing
+            band at its center, False for a single-wavelength response scaled
+            at each node.
     """
 
     frame: AbstractVar[Frame]
     bandpass: AbstractVar[Band | None]
+    band_averaged: AbstractVar[bool]
+
+    def scale_wavelength_nm(self, wavelength_nm, band_center_nm):
+        """Select the observing band center for a band average or the node otherwise.
+
+        Args:
+            wavelength_nm: Node wavelength in nm.
+            band_center_nm: Center of the exposure's observing band in nm.
+
+        Returns:
+            The wavelength setting the angular scale of the native lambda/D grid.
+        """
+        return band_center_nm if self.band_averaged else wavelength_nm
+
+    def check_bands(self, bands, *, allow_wide_bands=False) -> None:
+        """Check that the product supplies enough chromatic blur in each band.
+
+        Args:
+            bands: Concrete observing bands.
+            allow_wide_bands: Accept a wider observing band with the product's blur.
+
+        Raises:
+            ValueError: An observing band's fractional width exceeds the allowed
+                multiple of the band-averaged product's fractional width.
+        """
+        product = self.bandpass
+        if not self.band_averaged or product is None or allow_wide_bands:
+            return
+        product_width = product.width_nm / product.center_nm
+        for band in bands:
+            width = band.width_nm / band.center_nm
+            if width <= WIDE_BAND_FACTOR * product_width:
+                continue
+            message = (
+                f"Observing band {band.low_nm:.12g}-{band.high_nm:.12g} nm has "
+                f"fractional width {width:.12g}. The band-averaged product's "
+                f"fractional width is {product_width:.12g}. "
+            )
+            if product_width == 0:
+                raise ValueError(message + "No positive-width tile fits this product.")
+
+            # Equal log spans have equal fractional widths. Check the actual tile
+            # edges too, since a rounded edge can put a tile just over the limit.
+            n = max(
+                1,
+                math.floor(
+                    math.log1p(band.width_nm / band.low_nm)
+                    / math.log1p(product.width_nm / product.low_nm)
+                ),
+            )
+            tiles = band.channels(n, "log")
+            while any(t.width_nm / t.center_nm > product_width for t in tiles):
+                n += 1
+                tiles = band.channels(n, "log")
+            intervals = ", ".join(f"{t.low_nm:.12g}-{t.high_nm:.12g} nm" for t in tiles)
+            raise ValueError(message + f"Split into these tiles: {intervals}.")
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Return the edges of the calibrated interval, when declared.
@@ -406,9 +471,9 @@ class AbstractTableCoronagraph(AbstractImagingCoronagraph):
 class MultiBandCoronagraph(AbstractCoronagraph):
     """Dispatch by declared bandpass, in input order at shared wavelengths.
 
-    frame uses the reference band; coronagraph_at(wavelength_nm) selects the model that
-    covers a wavelength. Monochromatic tables retain their existing lack of
-    additional wavelength dependence.
+    Band-averaged products are dispatched once per observing band to a child
+    covering both edges. Single-wavelength products are dispatched per node.
+    The reference band's child supplies the frame.
 
     Attributes:
         coronagraphs: Coronagraph models, one per band, in dispatch order.
@@ -429,6 +494,21 @@ class MultiBandCoronagraph(AbstractCoronagraph):
         self.coronagraphs = tuple(coronagraphs)
         if not self.coronagraphs:
             raise ValueError("Need one or more coronagraph models")
+        if len({model.band_averaged for model in self.coronagraphs}) > 1:
+            children = []
+            for model in self.coronagraphs:
+                band = model.bandpass
+                interval = (
+                    "None" if band is None else f"{band.low_nm:g}-{band.high_nm:g} nm"
+                )
+                children.append(
+                    f"{type(model).__name__} (bandpass={interval}, "
+                    f"band_averaged={model.band_averaged})"
+                )
+            raise ValueError(
+                "Cannot mix band-averaged and single-wavelength "
+                f"coronagraph children: {', '.join(children)}"
+            )
         if any(model.bandpass is None for model in self.coronagraphs):
             raise ValueError("Each dispatched coronagraph must declare its bandpass")
         self.reference_wavelength_nm = float(
@@ -453,6 +533,61 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             if model.bandpass.low_nm <= wave <= model.bandpass.high_nm:
                 return model
         raise ValueError(f"No coronagraph bandpass covers {wave} nm")
+
+    @property
+    def band_averaged(self):
+        """Whether all children hold band-averaged products."""
+        return self.coronagraphs[0].band_averaged
+
+    def coronagraph_for_band(self, band):
+        """Select the first band average covering both edges, or the center model.
+
+        Args:
+            band: Concrete observing band.
+
+        Returns:
+            The covering child for a band average or the band-center child for
+            single-wavelength products.
+
+        Raises:
+            ValueError: No child covers the required interval.
+        """
+        if not self.band_averaged:
+            return self.coronagraph_at(band.center_nm)
+        for model in self.coronagraphs:
+            interval = model.bandpass
+            if interval.low_nm <= band.low_nm and band.high_nm <= interval.high_nm:
+                return model
+        message = (
+            f"No coronagraph bandpass covers the observing band "
+            f"{band.low_nm:.12g}-{band.high_nm:.12g} nm"
+        )
+        boundaries = sorted(
+            {
+                edge
+                for model in self.coronagraphs
+                for edge in (model.bandpass.low_nm, model.bandpass.high_nm)
+                if band.low_nm < edge < band.high_nm
+            }
+        )
+        if boundaries:
+            edges = ", ".join(f"{edge:.12g} nm" for edge in boundaries)
+            message += f", split the observing band at {edges}"
+        raise ValueError(message)
+
+    def check_bands(self, bands, *, allow_wide_bands=False) -> None:
+        """Require each observing band to fit one child's band average.
+
+        Args:
+            bands: Concrete observing bands.
+            allow_wide_bands: Forward the width opt-in to the covering child.
+                The child must still cover both edges.
+        """
+        if self.band_averaged:
+            for band in bands:
+                self.coronagraph_for_band(band).check_bands(
+                    (band,), allow_wide_bands=allow_wide_bands
+                )
 
     @property
     def bandpass(self):

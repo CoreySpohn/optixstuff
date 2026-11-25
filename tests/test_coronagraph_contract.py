@@ -8,13 +8,14 @@ import pytest
 from conftest import (
     GaussianTableCoronagraph,
     concrete_subclasses,
+    make_instrument,
     synthetic_coronagraph,
 )
 
 import optixstuff as ox
 from optixstuff.apertures import Circular
 from optixstuff.grids import PixelGrid, resample
-from optixstuff.spectral import Band
+from optixstuff.spectral import Band, Quadrature
 
 
 @pytest.fixture(scope="module")
@@ -34,6 +35,98 @@ def coro(request, table):
     if cls is ox.MultiBandCoronagraph:
         return cls([table, second_band()])
     pytest.fail(f"Add a synthetic fixture for {cls.__name__}")
+
+
+def test_single_wavelength_scale_follows_node(coro):
+    """Single-wavelength fixtures select the node argument exactly, even traced."""
+    with jax.enable_x64():
+        node, center = jnp.array(490.0), jnp.array(505.0)
+        assert coro.band_averaged is False
+        assert coro.scale_wavelength_nm(node, center) is node
+        assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == node
+
+
+def test_band_average_has_one_native_map_and_scale():
+    """A band table stores one stellar map and selects its exact observing center.
+
+    The native table is a single array, so the two wavelength reads agree bitwise.
+    """
+    with jax.enable_x64():
+        model = GaussianTableCoronagraph(band_averaged=True)
+        first = model.stellar_map(475.0, 0.15).data
+        second = model.stellar_map(510.0, 0.15).data
+        np.testing.assert_array_equal(first, second)
+        node, center = jnp.array(490.0), jnp.array(505.0)
+        for coro in (model, ox.MultiBandCoronagraph([model])):
+            assert coro.band_averaged is True
+            assert coro.scale_wavelength_nm(node, center) is center
+            assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == center
+
+
+@pytest.mark.parametrize(
+    ("single_band", "interval"), [(Band(450, 550), "450-550 nm"), (None, "None")]
+)
+def test_mixed_band_declarations_name_children(single_band, interval):
+    """Distinct product declarations are mutually exclusive, an exact type check."""
+    band_product = GaussianTableCoronagraph(bandpass=Band(550, 650), band_averaged=True)
+    single = GaussianTableCoronagraph(bandpass=single_band)
+    with pytest.raises(ValueError, match="Cannot mix") as exc:
+        ox.MultiBandCoronagraph([single, band_product])
+    assert f"{interval}, band_averaged=False" in str(exc.value)
+    assert "550-650 nm, band_averaged=True" in str(exc.value)
+
+
+def test_wide_observing_bands_require_tiles_or_opt_in():
+    """A 10% product admits 12%, refuses 13%, and two log tiles each fit.
+
+    The geometric mean of the observing edges is the single shared split.
+    Widths, thresholds and rounded error text have exact expected values.
+    """
+    with jax.enable_x64():
+        model = GaussianTableCoronagraph(bandpass=Band(475, 525), band_averaged=True)
+        instrument = make_instrument(model)
+        wide = Band(467.5, 532.5)
+        with pytest.raises(ValueError) as exc:
+            Quadrature.build([wide], instrument)
+        split = np.sqrt(467.5 * 532.5)
+        for expected in (
+            "467.5-532.5 nm",
+            "fractional width 0.13.",
+            "fractional width is 0.1.",
+            f"467.5-{split:.12g} nm",
+            f"{split:.12g}-532.5 nm",
+        ):
+            assert expected in str(exc.value)
+        assert Quadrature.build([wide], instrument, allow_wide_bands=True).bands == (
+            wide,
+        )
+        narrow = Band(470, 530)
+        assert Quadrature.build([narrow], instrument).bands == (narrow,)
+
+
+def test_band_average_requires_one_covering_child():
+    """Coverage is inclusive at declared edges and exact across the 550 nm split."""
+    blue = GaussianTableCoronagraph(bandpass=Band(450, 550), band_averaged=True)
+    red = GaussianTableCoronagraph(bandpass=Band(550, 650), band_averaged=True)
+    coro = ox.MultiBandCoronagraph([blue, red])
+    bands = (Band(450, 550), Band(550, 650))
+    assert Quadrature.build(bands, coro).bands == bands
+    for allow in (False, True):
+        with pytest.raises(ValueError, match=r"split.*550 nm"):
+            Quadrature.build([Band(510, 590)], coro, allow_wide_bands=allow)
+    with pytest.raises(ValueError, match="covers"):
+        Quadrature.build([Band(700, 720)], coro)
+
+
+def test_overlapping_band_products_use_first_full_coverage():
+    """The interval 490-540 lies entirely in the second child only, exactly."""
+    blue = GaussianTableCoronagraph(bandpass=Band(450, 525), band_averaged=True)
+    red = GaussianTableCoronagraph(bandpass=Band(475, 550), band_averaged=True)
+    coro = ox.MultiBandCoronagraph([blue, red])
+    band = Band(490, 540)
+    assert coro.coronagraph_at(band.center_nm) is blue
+    assert coro.coronagraph_for_band(band) is red
+    assert Quadrature.build((band,), coro).bands == (band,)
 
 
 def test_image_contract(table):

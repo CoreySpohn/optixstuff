@@ -174,6 +174,16 @@ class Instrument(eqx.Module):
         for coronagraph in coronagraphs:
             check_primary_matches_frame(self.primary, coronagraph.frame)
 
+    def check_bands(self, bands, *, allow_wide_bands=False) -> None:
+        """Check the observing bands against the installed coronagraph product.
+
+        Args:
+            bands: Concrete observing bands.
+            allow_wide_bands: Accept the product's blur for wider observing bands.
+        """
+        if self.coronagraph is not None:
+            self.coronagraph.check_bands(bands, allow_wide_bands=allow_wide_bands)
+
     def spectral_breaks_nm(self) -> np.ndarray:
         """Combine the breaks of the optical train and detector yield.
 

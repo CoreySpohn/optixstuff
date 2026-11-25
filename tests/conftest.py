@@ -6,6 +6,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -66,6 +67,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
 
     grid: PixelGrid
     bandpass: Band
+    band_averaged: bool = eqx.field(static=True)
     sky_trans: Image
     uniform_sky_profile: ox.SampledProfile
     _records: tuple
@@ -77,6 +79,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
         rules=(),
         diameter_m=6.0,
         bandpass=Band(450.0, 550.0),  # noqa: B008
+        band_averaged=False,
     ):
         self.grid = PixelGrid.focal(
             n,
@@ -86,6 +89,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
             ).frame(500.0),
         )
         self.bandpass = bandpass
+        self.band_averaged = band_averaged
         x, y = self.grid.coordinates()
         self.sky_trans = Image(
             1 - jnp.exp(-(x * x + y * y) / 4),

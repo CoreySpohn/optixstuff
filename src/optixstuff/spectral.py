@@ -730,6 +730,7 @@ class Quadrature(eqx.Module):
         order: int = 4,
         breaks_nm=(),
         field_lod=0.0,
+        allow_wide_bands: bool = False,
     ) -> Self:
         """Build a Gauss-Legendre rule on each piece between declared breaks.
 
@@ -771,6 +772,12 @@ class Quadrature(eqx.Module):
                 the response is read: a number, one value per band, or None for
                 the largest value a model declares through
                 ``spectral_field_lod(band)`` (zero when none does).
+            allow_wide_bands: Accept observing bands wider than 1.25 times a
+                band-averaged product's fractional width. By default these are
+                refused. With the opt-in the band is rendered at one scale with
+                only the product's blur, as in the YIP count-rate recipe of
+                Stark and Krist (2019), "Standardized Coronagraph Parameters for
+                Input into Yield Calculations". The wider band is under-blurred.
 
         Returns:
             The Quadrature holding nodes, weights and the piece layout.
@@ -781,13 +788,17 @@ class Quadrature(eqx.Module):
         bands = tuple(bands)
         if not bands:
             raise ValueError("at least one band is required")
+        if any(band.width_nm == 0 for band in bands):
+            raise ValueError("use Quadrature.monochromatic for a zero-width band")
+        for model in models:
+            check_bands = getattr(model, "check_bands", None)
+            if callable(check_bands):
+                check_bands(bands, allow_wide_bands=allow_wide_bands)
         breaks = _merge_breaks(spectral_breaks(*models), _break_array(breaks_nm))
         radii = _field_radii(bands, models, field_lod)
         legendre = {}
         pieces, rows = [], []
         for band, radius in zip(bands, radii, strict=True):
-            if band.width_nm == 0:
-                raise ValueError("use Quadrature.monochromatic for a zero-width band")
             inside = breaks[
                 (breaks > band.low_nm)
                 & (breaks < band.high_nm)
