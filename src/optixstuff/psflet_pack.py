@@ -121,7 +121,12 @@ class PsfletPack(eqx.Module):
         steps = jnp.diff(self.offsets)
         if not bool(jnp.all(steps > 0)):
             raise ValueError("offsets must be ascending")
-        if not bool(jnp.allclose(steps, steps[0], rtol=1e-6, atol=0.0)):
+        # Rounding in the step differences scales with the offsets themselves.
+        atol = 0.0
+        if jnp.issubdtype(self.offsets.dtype, jnp.inexact):
+            eps = jnp.finfo(self.offsets.dtype).eps
+            atol = 8 * eps * jnp.max(jnp.abs(self.offsets))
+        if not bool(jnp.allclose(steps, steps[0], rtol=1e-6, atol=atol)):
             raise ValueError("offsets must be uniform")
         if len(self.wavelengths_nm) != n_lam:
             raise ValueError("wavelengths_nm must match the template plane count")
