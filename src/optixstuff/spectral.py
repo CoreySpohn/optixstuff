@@ -19,6 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.leaves import HostGrid, as_float_leaf, is_traced
+from hwoutils.numerics import same, same_tolerance
 from numpy.polynomial.legendre import leggauss
 
 from optixstuff.grids import Image
@@ -88,6 +89,7 @@ MERGE_TOLERANCE_ULPS = 4
 """Float32 ULPs of a wavelength within which two wavelengths are one."""
 
 _TOLERANCE_FLOOR_NM = 1e-9
+"""Minimum wavelength separation [nm] that a spectral layout can resolve."""
 
 
 def merge_tolerance_nm(wavelength_nm):
@@ -104,9 +106,9 @@ def merge_tolerance_nm(wavelength_nm):
     Returns:
         The tolerance [nm], float64, with the shape of the input.
     """
-    wave = np.abs(np.asarray(wavelength_nm, dtype=np.float64))
-    spacing = np.spacing(wave.astype(np.float32)).astype(np.float64)
-    return np.maximum(MERGE_TOLERANCE_ULPS * spacing, _TOLERANCE_FLOOR_NM)
+    return same_tolerance(
+        wavelength_nm, ulps=MERGE_TOLERANCE_ULPS, floor=_TOLERANCE_FLOOR_NM
+    )
 
 
 def same_wavelength(a, b):
@@ -125,9 +127,7 @@ def same_wavelength(a, b):
     Returns:
         A NumPy bool, or bool array of the broadcast shape.
     """
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    return np.abs(a - b) < merge_tolerance_nm(np.maximum(a, b))
+    return np.bool_(same(a, b, ulps=MERGE_TOLERANCE_ULPS, floor=_TOLERANCE_FLOOR_NM))
 
 
 class Knots(HostGrid):
