@@ -80,7 +80,7 @@ def test_pack_validation_rejects_bad_shapes():
     with pytest.raises(ValueError, match="uniform"):
         PsfletPack(
             templates=good.templates[:, :, :3, :3],
-            offsets=jnp.array([0.0, 1.0, 3.0]),
+            offsets=jnp.array([0.0, 1.0, 3.0], dtype=jnp.float32),
             wavelengths_nm=lam,
             field_xy=good.field_xy,
             template_origin=TEMPLATE_ORIGIN,
@@ -102,6 +102,22 @@ def test_pack_validation_rejects_bad_shapes():
             template_origin=TEMPLATE_ORIGIN,
             centroids=jnp.zeros((2, 2, 2)),
         )
+
+
+@pytest.mark.parametrize("step", [0.1, 0.2, 1 / 3])
+def test_pack_accepts_uniform_float32_offsets(step):
+    """Fails if rounding in the step differences rejects a uniform grid."""
+    # Starting away from zero lets three points expose the rounding.
+    offsets = (step * np.arange(12, 15)).astype(np.float32)
+    with jax.enable_x64(False):
+        pack = PsfletPack(
+            templates=np.ones((1, 1, 3, 3), dtype=np.float32),
+            offsets=offsets,
+            wavelengths_nm=[650.0],
+            field_xy=[[0, 0]],
+            template_origin=TEMPLATE_ORIGIN,
+        )
+    np.testing.assert_array_equal(pack.offsets, offsets)
 
 
 def test_pack_requires_template_origin():
