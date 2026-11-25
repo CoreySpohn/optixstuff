@@ -5,9 +5,16 @@ import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.viz import plot_radial_image
+
+
+@pytest.fixture(autouse=True)
+def headless_backend():
+    """Draw on the Agg canvas so a Qt or Tk default cannot import on a headless host."""
+    plt.switch_backend("Agg")
 
 
 def test_base_install_imports_without_eyepiece_or_matplotlib():
