@@ -28,6 +28,16 @@ from optixstuff.spectral import Band, spectral_breaks
 # product, a 12.5% band has about 0.19 of the under-blur of a 20% band.
 WIDE_BAND_FACTOR = 1.25
 
+# Band edges and fractional widths are compared with a relative slack of four
+# float64 ulps, so a value equal to its limit up to unit conversion rounding
+# (for example 0.6 um becoming 599.9999999999999 nm) is not refused.
+BAND_COMPARE_RTOL = 4 * float(np.finfo(np.float64).eps)
+
+
+def _within(value, limit):
+    """Whether ``value <= limit`` up to ``BAND_COMPARE_RTOL`` of the limit."""
+    return value <= limit + BAND_COMPARE_RTOL * abs(limit)
+
 
 def on_grid(image: Image, grid: PixelGrid) -> Image:
     """Put a native product on a requested grid.
@@ -189,7 +199,7 @@ class AbstractCoronagraph(eqx.Module):
         product_width = product.width_nm / product.center_nm
         for band in bands:
             width = band.width_nm / band.center_nm
-            if width <= WIDE_BAND_FACTOR * product_width:
+            if _within(width, WIDE_BAND_FACTOR * product_width):
                 continue
             message = (
                 f"Observing band {band.low_nm:.12g}-{band.high_nm:.12g} nm has "
@@ -209,7 +219,9 @@ class AbstractCoronagraph(eqx.Module):
                 ),
             )
             tiles = band.channels(n, "log")
-            while any(t.width_nm / t.center_nm > product_width for t in tiles):
+            while not all(
+                _within(t.width_nm / t.center_nm, product_width) for t in tiles
+            ):
                 n += 1
                 tiles = band.channels(n, "log")
             intervals = ", ".join(f"{t.low_nm:.12g}-{t.high_nm:.12g} nm" for t in tiles)
@@ -556,7 +568,9 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             return self.coronagraph_at(band.center_nm)
         for model in self.coronagraphs:
             interval = model.bandpass
-            if interval.low_nm <= band.low_nm and band.high_nm <= interval.high_nm:
+            if _within(interval.low_nm, band.low_nm) and _within(
+                band.high_nm, interval.high_nm
+            ):
                 return model
         message = (
             f"No coronagraph bandpass covers the observing band "

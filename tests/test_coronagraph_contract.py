@@ -81,6 +81,9 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
 
     The geometric mean of the observing edges is the single shared split.
     Widths, thresholds and rounded error text have exact expected values.
+    A 382-418 nm product and a 377.5-422.5 nm band have widths 0.09 and
+    0.1125, a ratio of exactly 1.25 that float64 rounds 1.4e-17 above the
+    limit; the band is admitted.
     """
     with jax.enable_x64():
         model = GaussianTableCoronagraph(bandpass=Band(475, 525), band_averaged=True)
@@ -102,6 +105,10 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
         )
         narrow = Band(470, 530)
         assert Quadrature.build([narrow], instrument).bands == (narrow,)
+        edge = GaussianTableCoronagraph(bandpass=Band(382, 418), band_averaged=True)
+        limit = Band(377.5, 422.5)
+        assert limit.width_nm / limit.center_nm > 1.25 * (36 / 400)
+        assert Quadrature.build([limit], make_instrument(edge)).bands == (limit,)
 
 
 def test_band_average_requires_one_covering_child():
@@ -116,6 +123,13 @@ def test_band_average_requires_one_covering_child():
             Quadrature.build([Band(510, 590)], coro, allow_wide_bands=allow)
     with pytest.raises(ValueError, match="covers"):
         Quadrature.build([Band(700, 720)], coro)
+    # An edge one ulp below 600 nm, as a micron-to-nm conversion leaves it,
+    # still covers a band that ends at 600 nm.
+    below = np.nextafter(600.0, 0.0)
+    converted = GaussianTableCoronagraph(bandpass=Band(500, below), band_averaged=True)
+    later = GaussianTableCoronagraph(bandpass=Band(600, 700), band_averaged=True)
+    split = ox.MultiBandCoronagraph([converted, later])
+    assert split.coronagraph_for_band(Band(550, 600)) is converted
 
 
 def test_overlapping_band_products_use_first_full_coverage():
