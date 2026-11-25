@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.leaves import HostGrid, as_float_leaf, is_traced
-from hwoutils.numerics import COARSEST, same
+from hwoutils.numerics import same, same_tolerance
 from numpy.polynomial.legendre import leggauss
 
 from optixstuff.grids import Image
@@ -106,9 +106,9 @@ def merge_tolerance_nm(wavelength_nm):
     Returns:
         The tolerance [nm], float64, with the shape of the input.
     """
-    wave = np.abs(np.asarray(wavelength_nm, dtype=np.float64))
-    spacing = np.spacing(wave.astype(COARSEST)).astype(np.float64)
-    return np.maximum(MERGE_TOLERANCE_ULPS * spacing, _TOLERANCE_FLOOR_NM)
+    return same_tolerance(
+        wavelength_nm, ulps=MERGE_TOLERANCE_ULPS, floor=_TOLERANCE_FLOOR_NM
+    )
 
 
 def same_wavelength(a, b):
