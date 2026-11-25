@@ -51,9 +51,8 @@ PITCHES = (
 
 
 @pytest.fixture(autouse=True, scope="module")
-def precision():
-    with jax.enable_x64():
-        yield
+def _clear_caches():
+    yield
     jax.clear_caches()
 
 
@@ -241,6 +240,7 @@ def _relative_errors(read, truth, mask):
 # Algebra ----------------------------------------------------------------------
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     "reconstruction", ["cubic_spline", "linear", "cubic", "nearest"]
 )
@@ -285,6 +285,7 @@ def test_constant_and_ramp_integrate_exactly(reconstruction):
         )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_cubic_spline_integrates_a_cubic_polynomial_exactly():
     """Fails if the spline coefficients skip the prefilter or its end condition.
 
@@ -374,6 +375,7 @@ def test_dark_hole_model_matches_its_closed_form(dark_hole_cases):
         assert p95 < 1.2e-3
 
 
+@pytest.mark.float64_only(reason="float64 baseline for the float32 comparison")
 def test_dark_hole_model_float32(dark_hole_cases):
     """Fails if a float32 table loses the hole to rounding in the read.
 
@@ -496,6 +498,7 @@ def _check_speckle(model, image, pitch, offset):
     assert p95 < 7e-3
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_gradient_with_respect_to_pitch_and_offset():
     """Fails if the derivative is wrong where a pixel edge lies on a sample.
 
@@ -605,6 +608,7 @@ def test_local_footprint_reads_have_finite_reach(reconstruction, pitch):
     assert changed == 0
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_absolute_scale_of_the_read():
     """Fails if the read integrates in the source cell area instead of the pixel.
 
@@ -660,6 +664,7 @@ def test_absolute_scale_of_the_read():
         )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
     """Fails if the footprint read leaks into ``resample`` or rotation is admitted.
 
@@ -766,6 +771,7 @@ def _reference_axis(reconstruction, samples, low, high):
     return out
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     "reconstruction", ["nearest", "linear", "cubic", "cubic_spline", "band_limited"]
 )
@@ -803,6 +809,7 @@ def test_every_density_is_read_by_its_footprint_integral(reconstruction):
         np.testing.assert_allclose(read, truth, rtol=0, atol=1e-12 * truth.max())
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_non_square_table_and_anisotropic_flipped_pixels():
     """Fails if the read mixes the axes of a non-square table or pixel.
 
@@ -844,6 +851,7 @@ def test_non_square_table_and_anisotropic_flipped_pixels():
         np.testing.assert_allclose(read[supported], expected[supported], rtol=1e-10)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_traced_orientation_that_differs_raises():
     """Fails if a rotation hidden behind a traced angle is read as axis-aligned.
 

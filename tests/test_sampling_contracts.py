@@ -13,12 +13,12 @@ from optixstuff.spectral import Band, Transmission, spectral_breaks, trapezoid_w
 
 
 @pytest.fixture(autouse=True, scope="module")
-def precision():
-    with jax.enable_x64():
-        yield
+def _clear_caches():
+    yield
     jax.clear_caches()
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_density_evaluates_centers_without_area_or_box_factors():
     """Fails if point samples are deposited, box-averaged or area-scaled.
 
@@ -54,6 +54,7 @@ def test_density_evaluates_centers_without_area_or_box_factors():
         np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_transmission_support_moments_band_integrals_and_transforms():
     """Fails if interpolation clamps, knots go missing or band edges are ignored.
 
@@ -126,6 +127,7 @@ def test_transmission_support_moments_band_integrals_and_transforms():
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_nonuniform_trapezoid_weights_batched_and_degenerate():
     """Fails if nonuniform PSD line widths or endpoint half-cells are wrong.
 

@@ -11,65 +11,59 @@ from optixstuff.spectral import Band, Quadrature
 
 
 @pytest.mark.parametrize("spatial", [(), (2, 3)])
-def test_electrons_from_primitives(spatial):
+def test_electrons_from_primitives(spatial, precision):
     """Fails if survival is omitted or QE is applied after integration.
 
-    Floating-point: 16 float64 eps for interpolation and three weighted
+    Floating-point: 16 eps for interpolation and three weighted
     products. Negative controls isolate survival and spectral ordering.
     """
-    with jax.enable_x64():
-        quad = Quadrature(
-            (Band(400, 500), Band(600, 800)),
-            jnp.array([[400, 450, 500], [600, 700, 800]], dtype=jnp.float64),
-            jnp.array([[2, 3, 5], [7, 11, 13]], dtype=jnp.float64),
-        )
-        det = ox.Detector(
-            pixel_scale_arcsec=0.01,
-            shape=(2, 3),
-            survival_fraction=0.9,
-            qe_curve=([400, 600, 800], [0.2, 0.8, 0.4]),
-        )
-        base = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
-        image = base.reshape((2, 3, *(1 for _ in spatial))) * np.ones(spatial)
-        rates = ox.Rates(
-            quad,
-            "photon",
-            **{
-                name: (i + 1) * image
-                for i, name in enumerate(ox.Rates.component_names())
-            },
-        )
-        qe = [[0.2, 0.35, 0.5], [0.8, 0.6, 0.4]]
-        expected = np.zeros((2, *spatial))
-        for w in range(2):
-            for q in range(3):
-                expected[w] += (
-                    float(quad.weights()[w, q]) * 0.9 * qe[w][q] * image[w, q]
-                )
-        actual = det.electrons(rates)
-        compiled = eqx.filter_jit(lambda d, r: d.electrons(r))(det, rates)
-        tol = 16 * np.finfo(float).eps
-        assert actual.bands == quad.bands
-        for i, name in enumerate(rates.component_names()):
-            np.testing.assert_allclose(
-                getattr(actual, name), (i + 1) * expected, rtol=tol, atol=0
-            )
-            np.testing.assert_allclose(
-                getattr(compiled, name), (i + 1) * expected, rtol=tol, atol=0
-            )
-        unit_survival = eqx.tree_at(lambda d: d.survival_fraction, det, jnp.array(1.0))
+    quad = Quadrature(
+        (Band(400, 500), Band(600, 800)),
+        jnp.array([[400, 450, 500], [600, 700, 800]], dtype=precision),
+        jnp.array([[2, 3, 5], [7, 11, 13]], dtype=precision),
+    )
+    det = ox.Detector(
+        pixel_scale_arcsec=0.01,
+        shape=(2, 3),
+        survival_fraction=0.9,
+        qe_curve=([400, 600, 800], [0.2, 0.8, 0.4]),
+    )
+    base = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
+    image = base.reshape((2, 3, *(1 for _ in spatial))) * np.ones(spatial)
+    rates = ox.Rates(
+        quad,
+        "photon",
+        **{name: (i + 1) * image for i, name in enumerate(ox.Rates.component_names())},
+    )
+    qe = [[0.2, 0.35, 0.5], [0.8, 0.6, 0.4]]
+    expected = np.zeros((2, *spatial))
+    for w in range(2):
+        for q in range(3):
+            expected[w] += float(quad.weights()[w, q]) * 0.9 * qe[w][q] * image[w, q]
+    actual = det.electrons(rates)
+    compiled = eqx.filter_jit(lambda d, r: d.electrons(r))(det, rates)
+    tol = 16 * np.finfo(precision).eps
+    assert actual.bands == quad.bands
+    for i, name in enumerate(rates.component_names()):
         np.testing.assert_allclose(
-            actual.planet / unit_survival.electrons(rates).planet,
-            0.9,
-            rtol=tol,
-            atol=0,
+            getattr(actual, name), (i + 1) * expected, rtol=tol, atol=0
         )
-        integrated = np.asarray(rates.integrate().planet)
-        mean_qe = np.sum(np.asarray(quad.weights()) * qe, axis=1) / np.sum(
-            np.asarray(quad.weights()), axis=1
+        np.testing.assert_allclose(
+            getattr(compiled, name), (i + 1) * expected, rtol=tol, atol=0
         )
-        wrong_order = 0.9 * integrated * mean_qe.reshape((2, *(1 for _ in spatial)))
-        assert np.all(np.abs(np.asarray(actual.planet) / wrong_order - 1) > 0.02)
+    unit_survival = eqx.tree_at(lambda d: d.survival_fraction, det, jnp.array(1.0))
+    np.testing.assert_allclose(
+        actual.planet / unit_survival.electrons(rates).planet,
+        0.9,
+        rtol=tol,
+        atol=0,
+    )
+    integrated = np.asarray(rates.integrate().planet)
+    mean_qe = np.sum(np.asarray(quad.weights()) * qe, axis=1) / np.sum(
+        np.asarray(quad.weights()), axis=1
+    )
+    wrong_order = 0.9 * integrated * mean_qe.reshape((2, *(1 for _ in spatial)))
+    assert np.all(np.abs(np.asarray(actual.planet) / wrong_order - 1) > 0.02)
 
 
 @pytest.mark.parametrize("detector_cls", ox.AbstractDetector.__subclasses__())

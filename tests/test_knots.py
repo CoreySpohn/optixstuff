@@ -33,13 +33,6 @@ from optixstuff.spectral import (
 GRID = np.array([400.0, 450.1, 520.3, 700.0])
 
 
-@pytest.fixture(params=[False, True], ids=["x32", "x64"])
-def x64(request):
-    """Run the test under each precision, scoped around construction and use."""
-    with jax.enable_x64(request.param):
-        yield request.param
-
-
 class Linear(eqx.Module):
     """A table linear between static knots, as a source declares it."""
 
@@ -129,7 +122,7 @@ def test_static_knots_retrace_only_for_a_new_grid():
     assert grad(table.values).shape == (4,)
 
 
-def test_merge_of_a_grid_with_its_float32_copy(x64):
+def test_merge_of_a_grid_with_its_float32_copy():
     """Bitwise basis (test c).
 
     [400, 450.1, 520.3, 700] merged with its float32 copy gives four breaks,
@@ -164,7 +157,7 @@ def test_layout_is_independent_of_precision_and_order():
     assert len(digests) == 1
 
 
-def test_linear_table_integral_matches_trapezoid(x64):
+def test_linear_table_integral_matches_trapezoid(precision):
     """Closed-form basis (test e).
 
     A linear table integrated through its table-kind operator equals the
@@ -180,10 +173,12 @@ def test_linear_table_integral_matches_trapezoid(x64):
     integral, kind = band_integral(rule, Resolution.build(rule, table), table)
     assert kind == "table"
     truth = trapezoid(knots, values, band.low_nm, band.high_nm)
-    np.testing.assert_allclose(integral, truth, rtol=1e-12 if x64 else 5e-6)
+    np.testing.assert_allclose(
+        integral, truth, rtol=1e-12 if precision == np.float64 else 5e-6
+    )
 
 
-def test_twin_coarse_tables_keep_the_identity_kind(x64):
+def test_twin_coarse_tables_keep_the_identity_kind(precision):
     """Closed-form basis (test g).
 
     The float64 table and its float32 copy, both declared as breaks: each
@@ -200,13 +195,14 @@ def test_twin_coarse_tables_keep_the_identity_kind(x64):
     for table in tables:
         integral, kind = band_integral(rule, resolution, table)
         assert kind == "identity"
-    if x64:
+    if precision == np.float64:
         truth = trapezoid(
             np.asarray(copy, float), [2.0, 1.0, 3.0, 0.5], band.low_nm, band.high_nm
         )
         np.testing.assert_allclose(integral, truth, rtol=1e-11)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_fine_table_near_another_grid_is_integrated_exactly():
     """Closed-form basis (test k).
 
@@ -227,21 +223,20 @@ def test_fine_table_near_another_grid_is_integrated_exactly():
     coarse_at = np.searchsorted(fine, 450.0 + 0.2 * np.arange(1, 14))
     coarse = np.concatenate(([449.0], fine[coarse_at] - 1e-5, [456.0]))
     band = Band(float(fine[1]), float(fine[1650] + 4e-5))
-    with jax.enable_x64():
-        table = Linear(fine, values)
-        other = Linear(coarse, np.ones(coarse.size))
-        rule = Quadrature.build((band,), table, other, order=4)
-        edges = [rule.pieces[0][0][0], rule.pieces[0][-1][1]]
-        assert edges == [band.low_nm, band.high_nm]
-        resolution = Resolution.build(rule, table, other)
-        integral, kind = band_integral(rule, resolution, table)
+    table = Linear(fine, values)
+    other = Linear(coarse, np.ones(coarse.size))
+    rule = Quadrature.build((band,), table, other, order=4)
+    edges = [rule.pieces[0][0][0], rule.pieces[0][-1][1]]
+    assert edges == [band.low_nm, band.high_nm]
+    resolution = Resolution.build(rule, table, other)
+    integral, kind = band_integral(rule, resolution, table)
     assert kind != "identity"
     np.testing.assert_array_equal(table.knots.nm, fine)
     truth = trapezoid(fine, values, band.low_nm, band.high_nm)
     np.testing.assert_allclose(integral, truth, rtol=1e-12)
 
 
-def test_float32_micron_table_ends_at_the_band_edge(x64):
+def test_float32_micron_table_ends_at_the_band_edge():
     """Exact layout basis (tests h and i).
 
     A table stored in float32 microns (0.45 um widens to 449.9999881 nm) on
@@ -261,6 +256,7 @@ def test_float32_micron_table_ends_at_the_band_edge(x64):
         Reduction.build(past, table.knots, degree=1)
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_transmission_has_one_leaf_and_a_true_gradient():
     """Finite-difference basis (test j).
 
@@ -269,18 +265,17 @@ def test_transmission_has_one_leaf_and_a_true_gradient():
     differences (``check_grads``, x64, eps 1e-4, tolerance 1e-4). Fails if
     the grid is kept as a child.
     """
-    with jax.enable_x64():
-        curve = Transmission([500.0, 520.0, 545.0, 560.0], [0.2, 0.9, 0.7, 0.1])
-        assert jax.tree.leaves(curve) == [curve.transmission]
-        assert isinstance(curve.wavelength_nm, Knots)
-        band = Band(505.0, 555.0)
+    curve = Transmission([500.0, 520.0, 545.0, 560.0], [0.2, 0.9, 0.7, 0.1])
+    assert jax.tree.leaves(curve) == [curve.transmission]
+    assert isinstance(curve.wavelength_nm, Knots)
+    band = Band(505.0, 555.0)
 
-        def integral(response):
-            moved = jax.tree.unflatten(jax.tree.structure(curve), [response])
-            return moved.integrate(band, lambda w: 1.0 + w / 500.0)
+    def integral(response):
+        moved = jax.tree.unflatten(jax.tree.structure(curve), [response])
+        return moved.integrate(band, lambda w: 1.0 + w / 500.0)
 
-        check_grads(integral, (curve.transmission,), order=1, modes=("rev",))
-        assert curve.low_nm == 500.0 and curve.high_nm == 560.0
+    check_grads(integral, (curve.transmission,), order=1, modes=("rev",))
+    assert curve.low_nm == 500.0 and curve.high_nm == 560.0
 
 
 def _width_where_nodes_collapse(order, edge=450.0):

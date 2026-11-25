@@ -36,6 +36,7 @@ def test_focal_response_integrates_density_over_the_grid():
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(("law", "expected"), [("amplitude", 1.0), ("opd", 0.25)])
 def test_wavelength_law_halo_ratio(law, expected):
     """Squared OPD phase and achromatic transmission give analytic halo ratios.
@@ -43,19 +44,18 @@ def test_wavelength_law_halo_ratio(law, expected):
     Float64 allows 1e-12 relative error. Scaling every sensitivity by
     reference wavelength over wavelength incorrectly quarters the amplitude halo.
     """
-    with jax.enable_x64():
-        grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
-        response = ox.FocalResponse(
-            jnp.zeros(grid.shape, dtype=complex),
-            jnp.full((1, *grid.shape), 0.3 + 0.2j),
-            grid,
-            1.0,
-            500.0,
-            wavelength_law=law,
-        )
-        field = SinusoidalSpeckle(response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1))
-        blue, red = field.realize(wavelength_nm=jnp.array([500, 1000])).data
-        np.testing.assert_allclose(red / blue, expected, rtol=1e-12, atol=0)
+    grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
+    response = ox.FocalResponse(
+        jnp.zeros(grid.shape, dtype=complex),
+        jnp.full((1, *grid.shape), 0.3 + 0.2j),
+        grid,
+        1.0,
+        500.0,
+        wavelength_law=law,
+    )
+    field = SinusoidalSpeckle(response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1))
+    blue, red = field.realize(wavelength_nm=jnp.array([500, 1000])).data
+    np.testing.assert_allclose(red / blue, expected, rtol=1e-12, atol=0)
 
 
 def test_focal_response_requires_law_matching_layout(linear_speckle):
@@ -75,6 +75,7 @@ def test_focal_response_requires_law_matching_layout(linear_speckle):
         replace(r, e_nom=r.e_nom[None], G=r.G[None])
 
 
+@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 def test_law_and_cancellation(linear_speckle):
     """Fails if conjugation, energy normalization or stable cross term is lost.
 
@@ -123,11 +124,11 @@ def test_law_and_cancellation(linear_speckle):
     )
 
 
-def test_chromatic_linear_and_quadratic_terms(linear_speckle):
+def test_chromatic_linear_and_quadratic_terms(linear_speckle, precision):
     """Fails if G ignores wavelength or if e_nom is scaled with G.
 
     Exact algebra: at twice lambda_ref the linear term halves and quadratic
-    term quarters, within 32 float64 eps of the per-pixel term scale.
+    term quarters, within 32 eps of the per-pixel term scale.
     """
     field = linear_speckle
     halo = eqx.tree_at(
@@ -144,7 +145,7 @@ def test_chromatic_linear_and_quadratic_terms(linear_speckle):
     quadratic = np.abs(delta_e) ** 2 * field.grid.pixel_area / 7.3
     got = field.realize(wavelength_nm=wavelengths).data
     quadratic_got = halo.realize(wavelength_nm=wavelengths).data
-    floor = 32 * np.finfo(float).eps
+    floor = 32 * np.finfo(precision).eps
     for i, scale in enumerate([1.0, 0.5]):
         np.testing.assert_allclose(quadratic_got[i], scale**2 * quadratic, rtol=floor)
         np.testing.assert_allclose(
@@ -155,6 +156,7 @@ def test_chromatic_linear_and_quadratic_terms(linear_speckle):
         )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_broadened_node_integral(linear_speckle):
     """Fails if a band-center sample replaces the normalized node integral.
 
@@ -204,6 +206,9 @@ def test_broadened_node_integral(linear_speckle):
 _EPOCHS_D = (60000.123, 60000.125)
 
 
+@pytest.mark.float32_only(
+    reason="checks host epoch subtraction with float32 device output"
+)
 def test_elapsed_s_is_exact_on_the_host_under_x32():
     """Fails if the kernel casts ``time_d`` to the active dtype before subtracting.
 
@@ -215,17 +220,16 @@ def test_elapsed_s_is_exact_on_the_host_under_x32():
     complex64 (eight bytes, float32 parts) is refused, so a guard keyed on
     the size alone fails.
     """
-    with jax.enable_x64(False):
-        for epoch in _EPOCHS_D:
-            field = make_linear_speckle(epoch_d=epoch)
-            for time in (epoch + 10 * s2d, np.asarray(epoch + 10 * s2d, ">f8")):
-                elapsed = field.elapsed_s(time)
-                assert elapsed.dtype == jnp.float32
-                np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
-            # Eight bytes is not binary64: complex64 holds two float32 parts.
-            for time in (np.complex64(epoch + 10 * s2d), np.float16(1.0)):
-                with pytest.raises(ValueError, match="already lost"):
-                    field.elapsed_s(time)
+    for epoch in _EPOCHS_D:
+        field = make_linear_speckle(epoch_d=epoch)
+        for time in (epoch + 10 * s2d, np.asarray(epoch + 10 * s2d, ">f8")):
+            elapsed = field.elapsed_s(time)
+            assert elapsed.dtype == jnp.float32
+            np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
+        # Eight bytes is not binary64: complex64 holds two float32 parts.
+        for time in (np.complex64(epoch + 10 * s2d), np.float16(1.0)):
+            with pytest.raises(ValueError, match="already lost"):
+                field.elapsed_s(time)
 
 
 def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
@@ -269,6 +273,7 @@ def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
         np.testing.assert_allclose(anchored.elapsed_s(carried), 10.0, atol=1e-6)
 
 
+@pytest.mark.float64_only(reason="absolute epoch must retain the sub-day offset")
 def test_elapsed_s_eager_equals_jit_under_x64():
     """Fails if the host, device and traced paths of the kernel disagree.
 
@@ -282,36 +287,32 @@ def test_elapsed_s_eager_equals_jit_under_x64():
     fuses multiply-adds (8.7e-19 seen on 1e-3 pixels). Fails if the
     device path subtracts in float32 or forms ``time * d2s - epoch * d2s``.
     """
-    with jax.enable_x64(True):
-        epoch = _EPOCHS_D[0]
-        field = make_linear_speckle(epoch_d=epoch)
-        zero = make_linear_speckle()
-        k = np.array([1.0, 3.0, 7.0, 121.0, 1001.0, 12345.0])
-        times = epoch + k * 2.0**-20
-        np.testing.assert_array_equal(times - epoch, k * 2.0**-20)
-        exact = k * 2.0**-20 * 86400.0
-        host = field.elapsed_s(times)
-        device = field.elapsed_s(jnp.asarray(times))
-        traced = jax.jit(lambda t: field.elapsed_s(t))(times)
-        for got in (host, device, traced):
-            assert got.dtype == jnp.float64
-            np.testing.assert_array_equal(got, exact)
-        render = eqx.filter_jit(
-            lambda f, t: f.realize(wavelength_nm=500.0, elapsed_s=t)
+    epoch = _EPOCHS_D[0]
+    field = make_linear_speckle(epoch_d=epoch)
+    zero = make_linear_speckle()
+    k = np.array([1.0, 3.0, 7.0, 121.0, 1001.0, 12345.0])
+    times = epoch + k * 2.0**-20
+    np.testing.assert_array_equal(times - epoch, k * 2.0**-20)
+    exact = k * 2.0**-20 * 86400.0
+    host = field.elapsed_s(times)
+    device = field.elapsed_s(jnp.asarray(times))
+    traced = jax.jit(lambda t: field.elapsed_s(t))(times)
+    for got in (host, device, traced):
+        assert got.dtype == jnp.float64
+        np.testing.assert_array_equal(got, exact)
+    render = eqx.filter_jit(lambda f, t: f.realize(wavelength_nm=500.0, elapsed_s=t))
+    eager = zero.realize(wavelength_nm=500.0, elapsed_s=exact).data
+    compiled = render(zero, exact).data
+    for elapsed in (host, device, traced):
+        np.testing.assert_array_equal(
+            field.realize(wavelength_nm=500.0, elapsed_s=elapsed).data, eager
         )
-        eager = zero.realize(wavelength_nm=500.0, elapsed_s=exact).data
-        compiled = render(zero, exact).data
-        for elapsed in (host, device, traced):
-            np.testing.assert_array_equal(
-                field.realize(wavelength_nm=500.0, elapsed_s=elapsed).data, eager
-            )
-            np.testing.assert_array_equal(render(field, elapsed).data, compiled)
-        floor = 64 * np.finfo(np.float64).eps * np.max(np.abs(eager))
-        np.testing.assert_allclose(compiled, eager, rtol=0, atol=floor)
+        np.testing.assert_array_equal(render(field, elapsed).data, compiled)
+    floor = 64 * np.finfo(np.float64).eps * np.max(np.abs(eager))
+    np.testing.assert_allclose(compiled, eager, rtol=0, atol=floor)
 
 
-@pytest.mark.parametrize("x64", [False, True], ids=["x32", "x64"])
-def test_coefficients_eager_equals_jit(x64):
+def test_coefficients_eager_equals_jit(precision):
     """Fails if ``coefficients(elapsed_s=)`` branches on the argument's type.
 
     Truth: the eager call, against ``eqx.filter_jit`` for Python floats, NumPy
@@ -321,17 +322,15 @@ def test_coefficients_eager_equals_jit(x64):
     term scale ``|offset| + |amplitude|`` (0.08 nm), not bitwise. A branch that
     casts a JAX array through float32 moves the x64 result by about 1e-9 nm.
     """
-    with jax.enable_x64(x64):
-        field = make_linear_speckle()
-        coefficients = eqx.filter_jit(field.coefficients)
-        dtype = jnp.float64 if x64 else jnp.float32
-        floor = 4 * float(jnp.finfo(dtype).eps) * 0.08
-        for elapsed in (0.1, np.array([0.1, 0.7, 2.3]), jnp.array([0.1, 0.7, 2.3])):
-            eager = field.coefficients(elapsed_s=elapsed)
-            assert eager.dtype == dtype
-            np.testing.assert_allclose(
-                coefficients(elapsed_s=elapsed), eager, rtol=0, atol=floor
-            )
+    field = make_linear_speckle()
+    coefficients = eqx.filter_jit(field.coefficients)
+    floor = 4 * np.finfo(precision).eps * 0.08
+    for elapsed in (0.1, np.array([0.1, 0.7, 2.3]), jnp.array([0.1, 0.7, 2.3])):
+        eager = field.coefficients(elapsed_s=elapsed)
+        assert eager.dtype == precision
+        np.testing.assert_allclose(
+            coefficients(elapsed_s=elapsed), eager, rtol=0, atol=floor
+        )
 
 
 def test_epoch_is_static_metadata_checked_by_the_kernel():
@@ -343,28 +342,25 @@ def test_epoch_is_static_metadata_checked_by_the_kernel():
     whose ``epoch_d`` was swapped for an array raises ``TypeError`` from
     ``elapsed_s``. Exact.
     """
-    with jax.enable_x64(True):
-        field = make_linear_speckle(epoch_d=np.float64(_EPOCHS_D[0]))
-        other = make_linear_speckle(epoch_d=5.0)
-        assert type(field.epoch_d) is float
-        leaves = jax.tree_util.tree_leaves(field)
-        assert not any(leaf is field.epoch_d for leaf in leaves)
-        others = jax.tree_util.tree_leaves(other)
-        assert len(leaves) == len(others)
-        for a, b in zip(leaves, others, strict=True):
-            np.testing.assert_array_equal(a, b)
-        assert jax.tree_util.tree_structure(field) != jax.tree_util.tree_structure(
-            other
-        )
-        with pytest.raises(TypeError):
-            eqx.tree_at(lambda f: f.epoch_d, field, jnp.asarray(1.0))
-        swapped = replace(field)
-        object.__setattr__(swapped, "epoch_d", jnp.asarray(_EPOCHS_D[0]))
-        with pytest.raises(TypeError, match="epoch_d"):
-            swapped.elapsed_s(_EPOCHS_D[0] + 10 * s2d)
+    field = make_linear_speckle(epoch_d=np.float64(_EPOCHS_D[0]))
+    other = make_linear_speckle(epoch_d=5.0)
+    assert type(field.epoch_d) is float
+    leaves = jax.tree_util.tree_leaves(field)
+    assert not any(leaf is field.epoch_d for leaf in leaves)
+    others = jax.tree_util.tree_leaves(other)
+    assert len(leaves) == len(others)
+    for a, b in zip(leaves, others, strict=True):
+        np.testing.assert_array_equal(a, b)
+    assert jax.tree_util.tree_structure(field) != jax.tree_util.tree_structure(other)
+    with pytest.raises(TypeError):
+        eqx.tree_at(lambda f: f.epoch_d, field, jnp.asarray(1.0))
+    swapped = replace(field)
+    object.__setattr__(swapped, "epoch_d", jnp.asarray(_EPOCHS_D[0]))
+    with pytest.raises(TypeError, match="epoch_d"):
+        swapped.elapsed_s(_EPOCHS_D[0] + 10 * s2d)
 
 
-def test_image_geometry_jit_and_time_batching(linear_speckle):
+def test_image_geometry_jit_and_time_batching(linear_speckle, precision):
     """Fails if native sampling is stamped, metadata lost, or time axes collide.
 
     Geometry uses 6 m and lambda[nm]*1e-9 *180/pi*3600/D; 16 float64 eps.
@@ -401,7 +397,9 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     compiled = eqx.filter_jit(field.realize)(
         wavelength_nm=nodes, elapsed_s=jnp.array(0.2)
     )
-    np.testing.assert_allclose(compiled.data, image.data, rtol=32 * np.finfo(float).eps)
+    np.testing.assert_allclose(
+        compiled.data, image.data, rtol=32 * np.finfo(precision).eps
+    )
     assert compiled.grid == image.grid
     times = jnp.array([0.0, 0.2, 0.7])
     loop = np.stack(
@@ -412,13 +410,14 @@ def test_image_geometry_jit_and_time_batching(linear_speckle):
     )
     batched = field.realize(wavelength_nm=nodes, elapsed_s=times)
     assert batched.leading_axes == ("band", "quadrature", "time_0")
-    floor = 32 * np.finfo(float).eps * np.max(np.abs(loop))
+    floor = 32 * np.finfo(precision).eps * np.max(np.abs(loop))
     np.testing.assert_allclose(mapped, loop, rtol=0, atol=floor)
     np.testing.assert_allclose(
         batched.data, np.moveaxis(loop, 0, 2), rtol=0, atol=floor
     )
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_coefficient_gradient(linear_speckle):
     """Fails if eps is detached or the interference derivative is incorrect.
 
@@ -449,11 +448,11 @@ def test_coefficient_gradient(linear_speckle):
     np.testing.assert_allclose(gradient, finite, rtol=0, atol=1e-10)
 
 
-def test_exposure_average(linear_speckle):
+def test_exposure_average(linear_speckle, precision):
     """Fails if averaging coefficients, a step left in days or metadata loss.
 
     Truth: the mean of ``realize`` at ``s0 + (i + 0.5) * T / n`` seconds.
-    Midpoint sum/JIT: 32 float64 eps. Three refinements (4, 8, 16) of a
+    Midpoint sum/JIT: 32 eps. Three refinements (4, 8, 16) of a
     smooth sinusoidal quadratic must give second-order ratios in [3.8,4.2].
     """
     field = linear_speckle
@@ -467,16 +466,20 @@ def test_exposure_average(linear_speckle):
         axis=0,
     )
     average = field.realize_average(**keywords)
-    np.testing.assert_allclose(average.data, expected, rtol=32 * np.finfo(float).eps)
+    np.testing.assert_allclose(
+        average.data, expected, rtol=32 * np.finfo(precision).eps
+    )
     assert average.grid == field.grid
     assert average.leading_axes == ("band", "quadrature")
     assert average.reconstruction == "band_limited"
     compiled = eqx.filter_jit(field.realize_average)(**keywords)
-    np.testing.assert_allclose(compiled.data, expected, rtol=32 * np.finfo(float).eps)
+    np.testing.assert_allclose(
+        compiled.data, expected, rtol=32 * np.finfo(precision).eps
+    )
     np.testing.assert_allclose(
         field.realize_average(**keywords, n_sub=1).data,
         field.realize(wavelength_nm=nodes, elapsed_s=0.6).data,
-        rtol=32 * np.finfo(float).eps,
+        rtol=32 * np.finfo(precision).eps,
     )
     levels = [field.realize_average(**keywords, n_sub=n).data for n in [4, 8, 16]]
     ratio = np.max(np.abs(levels[0] - levels[1])) / np.max(
@@ -498,7 +501,7 @@ def test_exposure_average(linear_speckle):
     np.testing.assert_allclose(
         static.realize_average(**keywords).data,
         static.realize(wavelength_nm=nodes).data,
-        rtol=32 * np.finfo(float).eps,
+        rtol=32 * np.finfo(precision).eps,
     )
     for bad in [0, -1, 1.5]:
         with pytest.raises(ValueError, match="n_sub"):

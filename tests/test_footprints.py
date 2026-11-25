@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.leaves import require_tree
+from hwoutils.testing import ulps
 
 from optixstuff.grids import (
     Image,
@@ -13,13 +14,6 @@ from optixstuff.grids import (
     footprint_overlap,
     integrate_footprints,
 )
-
-
-@pytest.fixture(autouse=True)
-def enable_x64():
-    """Resolve numerical geometry errors independently of float32 roundoff."""
-    with jax.enable_x64():
-        yield
 
 
 def _integral(data, step=1.0):
@@ -43,7 +37,7 @@ def test_downsampling_integrates_every_source_pixel(row, col):
     np.testing.assert_array_equal(result.data, expected)
 
 
-def test_clipped_rotated_cell_and_disjoint_grid_sequence():
+def test_clipped_rotated_cell_and_disjoint_grid_sequence(precision):
     """Fails if a rotated square is collected by its enclosing rectangle, or
     the sparse overlap holds NumPy or weakly typed weights.
 
@@ -56,15 +50,20 @@ def test_clipped_rotated_cell_and_disjoint_grid_sequence():
     area = 1 - 2 * (1 - c) ** 2
     one = footprint_overlap(source.grid, diamond)
     np.testing.assert_allclose(
-        integrate_footprints(source, one).data, [[area]], atol=2e-15, rtol=0
+        integrate_footprints(source, one).data,
+        [[area]],
+        atol=ulps(9, precision.type(1.0)),
+        rtol=0,
     )
     distant = PixelGrid.regular((1, 2), 1, "pixel", center=(10, 10))
     overlap = footprint_overlap(source.grid, (source.grid, diamond, distant))
     # The sparse triples are strong leaves: indices stay int32.
     require_tree(overlap)
-    assert [a.dtype for a in overlap.sparse] == [jnp.int32, jnp.int32, jnp.float64]
+    assert [a.dtype for a in overlap.sparse] == [jnp.int32, jnp.int32, precision]
     got = jax.jit(integrate_footprints)(source, overlap)
-    np.testing.assert_allclose(got, [1, area, 0, 0], atol=2e-15, rtol=0)
+    np.testing.assert_allclose(
+        got, [1, area, 0, 0], atol=ulps(9, precision.type(1.0)), rtol=0
+    )
 
 
 def test_rebin_partial_coverage():

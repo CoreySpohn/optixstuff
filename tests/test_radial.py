@@ -8,22 +8,22 @@ from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.radial import radial_profile
 
 
+@pytest.mark.float64_only(reason="stored float64 reference values")
 def test_centered_mean_matches_previous_profile():
     """Fails if the default rings or the centered square mean change.
 
     Reference is the float64 output of the previous implementation on the
     seeded fixture. Tolerance allows float64 accumulation-order rounding.
     """
-    with jax.enable_x64():
-        data = np.random.default_rng(0).normal(size=(8, 8))
-        image = Image(
-            data,
-            PixelGrid.regular(data.shape, 0.25, "arcsec"),
-            (),
-            Measure.integral(),
-            "test",
-        )
-        centers, means, counts = radial_profile(image)
+    data = np.random.default_rng(0).normal(size=(8, 8))
+    image = Image(
+        data,
+        PixelGrid.regular(data.shape, 0.25, "arcsec"),
+        (),
+        Measure.integral(),
+        "test",
+    )
+    centers, means, counts = radial_profile(image)
     np.testing.assert_allclose(
         centers,
         [

@@ -14,6 +14,7 @@ _circle_mean = jax.jit(azimuthal_mean_profile)
 _selectable_circle_mean = eqx.filter_jit(azimuthal_mean_profile)
 
 
+@pytest.mark.float64_only(reason="stored float64 reference values")
 def test_keys_bit_identical():
     """Pin float64 CPU values captured before adding the quintic reader.
 
@@ -37,7 +38,7 @@ def test_keys_bit_identical():
         ],
         dtype=np.uint64,
     )
-    with jax.enable_x64(), jax.default_device(jax.devices("cpu")[0]):
+    with jax.default_device(jax.devices("cpu")[0]):
         default = np.asarray(_circle_mean(image, (6.25, 9.5), radii))
         explicit = np.asarray(
             _selectable_circle_mean(
@@ -48,6 +49,7 @@ def test_keys_bit_identical():
     np.testing.assert_array_equal(explicit.view(np.uint64), default.view(np.uint64))
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize("center", [(63.5, 63.5), (59.25, 67.75)])
 def test_quadratic_circle_mean(center):
     """Preserve the axis, row/column order, radius scale and pixel-area units."""
@@ -59,10 +61,9 @@ def test_quadratic_circle_mean(center):
     cy, cx = (np.asarray(center) - 63.5) * pixel_scale
     expected = 2 + 0.1 * cx + 0.2 * cy + 0.3 * cx**2 + 0.7 * cy**2
     expected = expected + radii_lod**2 / 2
-    with jax.enable_x64():
-        actual = np.asarray(
-            _circle_mean(density * pixel_scale**2, center, radii_lod / pixel_scale)
-        )
+    actual = np.asarray(
+        _circle_mean(density * pixel_scale**2, center, radii_lod / pixel_scale)
+    )
     np.testing.assert_allclose(actual / pixel_scale**2, expected, rtol=1e-12)
 
 
@@ -73,21 +74,21 @@ def test_displaced_gaussian_circle_mean():
     image = np.exp(-((x - 1) ** 2 + (y + 2) ** 2) / 18)
     radii = np.array([0, 3, 3.03125, 5, 10])
     expected = np.exp(-(radii**2 + 5) / 18) * i0(radii * np.sqrt(5) / 9)
-    with jax.enable_x64():
-        actual = np.asarray(_circle_mean(image, (63.5, 63.5), radii / pixel_scale))
+    actual = np.asarray(_circle_mean(image, (63.5, 63.5), radii / pixel_scale))
     # An accuracy requirement against the analytic mean, not stored reader values.
     np.testing.assert_allclose(actual, expected, rtol=5e-5)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_partial_circle_normalizes_only_in_image_arcs():
     """A constant stays constant on short corner arcs and vanishes outside."""
     corner = np.hypot(63.5, 63.5)
     radii = np.array([0, 64, 80, corner - 0.001, corner, corner + 0.001])
-    with jax.enable_x64():
-        actual = np.asarray(_circle_mean(np.ones((128, 128)), (63.5, 63.5), radii))
+    actual = np.asarray(_circle_mean(np.ones((128, 128)), (63.5, 63.5), radii))
     np.testing.assert_allclose(actual, [1, 1, 1, 1, 1, 0], rtol=1e-12, atol=1e-12)
 
 
+@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 @pytest.mark.parametrize("pixel_scale", [0.25, 0.125])
 @pytest.mark.parametrize("kind", ["airy", "gaussian"])
 def test_quintic_analytic_circle_mean(pixel_scale, kind):
@@ -113,34 +114,34 @@ def test_quintic_analytic_circle_mean(pixel_scale, kind):
             if pixel_scale == 0.25
             else np.array([4.75842e-11, 1.60183e-10, 9.59399e-10])
         )
-    with jax.enable_x64():
-        actual = np.asarray(
-            _selectable_circle_mean(
-                image,
-                (center, center),
-                radii / pixel_scale,
-                n_theta=2048,
-                interpolation="quintic",
-            )
+    actual = np.asarray(
+        _selectable_circle_mean(
+            image,
+            (center, center),
+            radii / pixel_scale,
+            n_theta=2048,
+            interpolation="quintic",
         )
+    )
     assert np.all(100 * np.abs(actual / expected - 1) < 2 * bounds)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_partial_circle_and_tangency():
     """Quintic preserves in-image normalization, tangencies and exterior zero."""
     corner = np.hypot(7.5, 9.5)
-    with jax.enable_x64():
-        actual = np.asarray(
-            _selectable_circle_mean(
-                np.ones((16, 20)),
-                (7.5, 9.5),
-                np.array([0, 8, 10, corner - 0.001, corner, corner + 0.001]),
-                interpolation="quintic",
-            )
+    actual = np.asarray(
+        _selectable_circle_mean(
+            np.ones((16, 20)),
+            (7.5, 9.5),
+            np.array([0, 8, 10, corner - 0.001, corner, corner + 0.001]),
+            interpolation="quintic",
         )
+    )
     np.testing.assert_allclose(actual, [1, 1, 1, 1, 1, 0], rtol=1e-12, atol=1e-12)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_image_gradient():
     """The prefilter and spatial evaluation participate in reverse-mode AD."""
 
@@ -152,9 +153,8 @@ def test_quintic_image_gradient():
             interpolation="quintic",
         ).sum()
 
-    with jax.enable_x64():
-        image = jnp.arange(320, dtype=float).reshape(16, 20) / 320
-        gradient = np.asarray(eqx.filter_jit(jax.grad(total))(image))
+    image = jnp.arange(320, dtype=float).reshape(16, 20) / 320
+    gradient = np.asarray(eqx.filter_jit(jax.grad(total))(image))
     assert np.all(np.isfinite(gradient))
     # Three nonempty circles: adding a constant adds it to each mean.
     np.testing.assert_allclose(gradient.sum(), 3, rtol=1e-12)
@@ -168,6 +168,7 @@ def test_unknown_interpolation_rejected():
         )
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_quintic_coordinate_gradients():
     """Radius and center derivatives agree with finite differences off tangencies."""
     from jax.test_util import check_grads
@@ -183,21 +184,21 @@ def test_quintic_coordinate_gradients():
             interpolation="quintic",
         ).sum()
 
-    with jax.enable_x64():
-        parameters = jnp.array([7.3, 9.2, 2.3, 4.1])
-        gradient = np.asarray(eqx.filter_jit(jax.grad(read))(parameters))
-        assert np.all(np.isfinite(gradient))
-        check_grads(
-            eqx.filter_jit(read),
-            (parameters,),
-            order=1,
-            modes=("rev",),
-            eps=1e-4,
-            atol=1e-4,
-            rtol=1e-4,
-        )
+    parameters = jnp.array([7.3, 9.2, 2.3, 4.1])
+    gradient = np.asarray(eqx.filter_jit(jax.grad(read))(parameters))
+    assert np.all(np.isfinite(gradient))
+    check_grads(
+        eqx.filter_jit(read),
+        (parameters,),
+        order=1,
+        modes=("rev",),
+        eps=1e-4,
+        atol=1e-4,
+        rtol=1e-4,
+    )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_nearest_sample_extension():
     """Nonconstant edge samples match an independently prefiltered nearest halo."""
     y, x = np.indices((8, 11))
@@ -223,11 +224,11 @@ def test_quintic_nearest_sample_extension():
             )[0]
         )(centers)
 
-    with jax.enable_x64():
-        actual = np.asarray(read(image, centers))
+    actual = np.asarray(read(image, centers))
     np.testing.assert_allclose(actual, expected, rtol=1e-13)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize("shape", [(1, 1), (1, 7), (3, 4)])
 def test_quintic_interpolates_small_images(shape):
     """Degenerate and small rectangular images reproduce their pixel-center data."""
@@ -245,6 +246,5 @@ def test_quintic_interpolates_small_images(shape):
             )[0]
         )(centers)
 
-    with jax.enable_x64():
-        actual = np.asarray(read(image, centers))
+    actual = np.asarray(read(image, centers))
     np.testing.assert_allclose(actual, image.ravel(), rtol=1e-13, atol=1e-14)

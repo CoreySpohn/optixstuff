@@ -124,11 +124,11 @@ class Hosts:
 
 @pytest.fixture(scope="module")
 def hosts():
-    """The host tables, built in float64; each test enters float64 itself."""
-    with jax.enable_x64():
-        return Hosts()
+    """Analytic and tabulated spectral references."""
+    return Hosts()
 
 
+@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 def test_accuracy_ladder_on_a_half_width_band(hosts):
     """Fails if the rule loses the accuracy measured before the build.
 
@@ -143,25 +143,24 @@ def test_accuracy_ladder_on_a_half_width_band(hosts):
     knots declared the same integral is exact (floating-point, 1e-12;
     measured 3e-16).
     """
-    with jax.enable_x64():
-        heat = [
-            hosts.error(
-                order, hosts.integrand(lambda w: thermal(w, 600.0), None), "response"
-            )
-            for order in (4, 6, 8)
-        ]
-        zodi = [
-            hosts.error(
-                order,
-                hosts.integrand(lambda w: (CENTER_NM / w) ** 3, "zodi"),
-                "response",
-                "zodi",
-            )
-            for order in (4, 6, 8)
-        ]
-        star = hosts.integrand(contrast, "star")
-        sampled = [hosts.error(order, star, "response") for order in (4, 6, 8)]
-        exact = hosts.error(4, star, "response", "star")
+    heat = [
+        hosts.error(
+            order, hosts.integrand(lambda w: thermal(w, 600.0), None), "response"
+        )
+        for order in (4, 6, 8)
+    ]
+    zodi = [
+        hosts.error(
+            order,
+            hosts.integrand(lambda w: (CENTER_NM / w) ** 3, "zodi"),
+            "response",
+            "zodi",
+        )
+        for order in (4, 6, 8)
+    ]
+    star = hosts.integrand(contrast, "star")
+    sampled = [hosts.error(order, star, "response") for order in (4, 6, 8)]
+    exact = hosts.error(4, star, "response", "star")
     assert heat[0] < 2e-2 and heat[1] < 1e-5 and heat[2] < 3e-10
     assert heat[1] < heat[0] / 30 and heat[2] < heat[1] / 30
     assert zodi[0] < 3e-9 and zodi[1] < 5e-14 and zodi[2] < 1e-14
@@ -203,33 +202,31 @@ def test_order_rule_resolves_a_sliding_response_on_a_smooth_source():
     fine_weights = (length * w / 2).ravel()
 
     def worst(rule, separations, truth):
-        nodes, weights = np.asarray(rule.nodes_nm[0]), np.asarray(rule.weights()[0])
+        nodes = np.asarray(rule.nodes_nm[0], dtype=np.float64)
+        weights = np.asarray(rule.weights()[0])
         value = airy_pixel(separations, nodes) @ (weights * thermal(nodes, 5800.0))
         return np.max(np.abs(value / truth - 1))
 
-    with jax.enable_x64():
-        onsets, rule_orders = [], []
-        for cycles in (0.5, 1.0, 2.0, 4.0, 6.0):
-            separations = np.linspace(cycles - 0.1, cycles + 0.1, 9) / CYCLES_PER_LOD
-            truth = airy_pixel(separations, fine) @ (
-                fine_weights * thermal(fine, 5800.0)
+    onsets, rule_orders = [], []
+    for cycles in (0.5, 1.0, 2.0, 4.0, 6.0):
+        separations = np.linspace(cycles - 0.1, cycles + 0.1, 9) / CYCLES_PER_LOD
+        truth = airy_pixel(separations, fine) @ (fine_weights * thermal(fine, 5800.0))
+        errors = {
+            order: worst(
+                Quadrature.build((SEPARATION_BAND,), order=order),
+                separations,
+                truth,
             )
-            errors = {
-                order: worst(
-                    Quadrature.build((SEPARATION_BAND,), order=order),
-                    separations,
-                    truth,
-                )
-                for order in range(4, 25)
-            }
-            onsets.append(min(order for order, error in errors.items() if error < 1e-4))
-            rule = Quadrature.build(
-                (SEPARATION_BAND,), order=4, field_lod=cycles / CYCLES_PER_LOD
-            )
-            rule_orders.append(rule.pieces[0][0][2])
-            assert worst(rule, separations, truth) < 1e-6
-            if cycles == 2.0:
-                assert errors[4] > 1e-2
+            for order in range(4, 25)
+        }
+        onsets.append(min(order for order, error in errors.items() if error < 1e-4))
+        rule = Quadrature.build(
+            (SEPARATION_BAND,), order=4, field_lod=cycles / CYCLES_PER_LOD
+        )
+        rule_orders.append(rule.pieces[0][0][2])
+        assert worst(rule, separations, truth) < 1e-6
+        if cycles == 2.0:
+            assert errors[4] > 1e-2
     assert onsets == [4, 6, 8, 12, 16]
     assert rule_orders == [6, 8, 10, 16, 22]
 
@@ -259,12 +256,11 @@ def test_order_rule_on_a_rough_source_through_the_reduction(phoenix):
     fine = (edges[:-1, None] + length * (x + 1) / 2).ravel()
     fine_weights = (length * w / 2).ravel()
     reduced = {}
-    with jax.enable_x64():
-        for order in range(4, 25):
-            rule = Quadrature.build((SEPARATION_BAND,), order=order)
-            reduction = Reduction.build(rule, knots, degree=1)
-            at_fine = np.interp(np.asarray(reduction.fine_nm), knots, table)
-            reduced[order] = (rule, np.asarray(reduction.apply(at_fine))[0])
+    for order in range(4, 25):
+        rule = Quadrature.build((SEPARATION_BAND,), order=order)
+        reduction = Reduction.build(rule, knots, degree=1)
+        at_fine = np.interp(np.asarray(reduction.fine_nm), knots, table)
+        reduced[order] = (rule, np.asarray(reduction.apply(at_fine))[0])
 
     def worst(order, separations, truth):
         rule, node_values = reduced[order]
@@ -290,7 +286,7 @@ def test_order_rule_on_a_rough_source_through_the_reduction(phoenix):
 
 
 @pytest.mark.parametrize("order", [1, 3, 4])
-def test_piece_without_cycles_keeps_its_order(order):
+def test_piece_without_cycles_keeps_its_order(order, precision):
     """Fails if a piece that holds no chromatic cycles changes its layout.
 
     Exact (floating-point identity): with ``field_lod=0`` and with
@@ -318,28 +314,28 @@ def test_piece_without_cycles_keeps_its_order(order):
         ((2.0, 3.0, order),),
         ((6.0, 7.0, order),),
     )
-    with jax.enable_x64():
-        for rule in (
-            Quadrature.build(bands, order=order, breaks_nm=knots),
-            Quadrature.build(bands, order=order, breaks_nm=knots, field_lod=0),
-            Quadrature.build(
-                bands, Field(0.0), order=order, breaks_nm=knots, field_lod=None
-            ),
-        ):
-            assert rule.pieces == pieces
-            for i, row in enumerate(pieces):
-                nodes, weights = legendre_row(row)
-                np.testing.assert_array_equal(rule.nodes_nm[i, : nodes.size], nodes)
-                np.testing.assert_array_equal(rule.weights()[i, : nodes.size], weights)
-                np.testing.assert_array_equal(rule.weights()[i, nodes.size :], 0.0)
-        declared = Quadrature.build(
-            bands, Field(0.5), Field(2.0), order=order, field_lod=None
-        )
-        assert (
-            declared.pieces
-            == Quadrature.build(bands, order=order, field_lod=2.0).pieces
-        )
-        assert declared.pieces[1][0][2] > order
+    for rule in (
+        Quadrature.build(bands, order=order, breaks_nm=knots),
+        Quadrature.build(bands, order=order, breaks_nm=knots, field_lod=0),
+        Quadrature.build(
+            bands, Field(0.0), order=order, breaks_nm=knots, field_lod=None
+        ),
+    ):
+        assert rule.pieces == pieces
+        for i, row in enumerate(pieces):
+            nodes, weights = legendre_row(row)
+            np.testing.assert_array_equal(
+                rule.nodes_nm[i, : nodes.size], nodes.astype(precision)
+            )
+            np.testing.assert_array_equal(
+                rule.weights()[i, : nodes.size], weights.astype(precision)
+            )
+            np.testing.assert_array_equal(rule.weights()[i, nodes.size :], 0.0)
+    declared = Quadrature.build(
+        bands, Field(0.5), Field(2.0), order=order, field_lod=None
+    )
+    assert declared.pieces == Quadrature.build(bands, order=order, field_lod=2.0).pieces
+    assert declared.pieces[1][0][2] > order
 
 
 def test_layout_floor_on_eleven_twenty_percent_bands():
@@ -378,6 +374,7 @@ def test_layout_floor_on_eleven_twenty_percent_bands():
     }
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
     """Fails if padding carries weight, a slice loses its layout, or jit differs.
 
@@ -388,57 +385,53 @@ def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
     (readable inside a traced function), equal on a rebuild and distinct for
     a slice, a different order and a hand-made rule (None).
     """
-    with jax.enable_x64():
-        bands = (BAND, Band(400.0, 500.0))
-        rule = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
-        counts = [sum(n for *_, n in row) for row in rule.pieces]
-        assert counts[0] != counts[1] and rule.nodes_nm.shape == (2, max(counts))
-        np.testing.assert_array_equal(np.asarray(rule.active).sum(-1), counts)
-        np.testing.assert_array_equal(np.asarray(rule.weights())[~rule.active], 0.0)
-        values = contrast(rule.nodes_nm)
-        padded = jnp.where(rule.active, values, jnp.nan)
-        seen = []
+    bands = (BAND, Band(400.0, 500.0))
+    rule = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
+    counts = [sum(n for *_, n in row) for row in rule.pieces]
+    assert counts[0] != counts[1] and rule.nodes_nm.shape == (2, max(counts))
+    np.testing.assert_array_equal(np.asarray(rule.active).sum(-1), counts)
+    np.testing.assert_array_equal(np.asarray(rule.weights())[~rule.active], 0.0)
+    values = contrast(rule.nodes_nm)
+    padded = jnp.where(rule.active, values, jnp.nan)
+    seen = []
 
-        def total(q, v):
-            seen.append(q.layout_digest)
-            return q.integrate(v)
+    def total(q, v):
+        seen.append(q.layout_digest)
+        return q.integrate(v)
 
-        joint = jax.jit(total)(rule, padded)
-        assert seen == [rule.layout_digest]
-        np.testing.assert_allclose(joint, rule.integrate(values), rtol=1e-15)
-        for i, band in enumerate(bands):
-            row = rule.band(i)
-            assert row.pieces == (rule.pieces[i],)
-            alone = Quadrature.build(
-                (band,), order=4, breaks_nm=(550.0,), field_lod=10.0
-            )
-            assert alone.pieces == row.pieces
-            expected = alone.integrate(contrast(alone.nodes_nm))
-            np.testing.assert_allclose(joint[i], expected[0], rtol=1e-13)
-            assert row.layout_digest != rule.layout_digest
-        constant = jnp.full(rule.nodes_nm.shape, 2.5)
-        np.testing.assert_allclose(rule.mean(constant), 2.5, rtol=1e-14)
-        rebuilt = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
-        assert (rule.digest, rule.layout_digest) == (
-            rebuilt.digest,
-            rebuilt.layout_digest,
-        )
-        other = Quadrature.build(bands, order=6, breaks_nm=(550.0,), field_lod=10.0)
-        assert other.layout_digest != rule.layout_digest
-        assert Quadrature(bands, rule.nodes_nm, rule.weights()).layout_digest is None
+    joint = jax.jit(total)(rule, padded)
+    assert seen == [rule.layout_digest]
+    np.testing.assert_allclose(joint, rule.integrate(values), rtol=1e-15)
+    for i, band in enumerate(bands):
+        row = rule.band(i)
+        assert row.pieces == (rule.pieces[i],)
+        alone = Quadrature.build((band,), order=4, breaks_nm=(550.0,), field_lod=10.0)
+        assert alone.pieces == row.pieces
+        expected = alone.integrate(contrast(alone.nodes_nm))
+        np.testing.assert_allclose(joint[i], expected[0], rtol=1e-13)
+        assert row.layout_digest != rule.layout_digest
+    constant = jnp.full(rule.nodes_nm.shape, 2.5)
+    np.testing.assert_allclose(rule.mean(constant), 2.5, rtol=1e-14)
+    rebuilt = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
+    assert (rule.digest, rule.layout_digest) == (
+        rebuilt.digest,
+        rebuilt.layout_digest,
+    )
+    other = Quadrature.build(bands, order=6, breaks_nm=(550.0,), field_lod=10.0)
+    assert other.layout_digest != rule.layout_digest
+    assert Quadrature(bands, rule.nodes_nm, rule.weights()).layout_digest is None
 
 
 def test_invalid_rules_are_refused():
     """Fails if a negative weight, a broken layout or an invalid field is accepted."""
-    with jax.enable_x64():
-        with pytest.raises(ValueError, match="nonnegative"):
-            Quadrature((BAND,), [[400.0, 600.0]], [[1.0, -1.0]])
-        with pytest.raises(ValueError, match="match nodes_nm"):
-            Quadrature((BAND,), [[400.0, 600.0]], [[1.0]])
-        with pytest.raises(ValueError, match="span"):
-            Quadrature((BAND,), [[500.0]], [[250.0]], [((LO_NM, 600.0, 1),)])
-        with pytest.raises(ValueError, match="more nodes"):
-            Quadrature((BAND,), [[500.0]], [[250.0]], [((LO_NM, HI_NM, 2),)])
-        for field_lod in (-1.0, np.nan, (1.0, 2.0)):
-            with pytest.raises(ValueError, match="field_lod"):
-                Quadrature.build((BAND,), field_lod=field_lod)
+    with pytest.raises(ValueError, match="nonnegative"):
+        Quadrature((BAND,), [[400.0, 600.0]], [[1.0, -1.0]])
+    with pytest.raises(ValueError, match="match nodes_nm"):
+        Quadrature((BAND,), [[400.0, 600.0]], [[1.0]])
+    with pytest.raises(ValueError, match="span"):
+        Quadrature((BAND,), [[500.0]], [[250.0]], [((LO_NM, 600.0, 1),)])
+    with pytest.raises(ValueError, match="more nodes"):
+        Quadrature((BAND,), [[500.0]], [[250.0]], [((LO_NM, HI_NM, 2),)])
+    for field_lod in (-1.0, np.nan, (1.0, 2.0)):
+        with pytest.raises(ValueError, match="field_lod"):
+            Quadrature.build((BAND,), field_lod=field_lod)
