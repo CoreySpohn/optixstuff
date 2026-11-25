@@ -260,11 +260,8 @@ def make_linear_speckle(epoch_d=0.0):
 
 @pytest.fixture
 def linear_speckle():
-    """Small asymmetric complex field; scoped x64, never import-order precision."""
-    import jax
-
-    with jax.enable_x64():
-        yield make_linear_speckle()
+    """Small asymmetric complex field in the active precision."""
+    return make_linear_speckle()
 
 
 @pytest.fixture

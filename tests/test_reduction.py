@@ -121,6 +121,7 @@ LAYOUTS = {
 }
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_reduction_is_exact_below_the_order_and_misses_by_the_remainder(layout):
     """Fails if a node-effective value is not the source's moment on its node.
@@ -138,14 +139,13 @@ def test_reduction_is_exact_below_the_order_and_misses_by_the_remainder(layout):
     rng = np.random.default_rng(0)
     knots = np.sort(np.concatenate(([495.0, 580.0], rng.uniform(495, 580, 60))))
     values = rng.uniform(0.5, 2.0, knots.size)
-    with jax.enable_x64():
-        rule = Quadrature.build(bands, order=order, breaks_nm=breaks)
-        table = Tabulated(knots, values)
-        reduction = Reduction.build(
-            rule, knots, degree=1, interpolant=table.spectral_interpolant()
-        )
-        assert reduction.kind == "table"
-        node_values = np.asarray(reduction.apply(table.values))
+    rule = Quadrature.build(bands, order=order, breaks_nm=breaks)
+    table = Tabulated(knots, values)
+    reduction = Reduction.build(
+        rule, knots, degree=1, interpolant=table.spectral_interpolant()
+    )
+    assert reduction.kind == "table"
+    node_values = np.asarray(reduction.apply(table.values))
     for w, row in enumerate(rule.pieces):
         count = sum(n for *_, n in row)
         np.testing.assert_array_equal(node_values[w, count:], node_values[w, 0])
@@ -181,6 +181,7 @@ def test_reduction_is_exact_below_the_order_and_misses_by_the_remainder(layout):
                 assert abs(estimate[w] - truth + remainder) < 1e-12 * abs(truth)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_fine_kind_integrates_a_product_of_two_tables():
     """Fails if the fine rule under-integrates a source of degree two between knots.
 
@@ -206,13 +207,12 @@ def test_fine_kind_integrates_a_product_of_two_tables():
     truth = np.sum(wx * product(x) * cubic(band)(x))
     knots = np.union1d(first, second)
     errors = {}
-    with jax.enable_x64():
-        rule = Quadrature.build((band,), order=4)
-        for degree in (2, 0):
-            reduction = Reduction.build(rule, ProductEdges(knots), degree=degree)
-            assert reduction.kind == "fine"
-            node_values = reduction.apply(product(np.asarray(reduction.fine_nm)))
-            errors[degree] = band_sums(rule, node_values, cubic(band))[0] / truth - 1
+    rule = Quadrature.build((band,), order=4)
+    for degree in (2, 0):
+        reduction = Reduction.build(rule, ProductEdges(knots), degree=degree)
+        assert reduction.kind == "fine"
+        node_values = reduction.apply(product(np.asarray(reduction.fine_nm)))
+        errors[degree] = band_sums(rule, node_values, cubic(band))[0] / truth - 1
     assert abs(errors[2]) < 1e-13
     assert abs(errors[0]) > 1e-7
 
@@ -242,6 +242,7 @@ def test_build_refuses_a_plain_host_grid_that_knots_refuse():
         ProductEdges(cases["strictly increasing"])
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     """Fails if transposing the interpolant differs from evaluating it on the fine rule.
 
@@ -258,25 +259,24 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     knots, values = phoenix
     band = Band(540.0, 595.0)
     response = cubic(band)
-    with jax.enable_x64():
-        rule = Quadrature.build((band,), order=4)
-        for method in ("linear", "cubic"):
-            table = Tabulated(knots, values, method)
-            composed = Reduction.build(
-                rule,
-                knots,
-                degree=table.spectral_degree,
-                interpolant=table.spectral_interpolant(),
-            )
-            fine = Reduction.build(rule, knots, degree=table.spectral_degree)
-            at_fine = table.spectral_interpolant()(
-                table.values, fine.fine_nm.ravel()
-            ).reshape(fine.fine_nm.shape)
-            np.testing.assert_allclose(
-                composed.apply(table.values), fine.apply(at_fine), rtol=1e-13
-            )
-            assert composed.nbytes < 0.1e6
-        node_values = np.asarray(composed.apply(table.values))[0]
+    rule = Quadrature.build((band,), order=4)
+    for method in ("linear", "cubic"):
+        table = Tabulated(knots, values, method)
+        composed = Reduction.build(
+            rule,
+            knots,
+            degree=table.spectral_degree,
+            interpolant=table.spectral_interpolant(),
+        )
+        fine = Reduction.build(rule, knots, degree=table.spectral_degree)
+        at_fine = table.spectral_interpolant()(
+            table.values, fine.fine_nm.ravel()
+        ).reshape(fine.fine_nm.shape)
+        np.testing.assert_allclose(
+            composed.apply(table.values), fine.apply(at_fine), rtol=1e-13
+        )
+        assert composed.nbytes < 0.1e6
+    node_values = np.asarray(composed.apply(table.values))[0]
     center = band.center_nm
 
     def shifted(a, b):
@@ -286,13 +286,12 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
         )
         return 1 + u - 0.7 * u**2 + 0.4 * u**3
 
-    with jax.enable_x64():
-        linear = Tabulated(knots, values)
-        exact = np.asarray(
-            Reduction.build(
-                rule, knots, degree=1, interpolant=linear.spectral_interpolant()
-            ).apply(linear.values)
-        )[0]
+    linear = Tabulated(knots, values)
+    exact = np.asarray(
+        Reduction.build(
+            rule, knots, degree=1, interpolant=linear.spectral_interpolant()
+        ).apply(linear.values)
+    )[0]
     truth = linear_integral(knots, values, band.low_nm, band.high_nm, shifted)
     weights = np.asarray(rule.weights_nm[0])
     nodes = np.asarray(rule.nodes_nm[0])
@@ -312,6 +311,7 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     assert node_values.shape == (4,)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_a_band_that_leaves_the_table_is_refused(phoenix):
     """Fails if a piece outside the table, or straddling its end, gets a value.
 
@@ -327,30 +327,29 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
     """
     knots, values = phoenix
     end = knots[-1]
-    with jax.enable_x64():
-        table = Tabulated(knots, values)
-        for band, breaks in (
-            (Band(650.0, 690.0), (end,)),
-            (Band(650.0, 690.0), ()),
-            (Band(530.0, 560.0), ()),
-        ):
-            rule = Quadrature.build((band,), order=4, breaks_nm=breaks)
-            named = float(knots[0] if band.low_nm < knots[0] else end)
-            with pytest.raises(ValueError, match=re.escape(f"at {named!r} nm")):
-                Reduction.build(rule, knots, degree=1)
-            with pytest.raises(ValueError, match="Tabulated: band"):
-                Resolution.build(rule, table)
-        for near in (np.nextafter(end, -np.inf), np.nextafter(end, np.inf)):
-            rule = Quadrature.build((Band(650.0, float(near)),), order=4)
+    table = Tabulated(knots, values)
+    for band, breaks in (
+        (Band(650.0, 690.0), (end,)),
+        (Band(650.0, 690.0), ()),
+        (Band(530.0, 560.0), ()),
+    ):
+        rule = Quadrature.build((band,), order=4, breaks_nm=breaks)
+        named = float(knots[0] if band.low_nm < knots[0] else end)
+        with pytest.raises(ValueError, match=re.escape(f"at {named!r} nm")):
             Reduction.build(rule, knots, degree=1)
-        beyond = float(end + 1.0)
-        rule = Quadrature.build((Band(650.0, beyond),), order=4)
-        message = f"to {beyond!r} nm leaves the table, which ends at {float(end)!r}"
-        with pytest.raises(ValueError, match=re.escape(message)):
-            Reduction.build(rule, knots, degree=1)
-        ended = Band(650.0, end)
-        rule, resolution = build((ended,), table, order=4)
-        node_values = resolution.rule(rule, table).apply(table.values)
+        with pytest.raises(ValueError, match="Tabulated: band"):
+            Resolution.build(rule, table)
+    for near in (np.nextafter(end, -np.inf), np.nextafter(end, np.inf)):
+        rule = Quadrature.build((Band(650.0, float(near)),), order=4)
+        Reduction.build(rule, knots, degree=1)
+    beyond = float(end + 1.0)
+    rule = Quadrature.build((Band(650.0, beyond),), order=4)
+    message = f"to {beyond!r} nm leaves the table, which ends at {float(end)!r}"
+    with pytest.raises(ValueError, match=re.escape(message)):
+        Reduction.build(rule, knots, degree=1)
+    ended = Band(650.0, end)
+    rule, resolution = build((ended,), table, order=4)
+    node_values = resolution.rule(rule, table).apply(table.values)
     response = cubic(ended)
 
     def shifted(a, b):
@@ -378,6 +377,7 @@ def airy(separation_lod, center_nm):
     return response
 
 
+@pytest.mark.float64_only(reason="float64 baseline for the float32 comparison")
 def test_traced_contract_of_the_operator(phoenix):
     """Fails if jit, vmap, grad, float32 or a band slice break the operator.
 
@@ -396,52 +396,45 @@ def test_traced_contract_of_the_operator(phoenix):
     knots, values = phoenix
     bands = (Band(540.0, 570.0), Band(570.0, 630.0))
     response = airy(6.0, 570.0)
-    with jax.enable_x64():
-        table = Tabulated(knots, values)
-        rule, resolution = build(bands, table, order=4, field_lod=10.0)
-        assert [row[0][2] for row in rule.pieces] == [6, 8]
-        weights = rule.weights_nm * response(np.asarray(rule.nodes_nm))
-        traces = []
+    table = Tabulated(knots, values)
+    rule, resolution = build(bands, table, order=4, field_lod=10.0)
+    assert [row[0][2] for row in rule.pieces] == [6, 8]
+    weights = rule.weights_nm * response(np.asarray(rule.nodes_nm))
+    traces = []
 
-        def value(resolution, table):
-            traces.append(1)
-            node_values = resolution.rule(rule, table).apply(table.values)
-            return jnp.sum(weights * node_values, -1)
-
-        eager = value(resolution, table)
-        jitted = eqx.filter_jit(value)
-        np.testing.assert_allclose(jitted(resolution, table), eager, rtol=1e-14)
-        scaled = eqx.tree_at(lambda t: t.values, table, 1.3 * table.values)
-        jitted(resolution, scaled)
-        assert len(traces) == 2  # one eager call and one trace
-        batch = jnp.stack([table.values, 0.5 * table.values, table.values**2])
-        mapped = jax.vmap(
-            lambda v: value(resolution, eqx.tree_at(lambda t: t.values, table, v))
-        )(batch)
-        loop = [
-            value(resolution, eqx.tree_at(lambda t: t.values, table, v)) for v in batch
-        ]
-        np.testing.assert_allclose(mapped, np.stack(loop), rtol=1e-14)
-        gradient = np.asarray(
-            jax.grad(
-                lambda v: value(
-                    resolution, eqx.tree_at(lambda t: t.values, table, v)
-                ).sum()
-            )(table.values)
-        )
+    def value(resolution, table):
+        traces.append(1)
         node_values = resolution.rule(rule, table).apply(table.values)
-        for i in range(len(bands)):
-            row = rule.band(i)
-            np.testing.assert_allclose(
-                row.integrate(
-                    node_values[i][None] * response(np.asarray(row.nodes_nm))
-                ),
-                eager[i][None],
-                rtol=1e-14,
-            )
-            with pytest.raises(LookupError, match="band slice"):
-                resolution.rule(row, table)
-        f32_truth = float(eager.sum())
+        return jnp.sum(weights * node_values, -1)
+
+    eager = value(resolution, table)
+    jitted = eqx.filter_jit(value)
+    np.testing.assert_allclose(jitted(resolution, table), eager, rtol=1e-14)
+    scaled = eqx.tree_at(lambda t: t.values, table, 1.3 * table.values)
+    jitted(resolution, scaled)
+    assert len(traces) == 2  # one eager call and one trace
+    batch = jnp.stack([table.values, 0.5 * table.values, table.values**2])
+    mapped = jax.vmap(
+        lambda v: value(resolution, eqx.tree_at(lambda t: t.values, table, v))
+    )(batch)
+    loop = [value(resolution, eqx.tree_at(lambda t: t.values, table, v)) for v in batch]
+    np.testing.assert_allclose(mapped, np.stack(loop), rtol=1e-14)
+    gradient = np.asarray(
+        jax.grad(
+            lambda v: value(resolution, eqx.tree_at(lambda t: t.values, table, v)).sum()
+        )(table.values)
+    )
+    node_values = resolution.rule(rule, table).apply(table.values)
+    for i in range(len(bands)):
+        row = rule.band(i)
+        np.testing.assert_allclose(
+            row.integrate(node_values[i][None] * response(np.asarray(row.nodes_nm))),
+            eager[i][None],
+            rtol=1e-14,
+        )
+        with pytest.raises(LookupError, match="band slice"):
+            resolution.rule(row, table)
+    f32_truth = float(eager.sum())
     for j in (
         int(np.searchsorted(knots, 555.0)),
         int(np.searchsorted(knots, 570.0)),
@@ -467,16 +460,18 @@ def test_traced_contract_of_the_operator(phoenix):
                     )
                     expected += np.sum(wx * shape * lagrange(x))
         np.testing.assert_allclose(gradient[j], expected, rtol=1e-10)
-    table32 = Tabulated(knots, values)
-    rule32, resolution32 = build(bands, table32, order=4, field_lod=10.0)
-    assert rule32.weights_nm.dtype == jnp.float32
-    node_values = resolution32.rule(rule32, table32).apply(table32.values)
-    weights32 = rule32.weights_nm * response(np.asarray(rule32.nodes_nm))
-    np.testing.assert_allclose(
-        float(jnp.sum(weights32 * node_values)), f32_truth, rtol=1e-5
-    )
+    with jax.enable_x64(False):
+        table32 = Tabulated(knots, values)
+        rule32, resolution32 = build(bands, table32, order=4, field_lod=10.0)
+        assert rule32.weights_nm.dtype == jnp.float32
+        node_values = resolution32.rule(rule32, table32).apply(table32.values)
+        weights32 = rule32.weights_nm * response(np.asarray(rule32.nodes_nm))
+        np.testing.assert_allclose(
+            float(jnp.sum(weights32 * node_values)), f32_truth, rtol=1e-5
+        )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     """Fails if a source can be integrated by a rule built for another table.
 
@@ -493,58 +488,55 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     """
     knots, values = phoenix
     band = Band(560.0, 580.0)
-    with jax.enable_x64():
-        star = Tabulated(knots, values)
-        twin = Tabulated(knots, 2 * values)
-        other = Tabulated(knots + 0.001, values)
-        rule, resolution = build((band,), star, twin, order=4)
-        assert len(resolution.rules) == 1
-        assert isinstance(star, SpectralTable)
+    star = Tabulated(knots, values)
+    twin = Tabulated(knots, 2 * values)
+    other = Tabulated(knots + 0.001, values)
+    rule, resolution = build((band,), star, twin, order=4)
+    assert len(resolution.rules) == 1
+    assert isinstance(star, SpectralTable)
 
-        @eqx.filter_jit
-        def read(resolution, table):
-            return resolution.rule(rule, table).apply(table.values)
+    @eqx.filter_jit
+    def read(resolution, table):
+        return resolution.rule(rule, table).apply(table.values)
 
-        np.testing.assert_array_equal(
-            read(resolution, twin), 2 * read(resolution, star)
-        )
-        with pytest.raises(LookupError, match="no rule for Tabulated"):
-            read(resolution, other)
-        with pytest.raises(LookupError, match="no rule for Tabulated"):
-            resolution.rule(rule, other)
-        hand_made = Quadrature(rule.bands, rule.nodes_nm, rule.weights_nm)
-        with pytest.raises(LookupError, match="hand-made"):
-            resolution.rule(hand_made, star)
+    np.testing.assert_array_equal(read(resolution, twin), 2 * read(resolution, star))
+    with pytest.raises(LookupError, match="no rule for Tabulated"):
+        read(resolution, other)
+    with pytest.raises(LookupError, match="no rule for Tabulated"):
+        resolution.rule(rule, other)
+    hand_made = Quadrature(rule.bands, rule.nodes_nm, rule.weights_nm)
+    with pytest.raises(LookupError, match="hand-made"):
+        resolution.rule(hand_made, star)
 
-        @jax.jit
-        def traced_table(wavelength_nm):
-            resolution.rule(rule, Tabulated(wavelength_nm, values))
+    @jax.jit
+    def traced_table(wavelength_nm):
+        resolution.rule(rule, Tabulated(wavelength_nm, values))
 
-        with pytest.raises(TypeError, match="concrete"):
-            traced_table(jnp.asarray(knots))
-        assert jax.tree.leaves(star) == [star.values]
-        with pytest.raises(TypeError, match="not a leaf"):
-            eqx.tree_at(lambda t: t.knots, star, Knots(knots + 0.01))
+    with pytest.raises(TypeError, match="concrete"):
+        traced_table(jnp.asarray(knots))
+    assert jax.tree.leaves(star) == [star.values]
+    with pytest.raises(TypeError, match="not a leaf"):
+        eqx.tree_at(lambda t: t.knots, star, Knots(knots + 0.01))
 
-        inside = knots[(knots > band.low_nm) & (knots < band.high_nm)]
-        exact_rule = Quadrature.build((band,), order=4, breaks_nm=inside)
-        identity = Resolution.build(exact_rule, star).rule(exact_rule, star)
-        assert identity.kind == "identity" and identity.nbytes == 0
-        coarse = Quadrature.build((band,), order=2, breaks_nm=inside)
-        assert Reduction.build(coarse, knots, degree=3).kind == "fine"
-        node_values = identity.apply(
-            np.interp(np.asarray(exact_rule.nodes_nm), knots, values)
-        )
+    inside = knots[(knots > band.low_nm) & (knots < band.high_nm)]
+    exact_rule = Quadrature.build((band,), order=4, breaks_nm=inside)
+    identity = Resolution.build(exact_rule, star).rule(exact_rule, star)
+    assert identity.kind == "identity" and identity.nbytes == 0
+    coarse = Quadrature.build((band,), order=2, breaks_nm=inside)
+    assert Reduction.build(coarse, knots, degree=3).kind == "fine"
+    node_values = identity.apply(
+        np.interp(np.asarray(exact_rule.nodes_nm), knots, values)
+    )
 
-        exposure = Exposure(0.0, 0.0, rule, resolution=resolution)
-        np.testing.assert_array_equal(
-            eqx.filter_jit(
-                lambda e, t: e.resolution.rule(e.quadrature, t).apply(t.values)
-            )(exposure, star),
-            read(resolution, star),
-        )
-        with pytest.raises(ValueError, match="another quadrature"):
-            Exposure(0.0, 0.0, exact_rule, resolution=resolution)
+    exposure = Exposure(0.0, 0.0, rule, resolution=resolution)
+    np.testing.assert_array_equal(
+        eqx.filter_jit(lambda e, t: e.resolution.rule(e.quadrature, t).apply(t.values))(
+            exposure, star
+        ),
+        read(resolution, star),
+    )
+    with pytest.raises(ValueError, match="another quadrature"):
+        Exposure(0.0, 0.0, exact_rule, resolution=resolution)
 
     def shifted(a, b):
         u = Polynomial(
@@ -574,6 +566,7 @@ def _reduce(rule, knots):
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_breaks_that_differ_by_rounding_are_one_break_and_the_reduction_is_finite():
     """Fails if breaks that differ by rounding make a piece of zero width.
 
@@ -587,29 +580,28 @@ def test_breaks_that_differ_by_rounding_are_one_break_and_the_reduction_is_finit
     """
     near = float(np.nextafter(950.0, 0.0))
     band, knots = Band(900.0, 1000.0), np.linspace(890.0, 1010.0, 41)
-    with jax.enable_x64():
-        merged = Quadrature.build((band,), _Declares(near), breaks_nm=[950.0])
-        reverse = Quadrature.build((band,), _Declares(950.0), breaks_nm=[near])
-        both = Quadrature.build((band,), _Declares(950.0, near))
-        for single, kept in (
-            (Quadrature.build((band,), breaks_nm=[950.0]), near),
-            (Quadrature.build((band,), _Declares(near)), near),
-        ):
-            assert len(merged.pieces[0]) == len(single.pieces[0]) == 2
-            np.testing.assert_allclose(merged.nodes_nm, single.nodes_nm, rtol=1e-12)
-            np.testing.assert_allclose(merged.weights_nm, single.weights_nm, rtol=1e-12)
-            assert merged.pieces[0][0][1] == kept
-        assert reverse.pieces[0][0][1] == 950.0
-        assert both.pieces[0][0][1] == near
-        edge_band = Band(900.0, 950.0)
-        edges = (float(np.nextafter(950.0, 0.0)), float(np.nextafter(900.0, 1000.0)))
-        trimmed = Quadrature.build((edge_band,), breaks_nm=edges)
-        plain = Quadrature.build((edge_band,))
-        assert trimmed.pieces == plain.pieces == (((900.0, 950.0, 4),),)
-        np.testing.assert_array_equal(trimmed.nodes_nm, plain.nodes_nm)
-        for rule in (merged, reverse, both, trimmed):
-            assert np.isfinite(np.asarray(_reduce(rule, knots).blocks)).all()
-            assert (np.asarray(rule.weights_nm)[:, :4] > 0).all()
+    merged = Quadrature.build((band,), _Declares(near), breaks_nm=[950.0])
+    reverse = Quadrature.build((band,), _Declares(950.0), breaks_nm=[near])
+    both = Quadrature.build((band,), _Declares(950.0, near))
+    for single, kept in (
+        (Quadrature.build((band,), breaks_nm=[950.0]), near),
+        (Quadrature.build((band,), _Declares(near)), near),
+    ):
+        assert len(merged.pieces[0]) == len(single.pieces[0]) == 2
+        np.testing.assert_allclose(merged.nodes_nm, single.nodes_nm, rtol=1e-12)
+        np.testing.assert_allclose(merged.weights_nm, single.weights_nm, rtol=1e-12)
+        assert merged.pieces[0][0][1] == kept
+    assert reverse.pieces[0][0][1] == 950.0
+    assert both.pieces[0][0][1] == near
+    edge_band = Band(900.0, 950.0)
+    edges = (float(np.nextafter(950.0, 0.0)), float(np.nextafter(900.0, 1000.0)))
+    trimmed = Quadrature.build((edge_band,), breaks_nm=edges)
+    plain = Quadrature.build((edge_band,))
+    assert trimmed.pieces == plain.pieces == (((900.0, 950.0, 4),),)
+    np.testing.assert_array_equal(trimmed.nodes_nm, plain.nodes_nm)
+    for rule in (merged, reverse, both, trimmed):
+        assert np.isfinite(np.asarray(_reduce(rule, knots).blocks)).all()
+        assert (np.asarray(rule.weights_nm)[:, :4] > 0).all()
 
 
 def test_reduction_refuses_a_piece_that_is_too_narrow_or_has_equal_nodes():
@@ -620,29 +612,29 @@ def test_reduction_refuses_a_piece_that_is_too_narrow_or_has_equal_nodes():
     """
     band, knots = Band(900.0, 1000.0), np.linspace(890.0, 1010.0, 41)
     near = float(np.nextafter(950.0, 0.0))
-    with jax.enable_x64():
-        for edge, nodes in (
-            (950.0, [925.0, 950.0, 975.0]),
-            (near, [925.0, 950.0, 975.0]),
-        ):
-            rule = Quadrature(
-                (band,),
-                [nodes],
-                [[25.0, 1e-13, 75.0]],
-                pieces=[[(900.0, edge, 1), (edge, 950.0, 1), (950.0, 1000.0, 1)]],
-            )
-            with pytest.raises(ValueError, match="narrower than"):
-                _reduce(rule, knots)
-        coincident = Quadrature(
+    for edge, nodes in (
+        (950.0, [925.0, 950.0, 975.0]),
+        (near, [925.0, 950.0, 975.0]),
+    ):
+        rule = Quadrature(
             (band,),
-            [[925.0, 950.0, 950.0, 975.0]],
-            [[50.0, 25.0, 25.0, 50.0]],
-            pieces=[[(900.0, 950.0, 1), (950.0, 1000.0, 3)]],
+            [nodes],
+            [[25.0, 1e-13, 75.0]],
+            pieces=[[(900.0, edge, 1), (edge, 950.0, 1), (950.0, 1000.0, 1)]],
         )
-        with pytest.raises(ValueError, match="not distinct"):
-            _reduce(coincident, knots)
+        with pytest.raises(ValueError, match="narrower than"):
+            _reduce(rule, knots)
+    coincident = Quadrature(
+        (band,),
+        [[925.0, 950.0, 950.0, 975.0]],
+        [[50.0, 25.0, 25.0, 50.0]],
+        pieces=[[(900.0, 950.0, 1), (950.0, 1000.0, 3)]],
+    )
+    with pytest.raises(ValueError, match="not distinct"):
+        _reduce(coincident, knots)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_reduction_cache_separates_rules_with_equal_pieces_and_other_weights():
     """Fails if a rule with the pieces of another but other weights reuses its operator.
 
@@ -655,28 +647,27 @@ def test_reduction_cache_separates_rules_with_equal_pieces_and_other_weights():
     """
     band, knots = Band(500.0, 560.0), np.linspace(490.0, 570.0, 33)
     interpolant = lambda v, w: jnp.interp(w, knots, v)  # noqa: E731
-    with jax.enable_x64():
-        base = Quadrature.build((band,), breaks_nm=[530.0], order=3)
-        weights = np.asarray(base.weights_nm).copy()
-        weights[0, 1] += 1e-3
-        other = Quadrature((band,), base.nodes_nm, weights, base.pieces)
-        assert other.layout_digest == base.layout_digest
-        truth = {
-            name: np.asarray(_build_arrays(rule, knots, 1, interpolant)[2]["blocks"])
-            for name, rule in (("base", base), ("other", other))
-        }
-        scale = np.abs(truth["base"]).max()
-        assert np.abs(truth["base"] - truth["other"]).max() > 1e-6 * scale
-        for order in (("base", "other"), ("other", "base")):
-            rules = {"base": base, "other": other}
-            _RULE_CACHE.clear()
-            for name in order:
-                reduction = Reduction.build(
-                    rules[name], knots, degree=1, interpolant=interpolant
-                )
-                np.testing.assert_allclose(
-                    reduction.blocks, truth[name], rtol=0, atol=1e-14 * scale
-                )
+    base = Quadrature.build((band,), breaks_nm=[530.0], order=3)
+    weights = np.asarray(base.weights_nm).copy()
+    weights[0, 1] += 1e-3
+    other = Quadrature((band,), base.nodes_nm, weights, base.pieces)
+    assert other.layout_digest == base.layout_digest
+    truth = {
+        name: np.asarray(_build_arrays(rule, knots, 1, interpolant)[2]["blocks"])
+        for name, rule in (("base", base), ("other", other))
+    }
+    scale = np.abs(truth["base"]).max()
+    assert np.abs(truth["base"] - truth["other"]).max() > 1e-6 * scale
+    for order in (("base", "other"), ("other", "base")):
+        rules = {"base": base, "other": other}
+        _RULE_CACHE.clear()
+        for name in order:
+            reduction = Reduction.build(
+                rules[name], knots, degree=1, interpolant=interpolant
+            )
+            np.testing.assert_allclose(
+                reduction.blocks, truth[name], rtol=0, atol=1e-14 * scale
+            )
 
 
 def test_resolution_refuses_a_quadrature_with_the_layout_and_other_weights(phoenix):
@@ -689,14 +680,13 @@ def test_resolution_refuses_a_quadrature_with_the_layout_and_other_weights(phoen
     """
     knots = np.linspace(490.0, 570.0, 33)
     table = Tabulated(knots, np.linspace(1.0, 2.0, knots.size))
-    with jax.enable_x64():
-        base = Quadrature.build((Band(500.0, 560.0),), breaks_nm=[530.0], order=3)
-        weights = np.asarray(base.weights_nm).copy()
-        weights[0, 1] += 1e-3
-        other = Quadrature((base.bands[0],), base.nodes_nm, weights, base.pieces)
-        resolution = Resolution.build(base, table)
-        assert resolution.rule(base, table).kind == "table"
-        with pytest.raises(LookupError, match="other nodes or weights"):
-            resolution.rule(other, table)
-        with pytest.raises(ValueError, match="share a layout"):
-            Resolution.build((base, other), table)
+    base = Quadrature.build((Band(500.0, 560.0),), breaks_nm=[530.0], order=3)
+    weights = np.asarray(base.weights_nm).copy()
+    weights[0, 1] += 1e-3
+    other = Quadrature((base.bands[0],), base.nodes_nm, weights, base.pieces)
+    resolution = Resolution.build(base, table)
+    assert resolution.rule(base, table).kind == "table"
+    with pytest.raises(LookupError, match="other nodes or weights"):
+        resolution.rule(other, table)
+    with pytest.raises(ValueError, match="share a layout"):
+        Resolution.build((base, other), table)

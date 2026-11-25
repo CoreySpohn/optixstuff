@@ -12,13 +12,6 @@ from optixstuff.detector import _floored
 from optixstuff.spectral import Band, Quadrature
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _float64():
-    """Hold the algebra to float64 rounding, scoped to this module."""
-    with jax.enable_x64():
-        yield
-
-
 def _detector():
     """Chromatic yield with every detector noise term switched on."""
     return Detector(
@@ -60,6 +53,7 @@ def _rates(bands=_BAND):
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_snr_is_detector_statistics_plus_residual_squares():
     """Fails if S/N departs from detector variance or residuals lose time squared.
 
@@ -102,6 +96,7 @@ def test_snr_is_detector_statistics_plus_residual_squares():
             ox.PostProcessing(0, bad, background_variance_factor=1.0)
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_exposure_time_inverts_snr_and_flags_unreachable_targets():
     """Fails if the solved time misses the target or an unreachable one looks valid.
 
@@ -183,6 +178,7 @@ def test_an_undefined_frame_time_reads_unreachable():
             assert np.isnan(solved.time_s).all()
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_per_band_targets_and_frame_times():
     """Fails if (W,) targets, times or frame times mix bands.
 
@@ -241,6 +237,7 @@ def test_background_variance_factor_one_is_the_unscaled_result():
         ox.PostProcessing(0.1, 0.2, 1.0)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_background_variance_factor_scales_everything_but_the_planet():
     """Fails if the factor touches the planet shot noise or misses a background.
 
@@ -328,6 +325,7 @@ def test_ayo_science_time_from_dumped_rates():
     np.testing.assert_allclose(once.time_s, [215336.1], rtol=1e-6)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_trailing_batch_axes_broadcast_against_the_band_axis():
     """Fails if rate fields with a trailing batch axis break the calculation.
 

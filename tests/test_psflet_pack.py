@@ -109,14 +109,13 @@ def test_pack_accepts_uniform_float32_offsets(step):
     """Fails if rounding in the step differences rejects a uniform grid."""
     # Starting away from zero lets three points expose the rounding.
     offsets = (step * np.arange(12, 15)).astype(np.float32)
-    with jax.enable_x64(False):
-        pack = PsfletPack(
-            templates=np.ones((1, 1, 3, 3), dtype=np.float32),
-            offsets=offsets,
-            wavelengths_nm=[650.0],
-            field_xy=[[0, 0]],
-            template_origin=TEMPLATE_ORIGIN,
-        )
+    pack = PsfletPack(
+        templates=np.ones((1, 1, 3, 3), dtype=np.float32),
+        offsets=offsets,
+        wavelengths_nm=[650.0],
+        field_xy=[[0, 0]],
+        template_origin=TEMPLATE_ORIGIN,
+    )
     np.testing.assert_array_equal(pack.offsets, offsets)
 
 

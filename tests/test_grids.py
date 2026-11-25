@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.constants import arcsec2rad
+from hwoutils.precision import complex_of
+from hwoutils.testing import ulps
 
 from optixstuff.grids import (
     Frame,
@@ -23,9 +25,8 @@ from optixstuff.grids import (
 
 
 @pytest.fixture(autouse=True, scope="module")
-def precision():
-    with jax.enable_x64():
-        yield
+def _clear_caches():
+    yield
     jax.clear_caches()
 
 
@@ -71,6 +72,7 @@ def test_raster_corner_and_extent(shape, center, basis, extent):
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     ("basis", "corners", "x", "y"),
     [
@@ -97,6 +99,7 @@ def test_affine_grid_corners_and_radius(basis, corners, x, y):
     np.testing.assert_allclose(grid.radius(), np.hypot(x, y), atol=1e-15, rtol=0)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_frame_conversion_and_native_geometry(frame):
     """Fails if lambda/D uses wrong wavelength units or a duplicated constant.
 
@@ -134,6 +137,7 @@ def test_frame_conversion_and_native_geometry(frame):
         replace(frame, coordinate_model="tangent")
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_sky_orientation_parity_anchor_and_roundtrip():
     """Fails on an east sign error, reversed PA, or use of inverse as forward.
 
@@ -221,6 +225,7 @@ def test_validation_rejects_inconsistent_shapes_and_geometry(frame):
         _ = replace(grid, basis=((1, 0), (0, 2))).step
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_cell_solid_angle_and_measures():
     """Fails if radiance integrates over square arcseconds or scales twice."""
     # One full turn is 2*pi radians, 360 degrees, or 360*3600 arcseconds.
@@ -274,6 +279,7 @@ def test_resample_identity_with_leading_axes():
         assert actual.leading_axes == image.leading_axes
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_interior_flux_on_integer_regrid():
     """Fails if regridding drops or duplicates integrated source flux.
 
@@ -322,6 +328,7 @@ def test_resample_half_pixel_center_shift_matches_linear_ramp():
         )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_composes_anisotropic_rotation_and_orientation():
     """Fails if basis columns, inverse mapping, or orientation order are swapped.
 
@@ -365,7 +372,7 @@ def test_resample_composes_anisotropic_rotation_and_orientation():
     np.testing.assert_allclose(resample(flux, coarse).data.sum(), 4, rtol=0, atol=3e-14)
 
 
-def test_band_limited_periodic_exactness():
+def test_band_limited_periodic_exactness(precision):
     """Fails on phase, axis, pixel-area, or sinc normalization errors.
 
     Basis: exact sinusoidal point values and analytic rectangular integrals;
@@ -405,31 +412,32 @@ def test_band_limited_periodic_exactness():
             + 0.4 * np.cos(2 * np.pi * fy * y - 0.7) * np.sinc(fy * width_y)
         )
 
-    for dtype in (jnp.float32, jnp.float64):
-        for measure in (Measure.density("grid"), Measure.integral()):
-            source_area = 0.4 * 0.6 if measure == Measure.integral() else 1
-            image = Image(
-                jnp.asarray(field(source) * source_area, dtype=dtype),
-                source,
-                (),
-                measure,
-                "flux",
-                "band_limited",
+    dtype = precision
+    for measure in (Measure.density("grid"), Measure.integral()):
+        source_area = 0.4 * 0.6 if measure == Measure.integral() else 1
+        image = Image(
+            jnp.asarray(field(source) * source_area, dtype=dtype),
+            source,
+            (),
+            measure,
+            "flux",
+            "band_limited",
+        )
+        # Keep complete boxes inside the footprint for this periodic oracle.
+        shifted = replace(source, shape=(5, 6), center_x=2.57, center_y=1.31)
+        for grid in (target, shifted):
+            expected = field(grid)
+            if measure == Measure.integral():
+                dx, dy = grid.basis[0][0], grid.basis[1][1]
+                expected = field(grid, dx, dy) * dx * dy
+            actual = resample(image, grid, pad_factor=1)
+            assert actual.data.dtype == dtype
+            np.testing.assert_allclose(
+                actual.data, expected, rtol=200 * np.finfo(dtype).eps, atol=0
             )
-            # Keep complete boxes inside the footprint for this periodic oracle.
-            shifted = replace(source, shape=(5, 6), center_x=2.57, center_y=1.31)
-            for grid in (target, shifted):
-                expected = field(grid)
-                if measure == Measure.integral():
-                    dx, dy = grid.basis[0][0], grid.basis[1][1]
-                    expected = field(grid, dx, dy) * dx * dy
-                actual = resample(image, grid, pad_factor=1)
-                assert actual.data.dtype == dtype
-                np.testing.assert_allclose(
-                    actual.data, expected, rtol=200 * np.finfo(dtype).eps, atol=0
-                )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_band_limited_metadata_and_overrides():
     """Fails if reconstruction metadata disappears or overrides are ignored.
 
@@ -495,7 +503,7 @@ def test_band_limited_metadata_and_overrides():
         resample(oriented, replace(source, orientation=SkyOrientation(27)))
 
 
-def test_band_limited_period_flux_and_nyquist():
+def test_band_limited_period_flux_and_nyquist(precision):
     """Fails if box integration loses DC flux or mixes real Nyquist axes.
 
     Basis: with pad_factor=1 the footprint is exactly one Fourier period, whose
@@ -506,25 +514,25 @@ def test_band_limited_period_flux_and_nyquist():
     """
     source = PixelGrid.regular((6, 8), 0.5, "arcsec")
     rng = np.random.default_rng(0)
-    for dtype in (jnp.float32, jnp.float64):
-        image = Image(
-            jnp.asarray(rng.uniform(size=(2, 6, 8)), dtype=dtype),
-            source,
-            ("time",),
-            Measure.integral(),
-            "flux",
-            "band_limited",
+    dtype = precision
+    image = Image(
+        jnp.asarray(rng.uniform(size=(2, 6, 8)), dtype=dtype),
+        source,
+        ("time",),
+        Measure.integral(),
+        "flux",
+        "band_limited",
+    )
+    for shape, step in (((18, 24), 1 / 3), ((6, 8), 1)):
+        target = PixelGrid.regular(shape, step, "arcsec")
+        actual = resample(image, target, pad_factor=1)
+        np.testing.assert_allclose(
+            actual.data.sum(axis=(-2, -1)),
+            image.data.sum(axis=(-2, -1)),
+            rtol=100 * np.finfo(dtype).eps,
+            atol=0,
         )
-        for shape, step in (((18, 24), 1 / 3), ((6, 8), 1)):
-            target = PixelGrid.regular(shape, step, "arcsec")
-            actual = resample(image, target, pad_factor=1)
-            np.testing.assert_allclose(
-                actual.data.sum(axis=(-2, -1)),
-                image.data.sum(axis=(-2, -1)),
-                rtol=100 * np.finfo(dtype).eps,
-                atol=0,
-            )
-            assert actual.reconstruction == ("band_limited" if step < 0.5 else "linear")
+        assert actual.reconstruction == ("band_limited" if step < 0.5 else "linear")
     grid = PixelGrid.regular((4, 4), 1, "arcsec", center=(0, 0))
     rows, cols = np.indices((4, 4))
     checker = Image(
@@ -538,10 +546,14 @@ def test_band_limited_period_flux_and_nyquist():
     shifted = replace(grid, center_x=-0.2, center_y=-0.3)
     expected = np.cos(np.pi * (cols + 0.2)) * np.cos(np.pi * (rows + 0.3))
     np.testing.assert_allclose(
-        resample(checker, shifted, pad_factor=1).data, expected, rtol=0, atol=4e-15
+        resample(checker, shifted, pad_factor=1).data,
+        expected,
+        rtol=0,
+        atol=ulps(18, precision.type(1.0)),
     )
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 def test_band_limited_jit_and_transpose_gradient():
     """Fails if tracing changes values or the data derivative is not linear.
 
@@ -617,6 +629,7 @@ def _circle_square_areas(grid, radius):
     )
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_band_limited_airy_aperture(frame):
     """Fails if Nyquist PSF photometry uses a local interpolation kernel.
 
@@ -727,7 +740,7 @@ def test_local_kernels_zero_outside_footprint():
         )
 
 
-def test_band_limited_zero_wide_gaussian(frame):
+def test_band_limited_zero_wide_gaussian(frame, precision):
     """Fails if exterior target positions see periodic copies of a PSF.
 
     Basis: sigma=0.8 lambda/D at (1,0), sampled at 0.5 on 24x24, has its
@@ -743,44 +756,42 @@ def test_band_limited_zero_wide_gaussian(frame):
     source = PixelGrid.focal(24, 0.5, frame)
     x, y = map(np.asarray, source.coordinates())
     density = np.exp(-((x - 1) ** 2 + y**2) / (2 * 0.8**2))
-    for dtype in (jnp.float32, jnp.float64):
-        image = Image(
-            jnp.asarray(density * 0.5**2, dtype=dtype),
-            source,
-            (),
-            Measure.integral(),
-            "fraction",
-            "band_limited",
+    dtype = precision
+    image = Image(
+        jnp.asarray(density * 0.5**2, dtype=dtype),
+        source,
+        (),
+        Measure.integral(),
+        "fraction",
+        "band_limited",
+    )
+    for n, pitch in ((64, 0.25), (40, 0.85), (64, 0.85)):
+        target = PixelGrid.focal(n, pitch, frame)
+        result = np.asarray(resample(image, target).data)
+        source_sum = np.asarray(image.data).sum(dtype=np.float64)
+        np.testing.assert_allclose(
+            result.sum(dtype=np.float64),
+            source_sum,
+            rtol=16 * np.finfo(np.float32).eps,
+            atol=0,
         )
-        for n, pitch in ((64, 0.25), (40, 0.85), (64, 0.85)):
-            target = PixelGrid.focal(n, pitch, frame)
-            result = np.asarray(resample(image, target).data)
-            source_sum = np.asarray(image.data).sum(dtype=np.float64)
-            np.testing.assert_allclose(
-                result.sum(dtype=np.float64),
-                source_sum,
-                rtol=16 * np.finfo(np.float32).eps,
-                atol=0,
-            )
-            tx, ty = map(np.asarray, target.coordinates())
-            outside_centers = (abs(tx) > 6) | (abs(ty) > 6)
-            outside_boxes = (abs(tx) - pitch / 2 >= 6) | (abs(ty) - pitch / 2 >= 6)
-            assert outside_boxes.any()
-            np.testing.assert_array_equal(result[outside_boxes], 0)
-            points = resample(
-                replace(
-                    image, data=image.data / 0.5**2, measure=Measure.density("grid")
-                ),
-                target,
-            )
-            np.testing.assert_array_equal(np.asarray(points.data)[outside_centers], 0)
-            print(
-                f"Gaussian {dtype} {n}x{n} pitch={pitch}: relative flux error="
-                f"{result.sum(dtype=np.float64) / source_sum - 1:.9g}"
-            )
+        tx, ty = map(np.asarray, target.coordinates())
+        outside_centers = (abs(tx) > 6) | (abs(ty) > 6)
+        outside_boxes = (abs(tx) - pitch / 2 >= 6) | (abs(ty) - pitch / 2 >= 6)
+        assert outside_boxes.any()
+        np.testing.assert_array_equal(result[outside_boxes], 0)
+        points = resample(
+            replace(image, data=image.data / 0.5**2, measure=Measure.density("grid")),
+            target,
+        )
+        np.testing.assert_array_equal(np.asarray(points.data)[outside_centers], 0)
+        print(
+            f"Gaussian {dtype} {n}x{n} pitch={pitch}: relative flux error="
+            f"{result.sum(dtype=np.float64) / source_sum - 1:.9g}"
+        )
 
 
-def test_band_limited_zero_clipped_boxes():
+def test_band_limited_zero_clipped_boxes(precision):
     """Fails if a straddling box is masked by its center or uses its full width.
 
     Basis: pad_factor=1 makes a constant density exactly constant inside;
@@ -792,8 +803,8 @@ def test_band_limited_zero_clipped_boxes():
     """
     source = PixelGrid.regular((4, 4), 0.5, "arcsec")
     x, y = map(np.asarray, source.coordinates())
-    for dtype in (jnp.float32, jnp.complex128):
-        amplitude = 3 + 2j if dtype == jnp.complex128 else 3
+    for dtype in (precision, complex_of(precision)):
+        amplitude = 3 + 2j if jnp.issubdtype(dtype, jnp.complexfloating) else 3
         density = jnp.full(source.shape, amplitude, dtype=dtype)
         image = Image(
             density * 0.5**2, source, (), Measure.integral(), "flux", "band_limited"
@@ -836,6 +847,7 @@ def test_band_limited_zero_clipped_boxes():
             )
 
 
+@pytest.mark.float64_only(reason="finite-difference gradient reference")
 @pytest.mark.parametrize(
     ("measure", "reconstruction"),
     [
@@ -877,6 +889,7 @@ def test_traced_wavelength_resample_matches_host_and_differentiates(
     np.testing.assert_allclose(jax.grad(scalar)(600.0), fd, rtol=1e-6)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_traced_roll_orientation_matches_host_values():
     """Fails if a traced position angle disagrees with the host conversion."""
     east, north = jnp.array([0.3, -1.2]), jnp.array([0.7, 0.4])
@@ -900,6 +913,7 @@ def test_traced_roll_orientation_matches_host_values():
         SkyOrientation(float("nan"))
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_coverage_requires_whole_footprint_and_margin_matches_resample():
     """Fails if a straddling pixel counts as covered or a margin is too small.
 
@@ -1033,7 +1047,7 @@ def _assert_reads_agree(rec, width, margins, **case):
     scale = np.abs(full).max()
     assert covered.any()
     # Same linear combination of the same samples wherever no edge is read.
-    assert np.abs(cut - full)[covered].max() <= 64 * np.finfo(float).eps * scale
+    assert np.abs(cut - full)[covered].max() <= ulps(64, scale)
     n = crop_grid.shape[0]
     mx, my = margins
     outside = (
@@ -1138,10 +1152,7 @@ def test_coverage_read_margin_density_is_the_sampling_margin(width, rec):
     )
     sampling = coverage(crop_grid, detector, reconstruction_margin(rec))
     assert np.array_equal(covered, sampling)
-    assert (
-        np.abs(cut - full)[covered].max()
-        <= 64 * np.finfo(float).eps * np.abs(full).max()
-    )
+    assert np.abs(cut - full)[covered].max() <= ulps(64, np.abs(full).max())
 
 
 def test_coverage_read_margin_traced_basis_matches_host():

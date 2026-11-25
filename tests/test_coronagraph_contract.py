@@ -39,11 +39,10 @@ def coro(request, table):
 
 def test_single_wavelength_scale_follows_node(coro):
     """Single-wavelength fixtures select the node argument exactly, even traced."""
-    with jax.enable_x64():
-        node, center = jnp.array(490.0), jnp.array(505.0)
-        assert coro.band_averaged is False
-        assert coro.scale_wavelength_nm(node, center) is node
-        assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == node
+    node, center = jnp.array(490.0), jnp.array(505.0)
+    assert coro.band_averaged is False
+    assert coro.scale_wavelength_nm(node, center) is node
+    assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == node
 
 
 def test_band_average_has_one_native_map_and_scale():
@@ -51,16 +50,15 @@ def test_band_average_has_one_native_map_and_scale():
 
     The native table is a single array, so the two wavelength reads agree bitwise.
     """
-    with jax.enable_x64():
-        model = GaussianTableCoronagraph(band_averaged=True)
-        first = model.stellar_map(475.0, 0.15).data
-        second = model.stellar_map(510.0, 0.15).data
-        np.testing.assert_array_equal(first, second)
-        node, center = jnp.array(490.0), jnp.array(505.0)
-        for coro in (model, ox.MultiBandCoronagraph([model])):
-            assert coro.band_averaged is True
-            assert coro.scale_wavelength_nm(node, center) is center
-            assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == center
+    model = GaussianTableCoronagraph(band_averaged=True)
+    first = model.stellar_map(475.0, 0.15).data
+    second = model.stellar_map(510.0, 0.15).data
+    np.testing.assert_array_equal(first, second)
+    node, center = jnp.array(490.0), jnp.array(505.0)
+    for coro in (model, ox.MultiBandCoronagraph([model])):
+        assert coro.band_averaged is True
+        assert coro.scale_wavelength_nm(node, center) is center
+        assert eqx.filter_jit(coro.scale_wavelength_nm)(node, center) == center
 
 
 @pytest.mark.parametrize(
@@ -85,30 +83,27 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
     0.1125, a ratio of exactly 1.25 that float64 rounds 1.4e-17 above the
     limit; the band is admitted.
     """
-    with jax.enable_x64():
-        model = GaussianTableCoronagraph(bandpass=Band(475, 525), band_averaged=True)
-        instrument = make_instrument(model)
-        wide = Band(467.5, 532.5)
-        with pytest.raises(ValueError) as exc:
-            Quadrature.build([wide], instrument)
-        split = np.sqrt(467.5 * 532.5)
-        for expected in (
-            "467.5-532.5 nm",
-            "fractional width 0.13.",
-            "fractional width is 0.1.",
-            f"467.5-{split:.12g} nm",
-            f"{split:.12g}-532.5 nm",
-        ):
-            assert expected in str(exc.value)
-        assert Quadrature.build([wide], instrument, allow_wide_bands=True).bands == (
-            wide,
-        )
-        narrow = Band(470, 530)
-        assert Quadrature.build([narrow], instrument).bands == (narrow,)
-        edge = GaussianTableCoronagraph(bandpass=Band(382, 418), band_averaged=True)
-        limit = Band(377.5, 422.5)
-        assert limit.width_nm / limit.center_nm > 1.25 * (36 / 400)
-        assert Quadrature.build([limit], make_instrument(edge)).bands == (limit,)
+    model = GaussianTableCoronagraph(bandpass=Band(475, 525), band_averaged=True)
+    instrument = make_instrument(model)
+    wide = Band(467.5, 532.5)
+    with pytest.raises(ValueError) as exc:
+        Quadrature.build([wide], instrument)
+    split = np.sqrt(467.5 * 532.5)
+    for expected in (
+        "467.5-532.5 nm",
+        "fractional width 0.13.",
+        "fractional width is 0.1.",
+        f"467.5-{split:.12g} nm",
+        f"{split:.12g}-532.5 nm",
+    ):
+        assert expected in str(exc.value)
+    assert Quadrature.build([wide], instrument, allow_wide_bands=True).bands == (wide,)
+    narrow = Band(470, 530)
+    assert Quadrature.build([narrow], instrument).bands == (narrow,)
+    edge = GaussianTableCoronagraph(bandpass=Band(382, 418), band_averaged=True)
+    limit = Band(377.5, 422.5)
+    assert limit.width_nm / limit.center_nm > 1.25 * (36 / 400)
+    assert Quadrature.build([limit], make_instrument(edge)).bands == (limit,)
 
 
 def test_band_average_requires_one_covering_child():

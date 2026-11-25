@@ -12,54 +12,53 @@ from optixstuff.spectral import Band
 BANDS = (Band(450, 500), Band(500, 550))
 
 
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
-def test_frames_for_time(dtype):
+def test_frames_for_time(precision):
     """Fails if tolerance rounds down, subframes vanish, or JIT casts to integer.
 
     NumPy products in the working dtype give exact counts from the first
     covering candidate. The discrete count derivative is exactly zero.
     """
-    with jax.enable_x64():
-        integer = np.array(3.0, dtype=np.dtype(dtype))
-        ratios = np.array(
-            [
-                0.0,
-                0.1,
-                1.0,
-                3.0,
-                np.nextafter(integer, -np.inf, dtype=dtype),
-                np.nextafter(integer, np.inf, dtype=dtype),
-            ],
-            dtype=np.dtype(dtype),
-        )
-        plan = eqx.filter_jit(ox.frames_for_time)(
-            jnp.array(ratios), jnp.array(1.0, dtype=dtype)
-        )
-        np.testing.assert_array_equal(plan.n_frames, [0, 1, 1, 3, 3, 4])
-        assert jnp.issubdtype(plan.n_frames.dtype, jnp.floating)
-        rng = np.random.default_rng(0)
-        frame = rng.uniform(0.01, 100.0, 2000)
-        duration = rng.uniform(0.0, 1000.0, 2000) * frame
-        duration[:1000] = (
-            rng.integers(1, 1000, 1000)
-            * frame[:1000]
-            * (1 + rng.uniform(-2e-12, 2e-12, 1000))
-        )
-        frame, duration = frame.astype(dtype), duration.astype(dtype)
-        ceiling = np.ceil(duration / frame)
-        candidates = ceiling[:, None] + np.array([-1.0, 0.0, 1.0], dtype=dtype)
-        covers = (candidates >= 1) & (candidates * frame[:, None] >= duration[:, None])
-        expected = np.min(np.where(covers, candidates, np.inf), axis=1)
-        np.testing.assert_array_equal(
-            ox.frames_for_time(duration, frame).n_frames, expected
-        )
-        derivative = jax.vmap(jax.grad(lambda t: ox.frames_for_time(t, 1.0).n_frames))
-        np.testing.assert_array_equal(derivative(jnp.array(ratios)), 0.0)
+    dtype = precision
+    integer = np.array(3.0, dtype=dtype)
+    ratios = np.array(
+        [
+            0.0,
+            0.1,
+            1.0,
+            3.0,
+            np.nextafter(integer, -np.inf, dtype=dtype),
+            np.nextafter(integer, np.inf, dtype=dtype),
+        ],
+        dtype=np.dtype(dtype),
+    )
+    plan = eqx.filter_jit(ox.frames_for_time)(
+        jnp.array(ratios), jnp.array(1.0, dtype=dtype)
+    )
+    np.testing.assert_array_equal(plan.n_frames, [0, 1, 1, 3, 3, 4])
+    assert jnp.issubdtype(plan.n_frames.dtype, jnp.floating)
+    rng = np.random.default_rng(0)
+    frame = rng.uniform(0.01, 100.0, 2000)
+    duration = rng.uniform(0.0, 1000.0, 2000) * frame
+    duration[:1000] = (
+        rng.integers(1, 1000, 1000)
+        * frame[:1000]
+        * (1 + rng.uniform(-2e-12, 2e-12, 1000))
+    )
+    frame, duration = frame.astype(dtype), duration.astype(dtype)
+    ceiling = np.ceil(duration / frame)
+    candidates = ceiling[:, None] + np.array([-1.0, 0.0, 1.0], dtype=dtype)
+    covers = (candidates >= 1) & (candidates * frame[:, None] >= duration[:, None])
+    expected = np.min(np.where(covers, candidates, np.inf), axis=1)
+    np.testing.assert_array_equal(
+        ox.frames_for_time(duration, frame).n_frames, expected
+    )
+    derivative = jax.vmap(jax.grad(lambda t: ox.frames_for_time(t, 1.0).n_frames))
+    np.testing.assert_array_equal(derivative(jnp.array(ratios)), 0.0)
 
-        with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
-            ox.frames_for_time(jnp.ones((2, 1)), frame)
-        with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
-            ox.frames_for_time(jnp.ones(1), jnp.ones(2))
+    with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+        ox.frames_for_time(jnp.ones((2, 1)), frame)
+    with pytest.raises(ValueError, match=r"scalar.*\(W,\)"):
+        ox.frames_for_time(jnp.ones(1), jnp.ones(2))
 
 
 @pytest.mark.parametrize(
@@ -77,21 +76,44 @@ def test_frames_for_invalid_and_zero_time(make_plan):
 @pytest.mark.parametrize(
     ("dtype", "time_s", "frame_time_s", "expected"),
     [
-        (jnp.float32, 655360.25, 1.0, 655361),
-        (jnp.float64, 0.3, 0.1, 3),
-        (jnp.float64, 0.7, 0.1, 7),
+        pytest.param(
+            jnp.float32,
+            655360.25,
+            1.0,
+            655361,
+            marks=pytest.mark.float32_only(
+                reason="float32 frame count near a coarse spacing"
+            ),
+        ),
+        pytest.param(
+            jnp.float64,
+            0.3,
+            0.1,
+            3,
+            marks=pytest.mark.float64_only(
+                reason="float64 products land on the frame-count boundary"
+            ),
+        ),
+        pytest.param(
+            jnp.float64,
+            0.7,
+            0.1,
+            7,
+            marks=pytest.mark.float64_only(
+                reason="float64 products land on the frame-count boundary"
+            ),
+        ),
     ],
 )
 def test_frames_cover_the_request_in_the_working_dtype(
     dtype, time_s, frame_time_s, expected
 ):
     """Hand values give exact counts and catch tolerant or division-only rounding."""
-    with jax.enable_x64():
-        request = jnp.asarray(time_s, dtype=dtype)
-        plan = ox.frames_for_time(request, jnp.asarray(frame_time_s, dtype=dtype))
-        assert plan.n_frames == expected
-        assert plan.live_time_s >= request
-        assert (plan.n_frames - 1) * plan.frame_time_s < request
+    request = jnp.asarray(time_s, dtype=dtype)
+    plan = ox.frames_for_time(request, jnp.asarray(frame_time_s, dtype=dtype))
+    assert plan.n_frames == expected
+    assert plan.live_time_s >= request
+    assert (plan.n_frames - 1) * plan.frame_time_s < request
 
 
 def test_frames_cover_a_request_past_the_float32_integer_range():
@@ -388,8 +410,7 @@ def test_frame_plan_band_axis(detector_cls):
         det.draw(jax.random.key(0), rates, mismatched)
 
 
-@pytest.mark.parametrize("x64", [False, True])
-def test_detector_noise_fields_are_strong_leaves_of_the_active_dtype(x64):
+def test_detector_noise_fields_are_strong_leaves_of_the_active_dtype(precision):
     """Python numbers given to the detector are stored as strong float arrays.
 
     Truth source: definitional (the leaf rule: every float leaf is a strong array of
@@ -399,30 +420,28 @@ def test_detector_noise_fields_are_strong_leaves_of_the_active_dtype(x64):
     """
     from hwoutils.leaves import check_tree
 
-    with jax.enable_x64(x64):
-        det = ox.Detector(
-            pixel_scale_arcsec=0.01,
-            shape=(1, 1),
-            qe=0.9,
-            survival_fraction=0.95,
-            dark_current_e_per_pixel_s=1e-4,
-            clock_induced_charge_e_per_pixel_frame=1e-3,
-            read_noise_e_rms=0.0,
-            excess_noise_factor_sq=1.0,
-            read_time_s=0.1,
-        )
-        want = jnp.zeros(()).dtype
-        names = (
-            "_qe",
-            "survival_fraction",
-            "dark_current_e_per_pixel_s",
-            "clock_induced_charge_e_per_pixel_frame",
-            "read_noise_e_rms",
-            "excess_noise_factor_sq",
-            "read_time_s",
-        )
-        for name in names:
-            leaf = getattr(det, name)
-            assert isinstance(leaf, jax.Array), name
-            assert leaf.dtype == want and not leaf.weak_type, name
-        assert check_tree(det) == ()
+    det = ox.Detector(
+        pixel_scale_arcsec=0.01,
+        shape=(1, 1),
+        qe=0.9,
+        survival_fraction=0.95,
+        dark_current_e_per_pixel_s=1e-4,
+        clock_induced_charge_e_per_pixel_frame=1e-3,
+        read_noise_e_rms=0.0,
+        excess_noise_factor_sq=1.0,
+        read_time_s=0.1,
+    )
+    names = (
+        "_qe",
+        "survival_fraction",
+        "dark_current_e_per_pixel_s",
+        "clock_induced_charge_e_per_pixel_frame",
+        "read_noise_e_rms",
+        "excess_noise_factor_sq",
+        "read_time_s",
+    )
+    for name in names:
+        leaf = getattr(det, name)
+        assert isinstance(leaf, jax.Array), name
+        assert leaf.dtype == precision and not leaf.weak_type, name
+    assert check_tree(det) == ()

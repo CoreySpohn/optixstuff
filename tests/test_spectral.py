@@ -22,14 +22,13 @@ from optixstuff.spectral import (
 
 
 @pytest.fixture(autouse=True, scope="module")
-def precision():
-    with jax.enable_x64():
-        yield
+def _clear_caches():
+    yield
     jax.clear_caches()
 
 
 @given(lo=st.floats(100, 599), hi=st.floats(600, 2000))
-def test_band_operations_preserve_supplied_edges(lo, hi):
+def test_band_operations_preserve_supplied_edges(precision, lo, hi):
     """Fails if partitioning, building, slicing or integrating rounds an endpoint."""
     band = Band(lo, hi)
     for spacing in ("linear", "log"):
@@ -42,16 +41,18 @@ def test_band_operations_preserve_supplied_edges(lo, hi):
         for i, channel in enumerate(channels):
             row = rule.band(i)
             assert row.bands == (channel,)
-            assert float(row.weights()[0, 0]).hex() == channel.width_nm.hex()
-    with jax.enable_x64(False):
-        # Host support must survive even when device evaluation uses float32.
-        hat = Transmission.from_band(band)
-        assert float(hat.low_nm).hex() == lo.hex()
-        assert float(hat.high_nm).hex() == hi.hex()
+            assert (
+                float(row.weights()[0, 0]).hex()
+                == float(precision.type(channel.width_nm)).hex()
+            )
+    # Host support is preserved in both lanes.
     hat = Transmission.from_band(band)
     assert float(hat.low_nm).hex() == lo.hex()
     assert float(hat.high_nm).hex() == hi.hex()
-    assert float(hat.integrate(band, order=1)).hex() == (hi - lo).hex()
+    assert (
+        float(hat.integrate(band, order=1)).hex()
+        == float(precision.type(hi - lo)).hex()
+    )
 
 
 def test_band_validates_geometry():
@@ -68,6 +69,7 @@ def test_band_validates_geometry():
         band.channels(3, "invalid")
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_split_quadrature_weights_and_piecewise_linear_integral():
     """Fails if kinks are unsplit or padding carries weight.
 
@@ -113,6 +115,7 @@ def test_split_quadrature_weights_and_piecewise_linear_integral():
         np.testing.assert_allclose(row.integrate(vector[1:2]), result[1:2], rtol=3e-15)
 
 
+@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 def test_smooth_integrand_converges_over_three_orders():
     """Fails if order is ignored or weights have the wrong normalization.
 
@@ -148,6 +151,7 @@ def test_monochromatic_selects_an_integrated_rate():
         rebin_bands(rule.integrate(rates), rule.bands, rule.bands)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_polynomial_exactness_with_declared_breaks():
     """Fails if the order-four rule loses degree-seven exactness on any piece."""
     band = Band(1.0, 6.0)
@@ -161,6 +165,7 @@ def test_polynomial_exactness_with_declared_breaks():
     np.testing.assert_allclose(rule.integrate(values), [exact], rtol=4e-15, atol=0)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_spectral_breaks_require_declarations_and_split_one_node_rule_at_kink():
     """Fails if undeclared models are accepted or an interpolation kink is missed."""
     spectrum = Transmission([500, 537, 580], [1, 3, 2])
@@ -187,6 +192,7 @@ def test_spectral_breaks_require_declarations_and_split_one_node_rule_at_kink():
     assert abs(float(unsplit.integrate(spectrum(unsplit.nodes_nm))[0]) - exact) > 1
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_conserves_total_flux():
     """Fails if overlap weights lose flux; float64 floor of 8 eps on exact tiling."""
     src_edges = Band(600.0, 700.0).channels(24, "log")
@@ -200,6 +206,7 @@ def test_rebin_conserves_total_flux():
     assert jnp.allclose(out.sum(), values.sum(), rtol=2e-15, atol=0)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_nested_grid_equals_reshape_sum():
     """On an exactly nested grid the overlap rebin reduces to reshape-sum."""
     edges = Band(600.0, 700.0).channels(8, "log")
@@ -210,6 +217,7 @@ def test_rebin_nested_grid_equals_reshape_sum():
     assert jnp.allclose(out, vals.reshape(n, 4).sum(axis=1), rtol=1e-10)
 
 
+@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_along_cube_axis():
     """Rebinning applies along the chosen axis of a (n_wav, ny, nx) cube."""
     src_edges = Band(600.0, 700.0).channels(12, "log")

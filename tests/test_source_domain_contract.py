@@ -21,9 +21,8 @@ from optixstuff.grids import PixelGrid
 
 
 @pytest.fixture(autouse=True, scope="module")
-def precision():
-    with jax.enable_x64():
-        yield
+def _clear_caches():
+    yield
     jax.clear_caches()
 
 
@@ -146,6 +145,11 @@ FAILING: dict[str, str] = {}
             marks=(
                 [pytest.mark.xfail(strict=True, reason=FAILING[name])]
                 if name in FAILING
+                else []
+            )
+            + (
+                [pytest.mark.float64_only(reason="YIP sinc construction requires x64")]
+                if name == "yippy_sinc"
                 else []
             ),
         )
