@@ -108,12 +108,12 @@ class Rates(eqx.Module):
         sampling: Quadrature | Sequence[Band],
         carrier: Literal["photon", "electron"],
         *,
-        planet: ArrayLike = 0.0,
-        star_leakage: ArrayLike = 0.0,
-        local_zodi: ArrayLike = 0.0,
-        exozodi: ArrayLike = 0.0,
-        thermal: ArrayLike = 0.0,
-        stellar_companions: ArrayLike = 0.0,
+        planet: ArrayLike | None = None,
+        star_leakage: ArrayLike | None = None,
+        local_zodi: ArrayLike | None = None,
+        exozodi: ArrayLike | None = None,
+        thermal: ArrayLike | None = None,
+        stellar_companions: ArrayLike | None = None,
         n_pix: ArrayLike | None = None,
         variance: "Rates | None" = None,
         supported: ArrayLike | None = None,
@@ -151,12 +151,38 @@ class Rates(eqx.Module):
             self.quadrature = None
             self.bands = tuple(sampling)
         self.carrier = carrier
-        self.planet = jnp.asarray(planet)
-        self.star_leakage = jnp.asarray(star_leakage)
-        self.local_zodi = jnp.asarray(local_zodi)
-        self.exozodi = jnp.asarray(exozodi)
-        self.thermal = jnp.asarray(thermal)
-        self.stellar_companions = jnp.asarray(stellar_companions)
+        components = tuple(
+            jnp.asarray(value) if isinstance(value, (tuple, list)) else value
+            for value in (
+                planet,
+                star_leakage,
+                local_zodi,
+                exozodi,
+                thermal,
+                stellar_companions,
+            )
+        )
+        refs = components
+        if self.quadrature is not None:
+            refs = (*refs, self.quadrature.weights_nm)
+        dtype = jnp.result_type(
+            *(
+                value
+                for value in refs
+                if value is not None
+                and jnp.issubdtype(jnp.result_type(value), jnp.inexact)
+            ),
+            1.0,
+        )
+        for name, value in zip(_COMPONENTS, components, strict=True):
+            setattr(
+                self,
+                name,
+                jnp.asarray(
+                    0 if value is None else value,
+                    dtype=dtype if value is None or type(value) is float else None,
+                ),
+            )
         self.n_pix = None if n_pix is None else jnp.asarray(n_pix)
         self.variance = variance
         self.supported = None if supported is None else jnp.asarray(supported, bool)
@@ -287,12 +313,15 @@ class Rates(eqx.Module):
             sampling: Quadrature or bands, as for the constructor.
             carrier: ``"photon"`` or ``"electron"``.
             spatial_shape: Trailing spatial shape; empty for a single pixel or aperture.
-            dtype: Dtype of the zero fields; the JAX default when None.
+            dtype: Dtype of the zero fields. Defaults to the quadrature's dtype
+                for spectral rates and construction precision for integrated rates.
 
         Returns:
             Rates with six zero fields of shape ``(*leading, *spatial_shape)``.
         """
         empty = cls(sampling, carrier)
+        if dtype is None and empty.quadrature is not None:
+            dtype = empty.quadrature.weights_nm.dtype
         zero = jnp.zeros((*empty._leading_shape, *spatial_shape), dtype=dtype)
         return cls(sampling, carrier, **dict.fromkeys(_COMPONENTS, zero))
 

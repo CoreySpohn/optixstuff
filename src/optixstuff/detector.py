@@ -14,6 +14,7 @@ from hwoutils.precision import float_dtype, require_float64
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from optixstuff._interpolation import _interp_zero
 from optixstuff.exposure import FramePlan
 from optixstuff.grids import PixelGrid
 from optixstuff.rates import RATE_FLOOR_RTOL, Rates, _component_shape, floor_rate
@@ -29,12 +30,14 @@ def _check_range(name, value, low, high=float("inf")):
         raise ValueError(f"{name} must be finite and in [{low}, {high}]")
 
 
-def _per_band_pixels(n_pix, ndim):
+def _per_band_pixels(n_pix, rate):
     """Align a scalar or (W,) pixel count with ndim-dimensional rates, band first."""
     if n_pix is None:
         return 1.0
     return (
-        n_pix.reshape(n_pix.shape + (1,) * (ndim - n_pix.ndim)) if n_pix.ndim else n_pix
+        n_pix.reshape(n_pix.shape + (1,) * (rate.ndim - n_pix.ndim))
+        if n_pix.ndim
+        else n_pix
     )
 
 
@@ -280,24 +283,39 @@ class AbstractDetector(eqx.Module):
         _check_electrons(rates)
 
         def poisson_counts(rate, pixels):
-            live_time, frames = plan._for_bands(rates.bands, rate.ndim)
+            live_time, frames = plan._for_bands(
+                rates.bands,
+                rate.ndim,
+                rate,
+                pixels,
+                self.dark_current_e_per_pixel_s,
+                self.clock_induced_charge_e_per_pixel_frame,
+            )
+            pixels = jnp.asarray(pixels, dtype=live_time.dtype)
             counts = (rate + pixels * self.dark_current_e_per_pixel_s) * live_time + (
                 pixels * self.clock_induced_charge_e_per_pixel_frame * frames
             )
-            return counts, frames
+            return counts
 
         total = rates.total()
-        n_pix = _per_band_pixels(rates.n_pix, total.ndim)
-        mean, frames = poisson_counts(total, n_pix)
+        n_pix = _per_band_pixels(rates.n_pix, total)
+        mean = poisson_counts(total, n_pix)
         variance_pixels = n_pix
         shot_variance = mean
         if rates.variance is not None:
             shot_total = rates.variance.total()
             if rates.variance.n_pix is not None:
-                variance_pixels = _per_band_pixels(
-                    rates.variance.n_pix, shot_total.ndim
-                )
-            shot_variance, frames = poisson_counts(shot_total, variance_pixels)
+                variance_pixels = _per_band_pixels(rates.variance.n_pix, shot_total)
+            shot_variance = poisson_counts(shot_total, variance_pixels)
+        _, frames = plan._for_bands(
+            rates.bands,
+            shot_variance.ndim,
+            shot_variance,
+            variance_pixels,
+            self.excess_noise_factor_sq,
+            self.read_noise_e_rms,
+        )
+        variance_pixels = jnp.asarray(variance_pixels, dtype=frames.dtype)
         variance = self.excess_noise_factor_sq * shot_variance + (
             variance_pixels * self.read_noise_e_rms**2 * frames
         )
@@ -461,7 +479,15 @@ class AbstractDetector(eqx.Module):
             Sampled electron counts, shape ``(W, *spatial)``.
         """
         rate = _per_pixel_rate(rates)
-        live_time, frames = plan._for_bands(rates.bands, rate.ndim)
+        live_time, frames = plan._for_bands(
+            rates.bands,
+            rate.ndim,
+            rate,
+            self.dark_current_e_per_pixel_s,
+            self.clock_induced_charge_e_per_pixel_frame,
+            self.excess_noise_factor_sq,
+            self.read_noise_e_rms,
+        )
         key_source, key_cic, key_gain, key_read = jax.random.split(key, 4)
         source_mean = (rate + self.dark_current_e_per_pixel_s) * live_time
         source = jax.random.poisson(key_source, source_mean)
@@ -476,9 +502,11 @@ class AbstractDetector(eqx.Module):
             # Guarded so the unused branch stays finite when a batched
             # ``cond`` evaluates both sides at F2 = 1.
             excess = self.excess_noise_factor_sq - 1.0
-            theta = jnp.where(excess > 0, excess, 1.0)
-            gain = jax.random.gamma(key_gain, jnp.maximum(counts, 1.0) / theta)
-            return jnp.where(counts > 0, theta * gain, 0.0)
+            theta = jnp.where(excess > 0, excess, excess.dtype.type(1))
+            gain = jax.random.gamma(
+                key_gain, jnp.maximum(counts, 1.0) / theta, dtype=counts.dtype
+            )
+            return jnp.where(counts > 0, theta * gain, counts.dtype.type(0))
 
         signal = jax.lax.cond(
             self.excess_noise_factor_sq > 1.0, amplified, lambda n: n, counts
@@ -539,7 +567,8 @@ class IdealDetector(AbstractDetector):
         Returns:
             Ones, shaped like ``wavelength_nm``.
         """
-        return jnp.ones_like(jnp.asarray(wavelength_nm), dtype=jnp.result_type(float))
+        wavelength_nm = jnp.asarray(wavelength_nm)
+        return jnp.ones_like(wavelength_nm, dtype=jnp.result_type(wavelength_nm, 1.0))
 
     def draw(self, key: Array, rates: Rates, plan: FramePlan) -> Array:
         """Draw only Poisson source electrons of shape ``(W, *spatial)``.
@@ -556,7 +585,7 @@ class IdealDetector(AbstractDetector):
             Poisson electron counts, shape ``(W, *spatial)``.
         """
         rate = _per_pixel_rate(rates)
-        live_time, _ = plan._for_bands(rates.bands, rate.ndim)
+        live_time, _ = plan._for_bands(rates.bands, rate.ndim, rate)
         return jax.random.poisson(key, rate * live_time)
 
     def __repr__(self) -> str:
@@ -662,16 +691,9 @@ class Detector(AbstractDetector):
         Returns:
             Quantum efficiency in [0, 1], shaped like ``wavelength_nm``.
         """
-        wavelength_nm = jnp.asarray(wavelength_nm)
         if self._qe_knots is None:
-            return jnp.broadcast_to(self._qe, wavelength_nm.shape)
-        return jnp.interp(
-            wavelength_nm,
-            self._qe_knots.array(),
-            self._qe_values,
-            left=0.0,
-            right=0.0,
-        )
+            return jnp.broadcast_to(self._qe, jnp.asarray(wavelength_nm).shape)
+        return _interp_zero(wavelength_nm, self._qe_knots.nm, self._qe_values)
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """Tabulated QE wavelengths [nm]; empty for a constant QE.

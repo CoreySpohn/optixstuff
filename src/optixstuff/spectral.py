@@ -22,6 +22,7 @@ from hwoutils.leaves import HostGrid, as_float_leaf, is_traced
 from hwoutils.numerics import COARSEST, same, same_tolerance
 from numpy.polynomial.legendre import leggauss
 
+from optixstuff._interpolation import _interp_zero
 from optixstuff.grids import Image
 
 __all__ = [
@@ -341,11 +342,11 @@ def _overlap_fractions(src_lo, src_hi, dst_lo, dst_hi):
     All bounds are 1D arrays in a common unit, with nonnegative source widths.
     The result has shape (n_dst, n_src); disjoint or empty intervals give zero.
     """
-    src_lo, src_hi, dst_lo, dst_hi = map(jnp.asarray, (src_lo, src_hi, dst_lo, dst_hi))
-    lo = jnp.maximum(dst_lo[:, None], src_lo[None])
-    hi = jnp.minimum(dst_hi[:, None], src_hi[None])
+    src_lo, src_hi, dst_lo, dst_hi = map(np.asarray, (src_lo, src_hi, dst_lo, dst_hi))
+    lo = np.maximum(dst_lo[:, None], src_lo[None])
+    hi = np.minimum(dst_hi[:, None], src_hi[None])
     widths = src_hi - src_lo
-    return jnp.maximum(hi - lo, 0) / jnp.where(widths > 0, widths, 1)[None]
+    return np.maximum(hi - lo, 0) / np.where(widths > 0, widths, 1)[None]
 
 
 def rebin_bands(values, src_bands, dst_bands, axis=0):
@@ -375,11 +376,16 @@ def rebin_bands(values, src_bands, dst_bands, axis=0):
         raise ValueError("source bands must match the spectral axis")
     if any(b.width_nm == 0 for b in (*src_bands, *dst_bands)):
         raise ValueError("overlap rebinning requires positive-width bands")
-    src_lo = jnp.asarray([b.low_nm for b in src_bands])
-    src_hi = jnp.asarray([b.high_nm for b in src_bands])
-    dst_lo = jnp.asarray([b.low_nm for b in dst_bands])
-    dst_hi = jnp.asarray([b.high_nm for b in dst_bands])
-    frac = _overlap_fractions(src_lo, src_hi, dst_lo, dst_hi)
+    dtype = jnp.result_type(data.real, 1.0)
+    frac = jnp.asarray(
+        _overlap_fractions(
+            [b.low_nm for b in src_bands],
+            [b.high_nm for b in src_bands],
+            [b.low_nm for b in dst_bands],
+            [b.high_nm for b in dst_bands],
+        ),
+        dtype=dtype,
+    )
     out = jnp.moveaxis(
         jnp.tensordot(frac, jnp.moveaxis(data, axis, 0), axes=1), 0, axis
     )
@@ -430,10 +436,10 @@ class Transmission:
     The wavelength table is a static :class:`Knots`, kept at host float64
     precision and carried in the pytree's auxiliary data, so the breaks it
     declares never depend on a leaf. ``transmission`` is the one leaf, in the
-    active float dtype, for jit, vmap and parameter gradients; evaluation uses
-    the configured JAX precision. Transformed tables must preserve the
-    construction constraints. A photon
-    spectrum multiplied by this response integrates detected photons; no
+    working float dtype, for jit, vmap and parameter gradients; evaluation
+    uses the precision of its wavelength and response inputs. Transformed
+    tables must preserve the construction constraints. A photon spectrum
+    multiplied by this response integrates detected photons; no
     energy-to-photon weighting or normalization is implicit.
 
     Attributes:
@@ -486,13 +492,7 @@ class Transmission:
             Dimensionless response, shaped like ``wavelength_nm``, zero outside the
             table.
         """
-        return jnp.interp(
-            wavelength_nm,
-            self.wavelength_nm.array(),
-            self.transmission,
-            left=0.0,
-            right=0.0,
-        )
+        return _interp_zero(wavelength_nm, self.wavelength_nm.nm, self.transmission)
 
     def spectral_breaks_nm(self) -> np.ndarray:
         """All breakpoints [nm], including support endpoints for zero extension.
@@ -518,14 +518,19 @@ class Transmission:
 
         Exact linear-segment area and quadratic first moment; this is the
         detected mean for a flat incident photon flux density.
+
+        Returns:
+            Response-weighted mean in nm.
         """
-        wave = self.wavelength_nm.array()
         response = self.transmission
-        a, b = wave[:-1], wave[1:]
+        wave = self.wavelength_nm.nm
+        offset = jnp.asarray(wave - wave[0], dtype=response.dtype)
+        widths = jnp.asarray(np.diff(wave), dtype=response.dtype)
+        a, b = offset[:-1], offset[1:]
         ta, tb = response[:-1], response[1:]
-        area = jnp.sum((b - a) * (ta + tb) / 2)
-        moment = jnp.sum((b - a) * ((2 * a + b) * ta + (a + 2 * b) * tb) / 6)
-        return moment / area
+        area = jnp.sum(widths * (ta + tb) / 2)
+        moment = jnp.sum(widths * ((2 * a + b) * ta + (a + 2 * b) * tb) / 6)
+        return response.dtype.type(wave[0]) + moment / area
 
     def integrate(self, band: Band, fn=None, *, order: int = 4, breaks_nm=()):
         """Integrate response times fn over the supplied edges, in fn units times nm.
@@ -544,7 +549,13 @@ class Transmission:
         Returns:
             The integral in units of ``fn`` times nm, or the equivalent width in nm.
         """
-        rule = Quadrature.build((band,), self, order=order, breaks_nm=breaks_nm)
+        rule = Quadrature.build(
+            (band,),
+            self,
+            order=order,
+            breaks_nm=breaks_nm,
+            dtype=self.transmission.dtype,
+        )
         if fn is None:
             return rule.integrate(self(rule.nodes_nm))[0]
         values = jax.vmap(lambda w: self(w) * fn(w))(rule.nodes_nm[0])
@@ -748,6 +759,7 @@ class Quadrature(eqx.Module):
         breaks_nm=(),
         field_lod=0.0,
         allow_wide_bands: bool = False,
+        dtype=None,
     ) -> Self:
         """Build a Gauss-Legendre rule on each piece between declared breaks.
 
@@ -795,6 +807,8 @@ class Quadrature(eqx.Module):
                 only the product's blur, as in the YIP count-rate recipe of
                 Stark and Krist (2019), "Standardized Coronagraph Parameters for
                 Input into Yield Calculations". The wider band is under-blurred.
+            dtype: Real dtype for the nodes and weights. Defaults to construction
+                precision.
 
         Returns:
             The Quadrature holding nodes, weights and the piece layout.
@@ -852,7 +866,12 @@ class Quadrature(eqx.Module):
         for i, (wave, weight) in enumerate(rows):
             waves[i, : wave.size] = wave
             weights[i, : wave.size] = weight
-        return cls(bands, waves, weights, pieces)
+        return cls(
+            bands,
+            jnp.asarray(waves, dtype=dtype),
+            jnp.asarray(weights, dtype=dtype),
+            pieces,
+        )
 
     @classmethod
     def monochromatic(cls, wavelength_nm: float) -> Self:

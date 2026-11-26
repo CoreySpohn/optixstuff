@@ -118,12 +118,13 @@ def _statistics(rates, detector, frame_time_s, post_processing):
     # An undefined cadence (NaN, infinite or not positive) gives NaN statistics,
     # so the target reads as unreachable instead of raising in the plan.
     usable = jnp.isfinite(frame_time_s) & (frame_time_s > 0)
-    plan = FramePlan(jnp.where(usable, frame_time_s, 1.0), 1)
+    one = frame_time_s.dtype.type(1)
+    plan = FramePlan(jnp.where(usable, frame_time_s, one), one)
     _, one_frame = detector.mean_and_variance(electrons, plan)
     b = jnp.where(
         _per_band(usable, one_frame.ndim),
         one_frame / _per_band(frame_time_s, one_frame.ndim),
-        jnp.nan,
+        one_frame.dtype.type(jnp.nan),
     )
     floor_sq = jnp.zeros_like(b)
     speckle = _per_band(post_processing.speckle_residual_fraction, b.ndim)
@@ -187,7 +188,11 @@ def snr(
     # Only an exact zero is replaced; a NaN variance propagates.
     result = p * time_s / jnp.sqrt(jnp.where(variance == 0, 1, variance))
     supported = _supported(rates, result.shape)
-    return result if supported is None else jnp.where(supported, result, jnp.nan)
+    return (
+        result
+        if supported is None
+        else jnp.where(supported, result, result.dtype.type(jnp.nan))
+    )
 
 
 def exposure_time(
@@ -233,14 +238,15 @@ def exposure_time(
     )
     time_s = (
         target_snr**2
-        * jnp.where(reachable, b, 0.0)
-        / jnp.where(reachable, denominator, 1.0)
+        * jnp.where(reachable, b, b.dtype.type(0))
+        / jnp.where(reachable, denominator, denominator.dtype.type(1))
     )
     trivial = (target_snr <= 0) & jnp.isfinite(p) & jnp.isfinite(b)
     valid = reachable | trivial
-    time_s = jnp.where(trivial, 0.0, jnp.where(reachable, time_s, jnp.nan))
+    zero, nan = time_s.dtype.type(0), time_s.dtype.type(jnp.nan)
+    time_s = jnp.where(trivial, zero, jnp.where(reachable, time_s, nan))
     supported = _supported(rates, time_s.shape)
     if supported is not None:
         valid = valid & supported
-        time_s = jnp.where(supported, time_s, jnp.nan)
+        time_s = jnp.where(supported, time_s, nan)
     return ExposureTime(time_s, valid)

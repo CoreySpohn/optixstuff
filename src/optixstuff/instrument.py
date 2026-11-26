@@ -102,8 +102,13 @@ class WarmEmission(eqx.Module):
             Planck photon radiance at ``temperature_K`` times
             ``effective_emissivity``, shaped like ``wavelength_nm``.
         """
+        if isinstance(wavelength_nm, (tuple, list)):
+            wavelength_nm = jnp.asarray(wavelength_nm)
+        dtype = jnp.result_type(
+            wavelength_nm, self.temperature_K, self.effective_emissivity, 1.0
+        )
         return self.effective_emissivity * planck_photon_radiance(
-            wavelength_nm, self.temperature_K
+            jnp.asarray(wavelength_nm, dtype=dtype), self.temperature_K
         )
 
 
@@ -281,12 +286,21 @@ class Instrument(eqx.Module):
         Returns:
             Photons/s/nm/sr, shaped like ``wavelength_nm``.
         """
+        if isinstance(wavelength_nm, (tuple, list)):
+            wavelength_nm = jnp.asarray(wavelength_nm)
+        area = self.primary.collecting_area_m2
         if self.warm_emission is None:
-            return jnp.zeros_like(jnp.asarray(wavelength_nm, dtype=float))
-        return (
-            self.warm_emission.photon_radiance(wavelength_nm)
-            * self.primary.collecting_area_m2
+            dtype = jnp.result_type(wavelength_nm, area, self.flux_scale, 1.0)
+            return jnp.zeros(jnp.shape(wavelength_nm), dtype=dtype)
+        dtype = jnp.result_type(
+            wavelength_nm,
+            area,
+            self.warm_emission.temperature_K,
+            self.warm_emission.effective_emissivity,
+            1.0,
         )
+        wavelength = jnp.asarray(wavelength_nm, dtype=dtype)
+        return self.warm_emission.photon_radiance(wavelength) * area
 
     def __repr__(self) -> str:
         """Tree-shaped summary of every component.

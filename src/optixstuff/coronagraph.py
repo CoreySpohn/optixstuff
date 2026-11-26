@@ -97,7 +97,12 @@ def on_grid(image: Image, grid: PixelGrid) -> Image:
         return replace(_footprint_integral(image, source, target), grid=grid)
     native = replace(image, grid=source)
     sampled = (
-        integrate_footprints(native, footprint_overlap(source, target))
+        integrate_footprints(
+            native,
+            footprint_overlap(
+                source, target, dtype=jnp.result_type(native.data.real, 1.0)
+            ),
+        )
         if measured_cells
         else resample(native, target)
     )
@@ -289,7 +294,8 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
         Returns:
             Stellar flux fraction per cell for a point star on axis.
         """
-        return self.stellar_map(wavelength_nm, 0.0, grid=grid)
+        diameter = jnp.result_type(wavelength_nm, 1.0).type(0)
+        return self.stellar_map(wavelength_nm, diameter, grid=grid)
 
     def off_axis_psf(self, wavelength_nm, separation_lod, grid: PixelGrid) -> Image:
         """Cell-integrated stellar flux fractions on grid for a source along +x.
@@ -304,12 +310,12 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
         Returns:
             Flux fraction per cell for the off-axis source.
         """
-        result = self.source_psfs(
-            wavelength_nm, jnp.atleast_1d(separation_lod), jnp.zeros(1), grid=grid
-        )
+        x = jnp.atleast_1d(separation_lod)
+        result = self.source_psfs(wavelength_nm, x, jnp.zeros_like(x), grid=grid)
+        data = result.image.data[0]
         return replace(
             result.image,
-            data=jnp.where(result.valid[0], result.image.data[0], 0.0),
+            data=jnp.where(result.valid[0], data, data.dtype.type(0)),
             leading_axes=(),
         )
 
