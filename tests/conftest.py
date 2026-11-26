@@ -135,7 +135,10 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
 
     def _native_stellar_map(self, stellar_diameter_lod):
         return Image(
-            jnp.full(self.grid.shape, 1e-8) * (1 + stellar_diameter_lod**2),
+            jnp.full(
+                self.grid.shape, 1e-8, dtype=jnp.result_type(stellar_diameter_lod, 1.0)
+            )
+            * (1 + stellar_diameter_lod**2),
             self.grid,
             (),
             Measure.integral(),
@@ -144,7 +147,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
         )
 
     def _native_source_psfs(self, x_lod, y_lod):
-        x, y = self.grid.coordinates()
+        x, y = self.grid.coordinates(dtype=jnp.result_type(x_lod, y_lod, 1.0))
         dx, dy = jnp.atleast_1d(x_lod), jnp.atleast_1d(y_lod)
         amplitude = 0.6 * (1 - 0.9 * jnp.exp(-(dx**2 + dy**2) / 4))
         data = (
@@ -168,7 +171,10 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
         # The source domain is the disk inscribed in the native grid.
         domain = min(self.grid.shape) * self.grid.step / 2
         valid = jnp.isfinite(dx) & jnp.isfinite(dy) & (jnp.hypot(dx, dy) <= domain)
-        image = replace(image, data=jnp.where(valid[:, None, None], image.data, 0.0))
+        image = replace(
+            image,
+            data=jnp.where(valid[:, None, None], image.data, image.data.dtype.type(0)),
+        )
         return ox.SourcePSFs(image, valid)
 
 
@@ -229,7 +235,10 @@ class SinusoidalSpeckle(ox.LinearSpeckleField):
     def coefficients(self, *, elapsed_s):
         import jax.numpy as jnp
 
-        t = jnp.asarray(elapsed_s, dtype=float)
+        dtype = jnp.result_type(
+            elapsed_s, self.offset_nm, self.amplitude_nm, self.angular_frequency_per_s
+        )
+        t = jnp.asarray(elapsed_s, dtype=dtype)
         return self.offset_nm + self.amplitude_nm * jnp.sin(
             t[..., None] * self.angular_frequency_per_s
         )

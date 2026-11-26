@@ -16,10 +16,11 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.constants import arcsec2rad
+from hwoutils.constants import arcsec2rad, two_pi
 from hwoutils.conversions import lambda_d_to_arcsec
-from hwoutils.leaves import as_leaf
+from hwoutils.leaves import as_leaf, canonical
 from hwoutils.map_coordinates import map_coordinates
+from hwoutils.precision import float_dtype
 from hwoutils.radial import get_center
 
 
@@ -334,15 +335,23 @@ class PixelGrid:
             orientation,
         )
 
-    def coordinates(self):
+    def coordinates(self, *, dtype=None):
         """Return named (x, y) arrays of shape (ny, nx), in this grid's unit.
+
+        Args:
+            dtype: Real working dtype. Defaults to the traced basis dtype or the
+                construction precision for a host grid.
 
         Returns:
             Named (x, y) arrays of shape (ny, nx) in the grid's unit.
         """
-        rows, columns = jnp.indices(
-            self.shape, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32
-        )
+        if dtype is None:
+            dtype = (
+                jnp.result_type(*self.basis[0], *self.basis[1])
+                if _traced(self.basis)
+                else float_dtype()
+            )
+        rows, columns = jnp.indices(self.shape, dtype=dtype)
         return self.pixel_to_unit(columns, rows)
 
     def corners(self) -> np.ndarray:
@@ -374,13 +383,16 @@ class PixelGrid:
         first, _, last, _ = self.corners()
         return float(first[0]), float(last[0]), float(first[1]), float(last[1])
 
-    def radius(self) -> jax.Array:
+    def radius(self, *, dtype=None) -> jax.Array:
         """Distance from the optical axis at each pixel center, in grid units.
+
+        Args:
+            dtype: Real working dtype, as in :meth:`coordinates`.
 
         Returns:
             Array of shape (ny, nx) of distances in the grid's unit.
         """
-        return jnp.hypot(*self.coordinates())
+        return jnp.hypot(*self.coordinates(dtype=dtype))
 
     def pixel_to_unit(self, x, y):
         """Map named pixel-center coordinates (x, y) to offsets in unit.
@@ -773,13 +785,27 @@ def _pixel_map(source, target):
         if source.orientation is None
         else (source.orientation.pa_y_deg, target.orientation.pa_y_deg)
     )
-    xp = jnp if _traced(source.basis, target.basis, angles) else np
+    traced = _traced(source.basis, target.basis, angles)
+    xp = jnp if traced else np
+    dtype = (
+        jnp.result_type(
+            *source.basis[0],
+            *source.basis[1],
+            *target.basis[0],
+            *target.basis[1],
+            *angles,
+        )
+        if traced
+        else None
+    )
 
     def orientation_matrix(orientation):
         c, s = _cos_sin(orientation.pa_y_deg)
-        return xp.array([[orientation.parity * c, -orientation.parity * s], [s, c]])
+        return xp.array(
+            [[orientation.parity * c, -orientation.parity * s], [s, c]], dtype=dtype
+        )
 
-    transform = xp.eye(2)
+    transform = xp.eye(2, dtype=dtype)
     if source.orientation is not None and not _same_orientation(
         source.orientation, target.orientation
     ):
@@ -788,7 +814,8 @@ def _pixel_map(source, target):
             @ orientation_matrix(target.orientation).T
         )
     return xp.linalg.solve(
-        xp.asarray(source.basis), transform @ xp.asarray(target.basis)
+        xp.asarray(source.basis, dtype=dtype),
+        transform @ xp.asarray(target.basis, dtype=dtype),
     )
 
 
@@ -803,36 +830,39 @@ def _band_limited_matrix(n_source, positions, width, pad_factor, dtype, integrat
     samples = np.arange(n_source, dtype=dtype)
     n_padded = math.ceil(pad_factor * n_source)
     frequencies = np.fft.fftfreq(n_padded).astype(dtype)
-    phase = np.asarray(2j * np.pi, dtype=np.result_type(dtype, np.complex64))
+    phase_step = dtype.type(two_pi)
+    low, high = positions.dtype.type(-0.5), positions.dtype.type(n_source - 0.5)
     if integrate:
-        left = xp.clip(positions - width / 2, -0.5, n_source - 0.5)
-        right = xp.clip(positions + width / 2, -0.5, n_source - 0.5)
+        left = xp.clip(positions - width / 2, low, high)
+        right = xp.clip(positions + width / 2, low, high)
         length = (right - left).astype(dtype)
         positions = ((left + right) / 2).astype(dtype)
         weights = (length / width)[:, None] * xp.sinc(frequencies * length[:, None])
     else:
-        weights = ((positions >= -0.5) & (positions <= n_source - 0.5))[:, None]
-        positions = xp.clip(positions, -0.5, n_source - 0.5).astype(dtype)
-    evaluate = xp.exp(phase * positions[:, None] * frequencies)
+        weights = ((positions >= low) & (positions <= high))[:, None]
+        positions = xp.clip(positions, low, high).astype(dtype)
+    evaluate = xp.exp(1j * (phase_step * positions[:, None] * frequencies))
     evaluate = evaluate * weights
-    analyze = np.exp(-phase * frequencies[:, None] * samples)
+    analyze = np.exp(-1j * (phase_step * frequencies[:, None] * samples))
     return (evaluate @ analyze) / n_padded
 
 
 def _box_antiderivative(t, xp):
     """Integral of the nearest (unit box) kernel from -inf to t, piecewise in t."""
-    return xp.where(t < -0.5, 0.0, xp.where(t < 0.5, t + 0.5, 1.0))
+    return xp.where(
+        t < -0.5, t.dtype.type(0), xp.where(t < 0.5, t + 0.5, t.dtype.type(1))
+    )
 
 
 def _hat_antiderivative(t, xp):
     """Integral of the linear kernel from -inf to t, piecewise in t."""
     return xp.where(
         t < -1.0,
-        0.0,
+        t.dtype.type(0),
         xp.where(
             t < 0.0,
             0.5 * (t + 1.0) ** 2,
-            xp.where(t < 1.0, 1.0 - 0.5 * (1.0 - t) ** 2, 1.0),
+            xp.where(t < 1.0, 1.0 - 0.5 * (1.0 - t) ** 2, t.dtype.type(1)),
         ),
     )
 
@@ -844,7 +874,7 @@ def _keys_antiderivative(t, xp):
     t4 = t2 * t2
     return xp.where(
         t < -2.0,
-        0.0,
+        t.dtype.type(0),
         xp.where(
             t < -1.0,
             t4 / 8 + 5 * t3 / 6 + 2 * t2 + 2 * t + 2 / 3,
@@ -855,7 +885,9 @@ def _keys_antiderivative(t, xp):
                     t < 1.0,
                     0.5 + t - 5 * t3 / 6 + 3 * t4 / 8,
                     xp.where(
-                        t < 2.0, 1 / 3 + 2 * t - 2 * t2 + 5 * t3 / 6 - t4 / 8, 1.0
+                        t < 2.0,
+                        1 / 3 + 2 * t - 2 * t2 + 5 * t3 / 6 - t4 / 8,
+                        t.dtype.type(1),
                     ),
                 ),
             ),
@@ -869,7 +901,7 @@ def _bspline(t, xp):
     t3 = t2 * t
     return xp.where(
         t < -2.0,
-        0.0,
+        t.dtype.type(0),
         xp.where(
             t < -1.0,
             (2.0 + t) ** 3 / 6,
@@ -879,7 +911,7 @@ def _bspline(t, xp):
                 xp.where(
                     t < 1.0,
                     2 / 3 - t2 + t3 / 2,
-                    xp.where(t < 2.0, (2.0 - t) ** 3 / 6, 0.0),
+                    xp.where(t < 2.0, (2.0 - t) ** 3 / 6, t.dtype.type(0)),
                 ),
             ),
         ),
@@ -892,7 +924,7 @@ def _bspline_antiderivative(t, xp):
     t4 = t3 * t
     return xp.where(
         t < -2.0,
-        0.0,
+        t.dtype.type(0),
         xp.where(
             t < -1.0,
             (2.0 + t) ** 4 / 24,
@@ -902,7 +934,7 @@ def _bspline_antiderivative(t, xp):
                 xp.where(
                     t < 1.0,
                     0.5 + 2 * t / 3 - t3 / 3 + t4 / 8,
-                    xp.where(t < 2.0, 1.0 - (2.0 - t) ** 4 / 24, 1.0),
+                    xp.where(t < 2.0, 1.0 - (2.0 - t) ** 4 / 24, t.dtype.type(1)),
                 ),
             ),
         ),
@@ -960,16 +992,21 @@ def _cubic_spline_matrix(n_source, positions, width, dtype, integrate):
     """
     xp = jnp if _traced(positions, width) else np
     positions = xp.asarray(positions)
-    knots = np.arange(-2, n_source + 2, dtype=np.float64)
+    knots = np.arange(-2, n_source + 2, dtype=positions.dtype)
     if integrate:
-        low = xp.clip(positions - width / 2, -0.5, n_source - 0.5)
-        high = xp.clip(positions + width / 2, -0.5, n_source - 0.5)
+        left, right = positions.dtype.type(-0.5), positions.dtype.type(n_source - 0.5)
+        low = xp.clip(positions - width / 2, left, right)
+        high = xp.clip(positions + width / 2, left, right)
         basis = _bspline_antiderivative(
             high[:, None] - knots, xp
         ) - _bspline_antiderivative(low[:, None] - knots, xp)
     else:
         inside = (positions >= -0.5) & (positions <= n_source - 0.5)
-        basis = xp.where(inside[:, None], _bspline(positions[:, None] - knots, xp), 0.0)
+        basis = xp.where(
+            inside[:, None],
+            _bspline(positions[:, None] - knots, xp),
+            positions.dtype.type(0),
+        )
     prefilter = _not_a_knot_prefilter(n_source)
     if xp is np:
         return (basis @ prefilter).astype(dtype)
@@ -989,7 +1026,7 @@ def _footprint_matrix(n_source, positions, width, reconstruction, dtype):
     antiderivative = _LOCAL_ANTIDERIVATIVE[reconstruction]
     xp = jnp if _traced(positions, width) else np
     positions = xp.asarray(positions)
-    samples = np.arange(n_source, dtype=np.float64)
+    samples = np.arange(n_source, dtype=positions.dtype)
     high = positions[:, None] + width / 2 - samples
     low = positions[:, None] - width / 2 - samples
     matrix = antiderivative(high, xp) - antiderivative(low, xp)
@@ -1028,7 +1065,7 @@ def _require_axis_aligned(name, source_grid, target_grid, mapping):
 
 def _axis_positions(source_grid, target_grid, mapping):
     """Target pixel centers in source pixels and pixel widths, for x then y."""
-    traced = _traced(source_grid.basis, target_grid.basis)
+    traced = _traced(mapping)
     xp = jnp if traced else np
     axes = []
     for axis, source_center, target_center in (
@@ -1037,7 +1074,7 @@ def _axis_positions(source_grid, target_grid, mapping):
     ):
         ratio = mapping[axis, axis]
         positions = (
-            xp.arange(target_grid.shape[1 - axis]) - target_center
+            xp.arange(target_grid.shape[1 - axis], dtype=mapping.dtype) - target_center
         ) * ratio + source_center
         axes.append((source_grid.shape[1 - axis], positions, abs(ratio)))
     return axes
@@ -1174,7 +1211,7 @@ def _read_margins(source_grid, target_grid, reconstruction, measure, mapping):
     xp = jnp if traced else np
     extent = xp.sum(xp.abs(xp.asarray(mapping)), axis=1)
     margins = xp.maximum(sampling, (half_support - 0.5) * extent - 0.5)
-    margins = xp.where(deposit, margins, sampling)
+    margins = xp.where(deposit, margins, margins.dtype.type(sampling))
     return margins[0], margins[1]
 
 
@@ -1192,11 +1229,12 @@ def _all_valid(xp, valid, first_x, last_x, first_y, last_y):
     ny, nx = valid.shape
     counts = xp.cumsum(xp.cumsum(xp.asarray(valid, dtype=xp.int32), axis=0), axis=1)
     table = xp.pad(counts, ((1, 0), (1, 0)))
-    x0, x1 = (xp.clip(i, 0, nx).astype(xp.int32) for i in (first_x, last_x + 1))
-    y0, y1 = (xp.clip(i, 0, ny).astype(xp.int32) for i in (first_y, last_y + 1))
+    geometry = jnp if _traced(first_x, last_x, first_y, last_y) else np
+    x0, x1 = (geometry.clip(i, 0, nx).astype(np.int32) for i in (first_x, last_x + 1))
+    y0, y1 = (geometry.clip(i, 0, ny).astype(np.int32) for i in (first_y, last_y + 1))
     count = table[y1, x1] - table[y0, x1] - table[y1, x0] + table[y0, x0]
     area = (last_x - first_x + 1) * (last_y - first_y + 1)
-    return count == area
+    return count == area.astype(np.int32)
 
 
 def coverage(
@@ -1296,13 +1334,9 @@ def coverage(
         margin_x, margin_y = _read_margins(
             source_grid, target_grid, reconstruction, measure, mapping
         )
-    traced = _traced(source_grid.basis, target_grid.basis, mapping)
-    if valid is not None and not isinstance(valid, np.ndarray):
-        traced = traced or _traced(valid)
-        if not traced:
-            valid = np.asarray(valid)
+    traced = _traced(mapping)
     xp = jnp if traced else np
-    rows, columns = xp.indices(target_grid.shape)
+    rows, columns = xp.indices(target_grid.shape, dtype=mapping.dtype)
     dx = columns - target_grid.center_x
     dy = rows - target_grid.center_y
     ny, nx = source_grid.shape
@@ -1332,7 +1366,8 @@ def coverage(
     last_x = xp.ceil(xs.max(axis=0) + margin_x - tolerance + 0.5) - 1
     first_y = xp.floor(ys.min(axis=0) - margin_y + tolerance - 0.5) + 1
     last_y = xp.ceil(ys.max(axis=0) + margin_y - tolerance + 0.5) - 1
-    return covered & _all_valid(xp, valid, first_x, last_x, first_y, last_y)
+    mask_backend = jnp if traced or _traced(valid) else np
+    return covered & _all_valid(mask_backend, valid, first_x, last_x, first_y, last_y)
 
 
 def resample(
@@ -1442,7 +1477,7 @@ def resample(
     selected = image.reconstruction if reconstruction is None else reconstruction
     _validate_reconstruction(selected)
     mapping = _pixel_map(source_grid, target_grid)
-    traced = _traced(source_grid.basis, target_grid.basis)
+    traced = _traced(mapping)
     output_reconstruction = image.reconstruction
     # A traced scale cannot pick the output reconstruction on the host; the
     # source reconstruction is kept.
@@ -1510,17 +1545,37 @@ def resample(
         from_grid, to_grid = (
             (source_grid, target_grid) if deposit_flux else (target_grid, source_grid)
         )
-        x, y = from_grid.coordinates()
-        if not _same_orientation(from_grid.orientation, to_grid.orientation):
-            east, north = from_grid.orientation.detector_to_sky(x, y)
-            x, y = to_grid.orientation.sky_to_detector(east, north)
-        pixels = to_grid.unit_to_pixel(x, y)
+        dtype = data.real.dtype
+        if traced:
+            x, y = from_grid.coordinates(dtype=dtype)
+            if not _same_orientation(from_grid.orientation, to_grid.orientation):
+                east, north = from_grid.orientation.detector_to_sky(x, y)
+                x, y = to_grid.orientation.sky_to_detector(east, north)
+            pixels = to_grid.unit_to_pixel(x, y)
+        else:
+            transform = _pixel_map(to_grid, from_grid) if deposit_flux else mapping
+            origin = np.array([to_grid.center_x, to_grid.center_y]) - transform @ (
+                from_grid.center_x,
+                from_grid.center_y,
+            )
+            rows, columns = np.indices(from_grid.shape, sparse=True)
+            pixels = _XY(
+                *(
+                    jnp.asarray(a * columns + b * rows + c, dtype=dtype)
+                    for (a, b), c in zip(transform, origin, strict=True)
+                )
+            )
 
         def interpolate(plane):
             if deposit_flux:
 
                 def sample_target(target):
-                    return map_coordinates(target, (pixels.y, pixels.x), order=order)
+                    return map_coordinates(
+                        target,
+                        (pixels.y, pixels.x),
+                        order=order,
+                        cval=target.dtype.type(0),
+                    )
 
                 _, deposit = jax.vjp(
                     sample_target, jnp.zeros(target_grid.shape, dtype=plane.dtype)
@@ -1531,6 +1586,7 @@ def resample(
                 (pixels.y, pixels.x),
                 order=order,
                 mode="constant",
+                cval=plane.dtype.type(0),
             )
 
         for _ in range(data.ndim - 2):
@@ -1647,7 +1703,7 @@ class CellOverlap:
 
 
 def footprint_overlap(
-    source: PixelGrid, cells: Sequence[PixelGrid] | PixelGrid
+    source: PixelGrid, cells: Sequence[PixelGrid] | PixelGrid, *, dtype=None
 ) -> CellOverlap:
     """Compute exact overlaps on the host for static grids in a common frame.
 
@@ -1655,18 +1711,18 @@ def footprint_overlap(
     of its grids in row-major order. Overlapping cells collect independently.
 
     The overlap weights are computed in binary64 on the host and stored as
-    JAX arrays of the float dtype active at construction, so an overlap built
-    under float32 keeps float32 weights when it later integrates a float64
-    image. A float64 consumer builds the overlap, or rebuilds a reused one,
-    with ``jax_enable_x64`` on.
+    JAX arrays of the requested working dtype. An overlap built in float32
+    keeps its float32 weight accuracy when used with a float64 image.
 
     Args:
         source: Source grid.
         cells: Target grid, or a sequence of grids whose cells are concatenated.
+        dtype: Dtype for the stored weights. Defaults to construction precision.
 
     Returns:
         The reusable overlap operator.
     """
+    dtype = float_dtype() if dtype is None else dtype
     flat = not isinstance(cells, PixelGrid)
     targets = tuple(cells) if flat else (cells,)
     shape = (sum(math.prod(t.shape) for t in targets), math.prod(source.shape))
@@ -1697,7 +1753,11 @@ def footprint_overlap(
             )
             if target is not None:
                 return CellOverlap(
-                    source, target, shape, flat, axes=(as_leaf(wy), as_leaf(wx))
+                    source,
+                    target,
+                    shape,
+                    flat,
+                    axes=canonical((wy, wx), precision=dtype),
                 )
             # Form only products of nonzero intervals for a sequence of grids.
             ty, y = np.nonzero(wy)
@@ -1714,7 +1774,7 @@ def footprint_overlap(
     sparse = (
         as_leaf(np.asarray(rows, dtype=np.int32)),
         as_leaf(np.asarray(cols, dtype=np.int32)),
-        as_leaf(np.asarray(fractions, dtype=np.float64)),
+        canonical(np.asarray(fractions), precision=dtype),
     )
     return CellOverlap(source, target, shape, flat, sparse=sparse)
 

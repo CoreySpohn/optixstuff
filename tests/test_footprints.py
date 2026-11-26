@@ -16,6 +16,15 @@ from optixstuff.grids import (
 )
 
 
+@pytest.mark.parametrize("flat", [False, True], ids=["axes", "sparse"])
+def test_footprint_weights_use_checked_narrowing(flat):
+    """An overlap below half the least float32 subnormal must be refused."""
+    source = PixelGrid.regular((1, 1), 1, "arcsec", center=(0, 0))
+    target = PixelGrid((1, 1), 0, 0, ((1e-46, 0), (0, 1)), "arcsec")
+    with pytest.raises(ValueError, match="underflow"):
+        footprint_overlap(source, [target] if flat else target, dtype=np.float32)
+
+
 def _integral(data, step=1.0):
     return Image(
         data,

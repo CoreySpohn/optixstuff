@@ -47,7 +47,8 @@ def radial_profile(
         raise ValueError(f"unknown stat: {stat!r}; use 'mean', 'median', or 'max'")
     if image.data.ndim != 2 or jnp.iscomplexobj(image.data):
         raise ValueError("radial_profile requires a real 2D Image")
-    radius = image.grid.radius().ravel()
+    dtype = jnp.result_type(image.data, jnp.float32)
+    radius = image.grid.radius(dtype=dtype).ravel()
     if edges is None:
         nbins = max(1, max(image.grid.shape) // 2) if nbins is None else index(nbins)
         if nbins < 1:
@@ -65,12 +66,11 @@ def radial_profile(
     inside = (radius >= edges[0]) & (radius <= edges[-1])
     bins = jnp.where(inside, bins, nbins)
     counts = jnp.zeros(nbins, dtype=bins.dtype).at[bins].add(1, mode="drop")
-    data = jnp.asarray(
-        image.data.ravel(), dtype=jnp.result_type(image.data, jnp.float32)
-    )
+    data = jnp.asarray(image.data.ravel(), dtype=dtype)
+    nan = dtype.type(jnp.nan)
     if stat == "mean":
         totals = jnp.zeros(nbins, dtype=data.dtype).at[bins].add(data, mode="drop")
-        values = totals / jnp.maximum(counts, 1)
+        values = totals / jnp.maximum(counts, 1).astype(dtype)
     elif stat == "max":
         values = (
             jnp.full(nbins, -jnp.inf, dtype=data.dtype).at[bins].max(data, mode="drop")
@@ -86,5 +86,5 @@ def radial_profile(
         has_nan = (
             jnp.zeros(nbins, dtype=bool).at[bins].max(jnp.isnan(data), mode="drop")
         )
-        values = jnp.where(has_nan, jnp.nan, values)
-    return centers, jnp.where(counts > 0, values, jnp.nan), counts
+        values = jnp.where(has_nan, nan, values)
+    return centers, jnp.where(counts > 0, values, nan), counts

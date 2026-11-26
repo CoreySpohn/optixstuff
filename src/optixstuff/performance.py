@@ -22,6 +22,7 @@ from hwoutils.numerics import COARSEST
 from scipy.interpolate import CubicSpline, PchipInterpolator
 from scipy.optimize import root_scalar
 
+from optixstuff._interpolation import _host_knot_coordinates
 from optixstuff.grids import (
     Frame,
     Image,
@@ -1058,25 +1059,37 @@ def _profile_fit(x, values, interpolation):
         x, (jax.Array, jax.core.Tracer)
     )
     if traced:
-        y = jnp.asarray(values)
+        dtype = (
+            jnp.result_type(values, x, 1.0)
+            if isinstance(x, jax.Array)
+            else values.dtype
+        )
+        y = jnp.asarray(values, dtype=dtype)
+        knots = jnp.asarray(x, dtype=dtype)
         if interpolation == "log":
             # The host's 1e-300 floor underflows in float32.
             y = jnp.where(
                 y > 0, jnp.maximum(jnp.log10(jnp.where(y > 0, y, 1)), -300), -300
             )
-        coefficients = interpax.PchipInterpolator(jnp.asarray(x), y, check=False).c
+        coefficients = interpax.PchipInterpolator(knots, y, check=False).c
+        # Difference a host axis before rounding its spacings.
+        intervals = (
+            jnp.asarray(np.diff(x), dtype=dtype)
+            if isinstance(x, np.ndarray)
+            else jnp.diff(knots)
+        )
         stack = jnp.stack
     else:
         y = np.log10(np.maximum(values, 1e-300)) if interpolation == "log" else values
         coefficients = PchipInterpolator(x, y).c
+        intervals = np.diff(x)
         stack = np.stack
-    # Preserve native knot spacings before casting traced ordinates to their dtype.
     tails = stack(
         (
             y[0],
             y[-1],
-            (y[1] - y[0]) / (x[1] - x[0]),
-            (y[-1] - y[-2]) / (x[-1] - x[-2]),
+            (y[1] - y[0]) / intervals[0],
+            (y[-1] - y[-2]) / intervals[-1],
         )
     )
     return coefficients, tails
@@ -1091,38 +1104,56 @@ def _evaluate_profile(x, values, fit, interpolation, separation_lod, *, exact_kn
         or (fit is not None and isinstance(fit[0], jax.core.Tracer))
         else np
     )
-    q, x, values = xp.asarray(separation_lod), xp.asarray(x), xp.asarray(values)
+    if xp is jnp:
+        leaves = (v for v in (x, values) if isinstance(v, jax.Array))
+        dtype = jnp.result_type(separation_lod, *leaves, 1.0)
+        q, values = (jnp.asarray(v, dtype=dtype) for v in (separation_lod, values))
+    else:
+        q, x, values = map(np.asarray, (separation_lod, x, values))
     if fit is None:
         return xp.full_like(q, values[0], dtype=values.dtype)
-    c, t = map(xp.asarray, fit)
-    k = xp.clip(xp.searchsorted(x, q, side="right") - 1, 0, len(x) - 1)
+    host_axis = xp is jnp and isinstance(x, np.ndarray)
+    if host_axis:
+        x, residual, lower, upper, exact = _host_knot_coordinates(x, dtype)
+    else:
+        x = xp.asarray(x, dtype=values.dtype) if xp is jnp else x
+        residual, lower, upper, exact = xp.zeros_like(x), x, x[-1], None
+    c, t = (xp.asarray(v, dtype=values.dtype) for v in fit)
+    k = xp.clip(xp.searchsorted(lower, q, side="right") - 1, 0, len(x) - 1)
     i = xp.minimum(k, len(x) - 2)
+    at_sample = q == x[k]
+    if host_axis:
+        at_sample &= exact[k]
 
     def polynomial(dx):
         return ((c[0, i] * dx + c[1, i]) * dx + c[2, i]) * dx + c[3, i]
 
     value = xp.where(
-        q < x[0],
-        t[0] + (q - x[0]) * t[2],
-        xp.where(q > x[-1], t[1] + (q - x[-1]) * t[3], polynomial(q - x[i])),
+        q < lower[0],
+        t[0] + ((q - x[0]) - residual[0]) * t[2],
+        xp.where(
+            q > upper,
+            t[1] + ((q - x[-1]) - residual[-1]) * t[3],
+            polynomial((q - x[i]) - residual[i]),
+        ),
     )
     if interpolation == "log":
         value = xp.power(10.0, value)
         if not exact_knots and xp is jnp:
-            correction = xp.where(q == x[k], values[k] - value, 0)
+            correction = xp.where(at_sample, values[k] - value, value.dtype.type(0))
             return value + jax.lax.stop_gradient(correction)
     elif not exact_knots:
         # Aperture records historically return the polynomial at a linear endpoint.
         return value
     if xp is np:
-        return np.where(q == x[k], values[k], value)
+        return np.where(at_sample, values[k], value)
     # The residual cancels the fit's sample tangent at a knot and retains
     # its radial derivative. The measured sample supplies its own tangent.
-    anchor = polynomial(x[k] - x[i])
+    anchor = polynomial((x[k] - x[i]) + (residual[k] - residual[i]))
     if interpolation == "log":
         anchor = xp.power(10.0, anchor)
     at_knot = values[k] + (value - anchor)
-    return jnp.where(q == x[k], at_knot, value)
+    return jnp.where(at_sample, at_knot, value)
 
 
 class SampledProfile(eqx.Module):
@@ -1339,16 +1370,10 @@ def _diameter_weights(diameters, basis, diameter, interval):
     """Spline weights of the K tabulated diameters at ``diameter``, shape (..., K)."""
     traced = (jax.Array, jax.core.Tracer)
     xp = jnp if isinstance(diameter, traced) or isinstance(diameters, traced) else np
-    # Under JAX the arrays take the default float dtype, so float32 mode does not warn.
-    dtype = jnp.result_type(float) if xp is jnp else float
-    if isinstance(diameters, (np.ndarray, *traced)):
-        diameters = diameters.astype(dtype)
-    if isinstance(basis, (np.ndarray, *traced)):
-        basis = basis.astype(dtype)
-    x = xp.asarray(diameters)
     d = xp.asarray(diameter)
+    x = xp.asarray(diameters, dtype=d.dtype)
     dx = (d - x[interval])[..., None]
-    c = xp.asarray(basis)[interval]
+    c = xp.asarray(basis, dtype=d.dtype)[interval]
     return ((c[..., 0, :] * dx + c[..., 1, :]) * dx + c[..., 2, :]) * dx + c[..., 3, :]
 
 
@@ -1651,9 +1676,6 @@ class PerformanceCurves(eqx.Module):
         rows = getattr(self, name)
         fits = self._fits[name]
         diameters = self.stellar_diameters_lod
-        if isinstance(diameters, (jax.Array, jax.core.Tracer)):
-            # A record built under x64 keeps float64 leaves; read the active dtype.
-            diameters = diameters.astype(jnp.result_type(float))
         n_rows = rows.shape[0]
 
         def profile(k, q):
@@ -1690,8 +1712,19 @@ class PerformanceCurves(eqx.Module):
                 "this record holds one profile, at one stellar diameter; a star "
                 "of a different diameter needs a record tabulated over diameter",
             )
+        if use_jax:
+            leaves = (v for v in (rows, diameters) if isinstance(v, jax.Array))
+            dtype = jnp.result_type(separation_lod, stellar_diameter_lod, *leaves, 1.0)
+        else:
+            dtype = np.result_type(
+                np.asarray(separation_lod),
+                np.asarray(stellar_diameter_lod),
+                diameters,
+                1.0,
+            )
         q, d = xp.broadcast_arrays(
-            xp.asarray(separation_lod), xp.asarray(stellar_diameter_lod)
+            xp.asarray(separation_lod, dtype=dtype),
+            xp.asarray(stellar_diameter_lod, dtype=dtype),
         )
         d = _require(
             distance <= _DIAMETER_RANGE_RTOL * knots[-1],
@@ -1716,7 +1749,9 @@ class PerformanceCurves(eqx.Module):
         reference = xp.take_along_axis(logs, k[..., None], axis=-1)
         log_value = reference[..., 0] + xp.sum(weights * (logs - reference), axis=-1)
         value = xp.exp(log_value)
-        interpolated = xp.where(xp.all(per_row <= 0, axis=-1), 0.0, value)
+        interpolated = xp.where(
+            xp.all(per_row <= 0, axis=-1), value.dtype.type(0), value
+        )
         if use_jax:
             measured = measured + (interpolated - jax.lax.stop_gradient(interpolated))
         return xp.where(at_knot, measured, interpolated)

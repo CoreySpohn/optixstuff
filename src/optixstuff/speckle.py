@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 from hwoutils.constants import d2s
-from hwoutils.precision import PrecisionError, float_dtype, require_float64
+from hwoutils.precision import PrecisionError, float_dtype, like, require_float64
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -114,7 +114,7 @@ class FocalResponse(eqx.Module):
         return e_nom * scale, G * scale
 
     def _pixel_amplitude_scale(self) -> Array:
-        return jnp.sqrt(self.grid.pixel_area)
+        return jnp.sqrt(like(self.grid.pixel_area, self.e_nom))
 
 
 def _sensitivity_scale(response, wavelengths):
@@ -122,7 +122,7 @@ def _sensitivity_scale(response, wavelengths):
     if response.wavelength_law == "opd":
         return response.reference_wavelength_nm / wavelengths
     if response.wavelength_law == "amplitude":
-        return jnp.ones_like(wavelengths, dtype=float)
+        return jnp.ones_like(wavelengths)
     raise ValueError("a tabulated response must be read at its wavelength nodes")
 
 
@@ -156,7 +156,7 @@ class AbstractSpeckleField(eqx.Module):
 
     ``elapsed_s(time_d)`` is the only conversion from scene time and is not
     overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
-    active dtype. With a nonzero ``epoch_d`` it subtracts in binary64 and
+    input precision. With a nonzero ``epoch_d`` it subtracts in binary64 and
     requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
     integer array (subtracted on the host), or a JAX float64 array
     (subtracted on the device when x64 is enabled). A concrete float64
@@ -190,6 +190,16 @@ class AbstractSpeckleField(eqx.Module):
     grid: AbstractVar[PixelGrid]
     epoch_d: AbstractVar[float]
 
+    def _working_dtype(self, *values):
+        """Type weak observation inputs from the field and explicit inputs."""
+        leaves = (
+            leaf
+            for leaf in jax.tree.leaves(self)
+            if isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jnp.inexact)
+        )
+        dtype = jnp.finfo(jnp.result_type(*leaves, *values, 1.0)).dtype
+        return jax.dtypes.canonicalize_dtype(dtype)
+
     def elapsed_s(self, time_d: ArrayLike) -> Array:
         """Convert scene time to seconds on this field's clock.
 
@@ -206,7 +216,10 @@ class AbstractSpeckleField(eqx.Module):
                 this method runs.
 
         Returns:
-            Seconds since the field's clock origin, in the active dtype.
+            Seconds since the field's clock origin. Explicit float32 and
+            float64 relative times keep their available precision. Weak
+            relative times use the field's precision. Host absolute epoch
+            subtraction uses the construction dtype for the returned offset.
 
         Raises:
             TypeError: If ``epoch_d`` is not a static host float.
@@ -217,9 +230,18 @@ class AbstractSpeckleField(eqx.Module):
         epoch_d = self.epoch_d
         if type(epoch_d) is not float:
             raise TypeError("epoch_d must be a static host float, not a leaf")
-        dtype = float_dtype()
         if epoch_d == 0.0:
+            if isinstance(time_d, (tuple, list)):
+                time_d = jnp.asarray(time_d)
+            dtype = getattr(time_d, "dtype", None)
+            if dtype in (np.float32, np.float64) and not getattr(
+                time_d, "weak_type", False
+            ):
+                dtype = jax.dtypes.canonicalize_dtype(dtype)
+            else:
+                dtype = self._working_dtype(time_d)
             return jnp.asarray(time_d, dtype=dtype) * d2s
+        dtype = float_dtype()
         if isinstance(time_d, jax.Array):
             if time_d.dtype != np.float64:
                 _reject_time_dtype(time_d.dtype, epoch_d)
@@ -304,12 +326,15 @@ class AbstractSpeckleField(eqx.Module):
         if int(n_sub) < 1 or int(n_sub) != n_sub:
             raise ValueError(f"n_sub must be a positive integer, got {n_sub}")
         n_sub = int(n_sub)
-        start = jnp.asarray(start_elapsed_s, dtype=float)
-        step = jnp.asarray(exposure_s, dtype=float) / n_sub
+        dtype = self._working_dtype(wavelength_nm, exposure_s, start_elapsed_s)
+        wavelength = jnp.asarray(wavelength_nm, dtype=dtype)
+        start = jnp.asarray(start_elapsed_s, dtype=dtype)
+        step = jnp.asarray(exposure_s, dtype=dtype) / n_sub
 
         def sample(index):
             return self.realize(
-                wavelength_nm=wavelength_nm, elapsed_s=start + (index + 0.5) * step
+                wavelength_nm=wavelength,
+                elapsed_s=start + (jnp.asarray(index, dtype=dtype) + 0.5) * step,
             )
 
         def accumulate(index, total):
@@ -383,8 +408,7 @@ class LinearSpeckleField(AbstractSpeckleField):
 
         ``elapsed_s`` is seconds since the clock origin. Coefficient units are
         those used to define G (for example nm of wavefront error). The
-        implementation converts ``elapsed_s`` with
-        ``jnp.asarray(elapsed_s, dtype=float)`` and does not read ``epoch_d``.
+        implementation reads elapsed seconds at the working precision.
 
         Args:
             elapsed_s: Seconds since the field's clock origin, any shape.
@@ -413,8 +437,9 @@ class LinearSpeckleField(AbstractSpeckleField):
             Stellar flux fraction excess per cell, shape
             ``(*wavelength_shape, *time_shape, ny, nx)``.
         """
-        wavelengths = jnp.asarray(wavelength_nm)
-        eps = self.coefficients(elapsed_s=elapsed_s)
+        dtype = self._working_dtype(wavelength_nm, elapsed_s)
+        wavelengths = jnp.asarray(wavelength_nm, dtype=dtype)
+        eps = self.coefficients(elapsed_s=jnp.asarray(elapsed_s, dtype=dtype))
         # Contract densities first to avoid a per-realization copy of G.
         pixel_scale = self.response._pixel_amplitude_scale()
         e_nom = self.response.e_nom * pixel_scale

@@ -277,7 +277,10 @@ def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch(precision):
     assert carried.dtype == np.float64
     for days in (np.float32(1), jnp.asarray(1.0, dtype=precision), carried):
         for elapsed in (zero.elapsed_s(days), compiled(zero, days)):
-            assert elapsed.dtype == precision
+            expected_dtype = min(
+                np.dtype(days.dtype), np.dtype(precision), key=lambda d: d.itemsize
+            )
+            assert elapsed.dtype == expected_dtype
             np.testing.assert_array_equal(elapsed, 86400)
 
 

@@ -65,8 +65,8 @@ def _polyval_deriv(coeffs, x):
     """Evaluate the derivative of a descending-order polynomial at x."""
     n = coeffs.shape[0]
     if n <= 1:
-        return jnp.zeros_like(jnp.asarray(x, dtype=float))
-    powers = jnp.arange(n - 1, 0, -1)
+        return jnp.zeros_like(x)
+    powers = jnp.arange(n - 1, 0, -1, dtype=jnp.int32)
     return jnp.polyval(coeffs[:-1] * powers, x)
 
 
@@ -152,7 +152,8 @@ class LensletDisperser(AbstractDisperser):
         Returns:
             Spectral-axis detector offset in pixels.
         """
-        u = jnp.log(jnp.asarray(wavelength_nm, dtype=float) / self.lam_ref_nm)
+        wavelength_nm = jnp.asarray(wavelength_nm)
+        u = jnp.log(wavelength_nm / self.lam_ref_nm)
         return jnp.polyval(self.dispersion_coeffs, u)
 
     def spectral_resolution(self, wavelength_nm):
@@ -164,7 +165,17 @@ class LensletDisperser(AbstractDisperser):
         Returns:
             Resolving power R, dimensionless.
         """
-        u = jnp.log(jnp.asarray(wavelength_nm, dtype=float) / self.lam_ref_nm)
+        if isinstance(wavelength_nm, (tuple, list)):
+            wavelength_nm = jnp.asarray(wavelength_nm)
+        dtype = jnp.result_type(
+            wavelength_nm,
+            self.lam_ref_nm,
+            self.dispersion_coeffs,
+            self.pix_per_reselt,
+            1.0,
+        )
+        wavelength_nm = jnp.asarray(wavelength_nm, dtype=dtype)
+        u = jnp.log(wavelength_nm / self.lam_ref_nm)
         local = jnp.abs(_polyval_deriv(self.dispersion_coeffs, u))
         return local / self.pix_per_reselt
 
@@ -203,5 +214,7 @@ class LensletDisperser(AbstractDisperser):
         Returns:
             Throughput in [0, 1], shaped like ``wavelength_nm``.
         """
-        w = jnp.asarray(wavelength_nm, dtype=float)
-        return self.throughput_element.get_throughput(w) * jnp.ones_like(w)
+        w = jnp.asarray(wavelength_nm)
+        return self.throughput_element.get_throughput(w) * jnp.ones_like(
+            w, dtype=jnp.result_type(w, 1.0)
+        )
