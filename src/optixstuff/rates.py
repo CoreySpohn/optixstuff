@@ -7,6 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.numerics import COARSEST
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -341,6 +342,22 @@ RATE_FLOOR_RTOL = 1e-4
 """Largest negative rate, relative to the frame peak, that is drawn as zero."""
 
 
+def rate_below_floor(rate: ArrayLike, scale: ArrayLike) -> Array:
+    """Test the detector's negative-rate domain on the shared float32 grid.
+
+    Args:
+        rate: Total rate, any shape.
+        scale: Frame peak of the summed absolute component rates, broadcast
+            against the rate.
+
+    Returns:
+        True where the rate is more negative than the allowed fraction of the peak.
+    """
+    rate = jnp.asarray(rate, dtype=COARSEST)
+    scale = jnp.asarray(scale, dtype=COARSEST)
+    return rate < -RATE_FLOOR_RTOL * scale
+
+
 def floor_rate(rate: ArrayLike, scale: ArrayLike) -> tuple[Array, Array]:
     """Clip a rate at zero and flag a value too negative to be integration error.
 
@@ -366,6 +383,6 @@ def floor_rate(rate: ArrayLike, scale: ArrayLike) -> tuple[Array, Array]:
         below ``-RATE_FLOOR_RTOL * scale``.
     """
     rate = jnp.asarray(rate)
-    bad = rate < -RATE_FLOOR_RTOL * jnp.asarray(scale)
+    bad = rate_below_floor(rate, scale)
     # A where, not a maximum: the gradient at a rate of exactly zero is one.
     return jnp.where(rate < 0, jnp.zeros_like(rate), rate), bad

@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.leaves import HostGrid, as_float_leaf, is_traced
-from hwoutils.numerics import same, same_tolerance
+from hwoutils.numerics import COARSEST, same, same_tolerance
 from numpy.polynomial.legendre import leggauss
 
 from optixstuff.grids import Image
@@ -294,6 +294,23 @@ class Band:
     def width_nm(self) -> float:
         """Full band width [nm]."""
         return self.high_nm - self.low_nm
+
+    def contains_wavelength(self, wavelength_nm):
+        """Test membership of a calibrated interval on the float32 grid.
+
+        Use the original wavelength separately for physical scaling and
+        interpolation.
+
+        Args:
+            wavelength_nm: Wavelength in nm, scalar or array.
+
+        Returns:
+            Boolean array matching the input shape, with both edges inclusive.
+        """
+        wavelength = jnp.asarray(wavelength_nm, dtype=COARSEST)
+        return (wavelength >= COARSEST(self.low_nm)) & (
+            wavelength <= COARSEST(self.high_nm)
+        )
 
     def channels(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
         """Partition into n bands using one shared edge table, including endpoints.

@@ -335,6 +335,10 @@ class AbstractImagingCoronagraph(AbstractCoronagraph):
     ) -> SourcePSFs:
         """Source fractions; table grid=None retains native samples and metadata.
 
+        Products with a wavelength-limited source domain can use
+        :meth:`Band.contains_wavelength` for the mask and keep the wavelength's
+        working precision for physical scaling.
+
         Args:
             wavelength_nm: Wavelength in nm.
             x_lod: Source x positions in lambda/D.
