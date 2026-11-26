@@ -25,7 +25,7 @@ from optixstuff.grids import (
     integrate_footprints,
     resample,
 )
-from optixstuff.performance import SampledProfile
+from optixstuff.performance import SampledProfile, _stellar_samples
 from optixstuff.radial import radial_profile
 from optixstuff.rates import floor_rate, rate_below_floor
 from optixstuff.spectral import Knots, Transmission, rebin_bands, trapezoid_weights
@@ -37,6 +37,24 @@ pytestmark = pytest.mark.float64_only(
 
 class _UpstreamPrecisionFailure(Exception):
     """Only a reproduced dependency failure qualifies for strict xfail."""
+
+
+@pytest.mark.parametrize("same_grid", [True, False])
+def test_stellar_samples_precision_closed(same_grid):
+    """Fails if stellar interpolation widens a float32 image with x64 enabled."""
+    frame = Frame(500, 6, "circumscribed")
+    stellar = ox.PixelGrid.focal(6, 0.25, frame)
+    planet = stellar if same_grid else ox.PixelGrid.focal(6, 0.2, frame)
+    samples = partial(
+        _stellar_samples,
+        sg=stellar,
+        planet_grid=planet,
+        sy=1,
+        sx=2,
+        shape=(4, 4),
+        factor=2,
+    )
+    assert_precision_closed(samples, jnp.ones(stellar.shape, dtype=jnp.float32))
 
 
 def _deterministic_poisson(key, lam, shape=None):

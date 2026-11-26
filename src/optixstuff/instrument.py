@@ -24,6 +24,8 @@ from optixstuff.primary import AbstractPrimary
 from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.spectral import spectral_breaks
 
+_FRAME_DIAMETER_RTOL = 1e-6  # tol: algorithm, 1 ppm relative diameter mismatch
+
 
 def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
     """Raise when a lambda/D frame was measured for another telescope diameter.
@@ -47,7 +49,9 @@ def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
     supplied = primary.diameter(frame.diameter_convention)
     if isinstance(supplied, jax.core.Tracer):
         return
-    if not math.isclose(float(supplied), frame.diameter_m, rel_tol=1e-6):
+    if not math.isclose(
+        float(supplied), frame.diameter_m, rel_tol=_FRAME_DIAMETER_RTOL, abs_tol=0.0
+    ):
         raise ValueError(
             f"primary {frame.diameter_convention} diameter {float(supplied)} m "
             f"differs from the {source}'s lambda/D frame ({frame.diameter_m} m); "
