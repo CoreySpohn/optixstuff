@@ -17,8 +17,10 @@ import interpax
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.leaves import is_traced
 from hwoutils.map_coordinates import map_coordinates
 from hwoutils.numerics import COARSEST
+from hwoutils.precision import like
 from scipy.interpolate import CubicSpline, PchipInterpolator
 from scipy.optimize import root_scalar
 
@@ -78,8 +80,10 @@ def _band_limited_samples(spectrum, start, n_pix, oversample):
     subpixel ``j`` counted from pixel ``start``.
     """
     size = spectrum.shape[0]
-    coords = start + (jnp.arange(n_pix * oversample) + 0.5) / oversample - 0.5
-    freqs = jnp.fft.fftfreq(size)
+    dtype = jnp.finfo(spectrum.dtype).dtype
+    offsets = (jnp.arange(n_pix * oversample, dtype=dtype) + 0.5) / oversample
+    coords = jnp.asarray(start, dtype=dtype) + offsets - 0.5
+    freqs = jnp.fft.fftfreq(size, dtype=dtype)
     return jnp.exp(2j * jnp.pi * coords[:, None] * freqs[None, :]) / size
 
 
@@ -324,6 +328,13 @@ def _circle_square_weights(rows, cols, radius):
     return jnp.where(inner, 1.0, jnp.where(outer, 0.0, jnp.clip(fraction, 0, 1)))
 
 
+def _require_host_photometry(*inputs):
+    if any(is_traced(value) for value in jax.tree.leaves(inputs)):
+        raise TypeError(
+            "Photometry preparation requires concrete images and coordinates"
+        )
+
+
 def _measure_circular_aperture(
     psf,
     radius_pix,
@@ -335,18 +346,28 @@ def _measure_circular_aperture(
     star_frame=None,
 ):
     """Host measurement boundary using float64 to resolve faint stellar leakage."""
-    with jax.enable_x64():
+    _require_host_photometry(
+        psf, radius_pix, pixel_scale_lod, star_psf, nominal_center, star_frame
+    )
+    with jax.enable_x64():  # precision-ok: host aperture sums resolve faint leakage
+        psf = jnp.asarray(
+            psf,
+            dtype=jnp.float64,  # precision-ok: host PSF for aperture quadrature
+        )
+        if star_psf is not None:
+            star_psf = jnp.asarray(
+                star_psf,
+                dtype=jnp.float64,  # precision-ok: host faint stellar PSF
+            )
         values = circular_aperture(
-            jnp.asarray(psf, dtype=jnp.float64),
+            psf,
             radius_pix,
             pixel_scale_lod,
             oversample=oversample,
             half_width_pix=half_width_pix,
             nominal_center=nominal_center,
             star_frame=star_frame,
-            star_psf=None
-            if star_psf is None
-            else jnp.asarray(star_psf, dtype=jnp.float64),
+            star_psf=star_psf,
         )
         return tuple(float(value) for value in values)
 
@@ -927,7 +948,10 @@ def _rule_samples(rule, psf, source_position, oversample=CORE_OVERSAMPLE):
     grid = psf.grid
     pixel = grid.unit_to_pixel(*source_position)
     nominal = (pixel.y, pixel.x)
-    data = jnp.asarray(psf.integrated().data, dtype=jnp.float64)
+    data = jnp.asarray(
+        psf.integrated().data,
+        dtype=jnp.float64,  # precision-ok: host PSF for subpixel coverage and sums
+    )
     if isinstance(rule, Circular):
         half_width = (
             int(np.ceil((rule.radius_lod + PEAK_SEARCH_RADIUS_LOD) / grid.step)) + 1
@@ -975,7 +999,8 @@ def _rule_samples(rule, psf, source_position, oversample=CORE_OVERSAMPLE):
 
 def _rule_weights(rule, psf, source_position, oversample):
     """Aggregate the common subpixel coverage to native fractional pixel weights."""
-    with jax.enable_x64():
+    _require_host_photometry(psf, source_position)
+    with jax.enable_x64():  # precision-ok: host build of native exact-coverage weights
         _, weights, sy, sx, factor = _rule_samples(
             rule, psf, source_position, oversample
         )
@@ -992,7 +1017,8 @@ def _rule_weights(rule, psf, source_position, oversample):
 
 def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     """Band-limited stellar per-pixel fractions in the planet's pixel units."""
-    data = jnp.asarray(data, dtype=jnp.float64)
+    dtype = jnp.result_type(data, 1.0)
+    data = jnp.asarray(data, dtype=dtype)
     if sg == planet_grid:
         if factor == 1:
             return jax.lax.dynamic_slice(data, (sy, sx), shape)
@@ -1008,23 +1034,29 @@ def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     )
     rows = (
         sg.center_y
-        + (sy + (jnp.arange(shape[0]) + 0.5) / factor - 0.5 - planet_grid.center_y)
+        + (
+            jnp.asarray(sy, dtype=dtype)
+            + (jnp.arange(shape[0], dtype=dtype) + 0.5) / factor
+            - 0.5
+            - planet_grid.center_y
+        )
         * ratio
     )
     cols = (
         sg.center_x
-        + (sx + (jnp.arange(shape[1]) + 0.5) / factor - 0.5 - planet_grid.center_x)
+        + (
+            jnp.asarray(sx, dtype=dtype)
+            + (jnp.arange(shape[1], dtype=dtype) + 0.5) / factor
+            - 0.5
+            - planet_grid.center_x
+        )
         * ratio
     )
     spectrum = jnp.fft.fft2(data)
-    by = (
-        jnp.exp(2j * jnp.pi * rows[:, None] * jnp.fft.fftfreq(sg.shape[0]))
-        / sg.shape[0]
-    )
-    bx = (
-        jnp.exp(2j * jnp.pi * cols[:, None] * jnp.fft.fftfreq(sg.shape[1]))
-        / sg.shape[1]
-    )
+    fy = jnp.fft.fftfreq(sg.shape[0], dtype=dtype)
+    fx = jnp.fft.fftfreq(sg.shape[1], dtype=dtype)
+    by = jnp.exp(2j * jnp.pi * rows[:, None] * fy) / sg.shape[0]
+    bx = jnp.exp(2j * jnp.pi * cols[:, None] * fx) / sg.shape[1]
     inside = (
         (rows[:, None] >= -0.5)
         & (rows[:, None] < sg.shape[0] - 0.5)
@@ -1301,6 +1333,8 @@ def ring_symmetrized(image, grid=None, n_theta=None):
     :func:`profile_radii` and linear in r between them. ``n_theta`` defaults to
     :func:`ring_azimuth_samples`.
 
+    This host preparation step uses float64 to retain faint stellar leakage.
+
     ``grid`` is the pixel grid of the result, for example the PSF grid when it
     differs from the image's: each pixel takes the ring mean at its own angular
     radius, in flux fraction per pixel of ``grid``, and zero beyond the image
@@ -1316,6 +1350,7 @@ def ring_symmetrized(image, grid=None, n_theta=None):
         Image on ``grid`` with each pixel set to the mean of its ring, in flux
         fraction per pixel of ``grid``.
     """
+    _require_host_photometry(image, grid, n_theta)
     image = image.integrated()
     sg = image.grid
     grid = sg if grid is None else grid
@@ -1328,8 +1363,11 @@ def ring_symmetrized(image, grid=None, n_theta=None):
     ratio = (grid.step * pf.lod_to_arcsec(pf.reference_wavelength_nm)) / (
         sg.step * sf.lod_to_arcsec(sf.reference_wavelength_nm)
     )
-    with jax.enable_x64():
-        data = jnp.asarray(image.data, dtype=jnp.float64)
+    with jax.enable_x64():  # precision-ok: host build of the stellar ring map
+        data = jnp.asarray(
+            image.data,
+            dtype=jnp.float64,  # precision-ok: host faint stellar map
+        )
         profile = azimuthal_mean_profile(data, center, jnp.asarray(radii), n_theta)
         rows, cols = jnp.indices(grid.shape)
         stellar_radius = jnp.hypot(rows - grid.center_y, cols - grid.center_x) * ratio
@@ -1809,6 +1847,8 @@ def performance_curves(
 ) -> PerformanceCurves:
     """Tabulate one aperture rule on one axis.
 
+    This host tabulation measures aperture flux and stellar leakage in float64.
+
     Minimal protocol: ``offaxis(separation_lod: float) -> Image`` on the +x
     axis. Supply ``separations_lod`` or an object attribute of that name.
     The callable is evaluated on the explicit separation axis. Explicit
@@ -1949,7 +1989,8 @@ def _performance_curves(
     )
     tau, area = [], []
     leakage = [[] for _ in stellars]
-    with jax.enable_x64():
+    _require_host_photometry(images, stellars, locations)
+    with jax.enable_x64():  # precision-ok: host build of faint-leakage records
         symmetric = (
             [ring_symmetrized(image, grid).data for image in stellars]
             if leakage_rule == RING_RULE
@@ -1966,7 +2007,13 @@ def _performance_curves(
             if symmetric is None:
                 for row, image in zip(leakage, stellars, strict=True):
                     star = _stellar_samples(
-                        image.data, image.grid, grid, sy, sx, weights.shape, factor
+                        like(image.data, fine),
+                        image.grid,
+                        grid,
+                        sy,
+                        sx,
+                        weights.shape,
+                        factor,
                     )
                     row.append(float(jnp.sum(star * weights) / factor**2))
             else:
@@ -1982,7 +2029,10 @@ def _performance_curves(
                 [
                     np.asarray(
                         azimuthal_mean_profile(
-                            jnp.asarray(image.data, dtype=jnp.float64),
+                            jnp.asarray(
+                                image.data,
+                                dtype=jnp.float64,  # precision-ok: host ring photometry
+                            ),
                             (image.grid.center_y, image.grid.center_x),
                             jnp.asarray(separations * angular_ratio / image.grid.step),
                         )

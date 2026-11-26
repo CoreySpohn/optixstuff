@@ -1065,13 +1065,16 @@ def _compose(interpolant, size, moments, points):
 
     def rows(moment, wave):
         transpose = jax.linear_transpose(
-            lambda values: moment @ interpolant(values, wave), jnp.zeros(size)
+            lambda values: moment @ interpolant(values, wave),
+            jnp.zeros(size, dtype=moment.dtype),
         )
-        return jax.vmap(lambda row: transpose(row)[0])(jnp.eye(moment.shape[0]))
+        return jax.vmap(lambda row: transpose(row)[0])(
+            jnp.eye(moment.shape[0], dtype=moment.dtype)
+        )
 
     compose = jax.jit(rows)
     blocks = []
-    with jax.enable_x64():
+    with jax.enable_x64():  # precision-ok: host build of float64 quadrature blocks
         for moment, wave in zip(moments, points, strict=True):
             dense = np.asarray(compose(jnp.asarray(moment), jnp.asarray(wave)))
             used = np.flatnonzero(np.any(dense != 0, axis=0))
@@ -1321,7 +1324,7 @@ class Reduction(eqx.Module):
         return flat[slots]
 
 
-EDGE_GUARD = 1e-12
+EDGE_GUARD = 1e-12  # tol: algorithm, 1e-12 dimensionless squared gap ratio
 """Largest ``(d / h) ** 2`` at which a knot near a piece edge counts as the edge."""
 
 
