@@ -24,6 +24,31 @@ from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.spectral import Quadrature
 
 
+def _dtype_probe(value):
+    """Stand in for a nested list or tuple when inferring a working dtype.
+
+    A sequence of Python numbers is typed weakly, like a Python scalar; any
+    other sequence is typed by its NumPy array.
+
+    Args:
+        value: An observation input as supplied by the caller.
+
+    Returns:
+        The value itself, or a weak Python scalar or NumPy array of the
+        sequence's dtype.
+    """
+    if not isinstance(value, (list, tuple)):
+        return value
+    flat = np.ravel(np.asarray(value, dtype=object))
+    if all(type(x) in (bool, int, float, complex) for x in flat):
+        if any(type(x) is complex for x in flat):
+            return 0j
+        if any(type(x) is float for x in flat):
+            return 0.0
+        return 0
+    return np.asarray(value)
+
+
 class FocalResponse(eqx.Module):
     """Complex focal amplitudes and their photometric reference.
 
@@ -197,6 +222,7 @@ class AbstractSpeckleField(eqx.Module):
             for leaf in jax.tree.leaves(self)
             if isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jnp.inexact)
         )
+        values = tuple(_dtype_probe(value) for value in values)
         dtype = jnp.finfo(jnp.result_type(*leaves, *values, 1.0)).dtype
         return jax.dtypes.canonicalize_dtype(dtype)
 

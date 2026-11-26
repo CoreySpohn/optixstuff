@@ -553,3 +553,20 @@ def test_construction_and_optical_path(linear_speckle):
     assert any(line.startswith("  speckle:") for line in repr(path).splitlines())
     default = make_instrument(table_coronagraph())
     assert default.speckle is None and "speckle:" not in repr(default)
+
+
+def test_realize_accepts_python_sequences(linear_speckle):
+    """Fails if a list of Python numbers is refused or widens the field.
+
+    Exact-algebra basis: the list and the array of the same values evaluate the
+    same expression, so the images agree exactly.
+    """
+    field = linear_speckle
+    times = [0.0, 0.17, 0.5]
+    got = field.realize(wavelength_nm=500.0, elapsed_s=times).data
+    expected = field.realize(
+        wavelength_nm=500.0,
+        elapsed_s=jnp.asarray(times, dtype=field.response.e_nom.real.dtype),
+    ).data
+    assert got.dtype == expected.dtype
+    np.testing.assert_array_equal(got, expected)
