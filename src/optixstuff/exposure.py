@@ -1,11 +1,13 @@
-"""Whole-frame detector integration plans."""
+"""Observation pointing and whole-frame detector integration plans."""
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.conversions import mas_to_arcsec
 from hwoutils.leaves import as_float_leaf, as_leaf, is_traced
 
+from optixstuff.grids import SkyOrientation
 from optixstuff.spectral import Quadrature, Resolution
 
 
@@ -172,14 +174,77 @@ def frames_for_time(time_s, frame_time_s) -> FramePlan:
     )
 
 
+class Pointing(eqx.Module):
+    """Tangent-plane attitude for an exposure.
+
+    Roll is the position angle of detector +y, measured north through east.
+    The offset is the target's position relative to the coronagraph optical
+    axis at `PixelGrid.center_x, center_y`. Its components are sky-projected
+    milliarcseconds along detector +x (columns) and +y (rows). A positive x
+    offset moves every source toward higher columns at any roll.
+
+    Source coordinates are east and north of the target, in arcseconds.
+    Rotate about the target with `SkyOrientation`, then add the detector-frame
+    offset in arcseconds. At parity -1 the rotation gives
+    `x = -east * cos(roll) + north * sin(roll)` and
+    `y = east * sin(roll) + north * cos(roll)`. The boresight is the target
+    minus the inverse-rotated offset.
+
+    The pointing offset carries the exact degeneracy with entrance-pupil
+    tip/tilt for all sources. Keep that degree of freedom in `Pointing` when
+    fitting. Noll tilt with RMS wavefront error `a` gives `4 * a / D` radians,
+    where `D` is the pupil diameter in the same length units as `a`. Post-mask
+    tip/tilt is a rigid image shift degenerate with the calibrated detector
+    zero point, carried by `PixelGrid.center_x, center_y`.
+
+    Attributes:
+        roll_deg: Position angle of detector +y in degrees, a traced float leaf.
+        offset_mas: Detector (x, y) offset as a traced float leaf of shape
+            (2,), or a structural None for on-axis pointing.
+    """
+
+    roll_deg: jax.Array = eqx.field(converter=as_float_leaf)
+    offset_mas: jax.Array | None = eqx.field(
+        default=None,
+        converter=lambda offset: None if offset is None else as_float_leaf(offset),
+    )
+
+    def __check_init__(self):
+        """Require a single detector offset pair."""
+        if self.offset_mas is not None and self.offset_mas.shape != (2,):
+            raise ValueError("offset_mas must have shape (2,)")
+
+    def detector_offsets_arcsec(self, east_arcsec, north_arcsec, parity=-1):
+        """Map target-relative sky coordinates to optical-axis-relative offsets.
+
+        Args:
+            east_arcsec: East coordinate from the target, in arcseconds.
+            north_arcsec: North coordinate from the target, in arcseconds.
+            parity: Detector handedness, -1 or +1.
+
+        Returns:
+            Detector (x, y) offsets from the optical axis, in arcseconds.
+
+        Raises:
+            ValueError: An invalid parity or non-finite concrete roll was supplied.
+        """
+        x, y = SkyOrientation(self.roll_deg, parity).sky_to_detector(
+            east_arcsec, north_arcsec
+        )
+        if self.offset_mas is not None:
+            dx, dy = mas_to_arcsec(self.offset_mas)
+            return x + dx, y + dy
+        return x, y
+
+
 class Exposure(eqx.Module):
     """Everything about one observation except the scene and the instrument.
 
-    The record holds when the telescope observes and at what roll, how each
+    The record holds when and where the telescope points, how each
     band is integrated over wavelength, and (for a drawn frame) how long the
     detector collects. Build it on the host with ``coronagraphoto.build_exposure``.
-    The roll, the observation time and the quadrature nodes and weights are array
-    leaves, so an exposure can be an argument of JIT, vmap and grad.
+    The pointing values, observation time and quadrature nodes and weights
+    are array leaves, so an exposure can be an argument of JIT, vmap and grad.
 
     ``resolution`` holds the operators that turn each tabulated source of the
     scene into node-effective values on ``quadrature``; it is empty for a scene
@@ -192,8 +257,7 @@ class Exposure(eqx.Module):
             the active dtype. The local-zodi
             sightline is derived from it, the scene's epoch and the target's
             sky position, not stored here.
-        roll_deg: Position angle of detector +y, north through east, in
-            degrees; a traced leaf.
+        pointing: Roll and optional detector-frame offset for this observation.
         quadrature: Per-band wavelength nodes and weights.
         plan: Whole-frame integration plan; None when only expected rates
             are wanted.
@@ -202,7 +266,7 @@ class Exposure(eqx.Module):
     """
 
     time_d: jnp.ndarray | float = eqx.field(converter=as_float_leaf)
-    roll_deg: jnp.ndarray = eqx.field(converter=as_float_leaf)
+    pointing: Pointing
     quadrature: Quadrature
     plan: FramePlan | None = None
     resolution: Resolution = eqx.field(default_factory=Resolution)
