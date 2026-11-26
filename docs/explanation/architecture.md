@@ -191,7 +191,9 @@ The optional `centroids` entry gives the `(dx, dy)` offset in detector pixels
 from the dispersion-model centroid to that template origin. If a tilt
 displaces a PSFlet by 0.3 pixel in positive x, its `centroids` entry is
 `(0.3, 0)` and its template is centered on zero. Regenerate version 1 packs
-before loading them with `load_psflet_pack`.
+before loading them with `load_psflet_pack`. Offset coordinates must form a
+finite, strictly ascending, uniform axis both on input and after rounding to
+float32. This lets either precision lane write a pack that both lanes can read.
 
 External writers must declare `template_origin = "centroid"` as a string in
 the format 2 archive. `load_psflet_pack` refuses packs from earlier format 2
@@ -284,13 +286,33 @@ interpolates the five fields in their declared spaces independently between knot
 The leakage fields and `raw_contrast` carry one profile per stellar diameter of
 the product (`stellar_diameters_lod`, in the record's lambda/D, shape `(K, S)`),
 so a star's size is part of the read: `evaluate` interpolates the log profile
-between diameters with the cubic spline the image route applies to the stellar
-map, and raises outside the tabulated range. Accuracy between diameters: A product such as the shipped one tabulates 12 stellar diameters, 0, 0.001 and then each knot a factor of two above the last up to 1.0 lambda/D, so the leakage between two knots is an interpolation through a table that holds no map there. Against the image route, which applies the same rule to the stellar map, the curves route agrees to 0.14 percent at 0.045, 0.5 percent at 0.09, 3.8 percent at 0.18, 10 percent at 0.36 and 19 percent at 0.71 lambda/D (at the separations tested, 2.9 to 11 lambda/D); neither route is known to be right between knots at the larger diameters. A Sun at 10 pc is 0.032 lambda/D at 1 micron, inside the accurate region; a star beyond the last knot (1.0 lambda/D) raises. At the tabulated diameters the record equals the ring mean of that plane to 0.14 percent up to 0.126 lambda/D and 0.6 percent at 0.25 lambda/D and above. A record prepared from one stellar
-image holds one profile and serves only a star of that diameter.
+between diameters with a cubic spline on the measured diameter axis. Range
+checks, knot matches, and interval selection use float32 coordinate resolution
+in both lanes. The measured diameters must remain distinct on that grid.
+A query matching a knot uses that row and its separation slope. Between knots
+the polynomial uses the query at working precision.
+
+The shipped product tabulates 12 stellar diameters, from 0 and 0.001 to
+1.0 lambda/D, doubling the diameter between positive knots. In the diameter
+benchmark, the curves route agreed with the image route to 0.14 percent at
+0.045, 0.5 percent at 0.09, 3.8 percent at 0.18, 10 percent at 0.36 and
+19 percent at 0.71 lambda/D, for separations of 2.9 to 11 lambda/D. The maps
+supply values at the knots, so the larger between-knot residuals limit the
+comparison. A Sun at 10 pc is 0.032 lambda/D at 1 micron. A diameter beyond
+the last knot raises. At the tabulated diameters the record agrees with the
+ring mean of that plane to 0.14 percent up to 0.126 lambda/D and 0.6 percent
+from 0.25 lambda/D. A record prepared from one stellar image holds one profile
+and serves only a star of that diameter.
+
 `bandpass` is a `optixstuff.spectral.Band` or `None` for unknown coverage;
 each child of a multiband model must declare its interval. The first child
 covering the requested wavelength supplies the model, including at a shared
-edge. A wavelength outside all calibrated intervals raises `ValueError`.
+edge. Dispatch rounds both coordinates to the float32 wavelength grid before
+applying the wavelength merge rule (strictly less than four spacings, with a
+1e-9 nm floor). For a single-wavelength product, band dispatch uses the mean
+of the two rounded observing-band edges. For a band-averaged product whose
+original edges satisfy the merge rule, no positive-width tile fits. A point
+observation is allowed, as is an explicit wide-band override.
 
 ## Speckle excess
 
@@ -356,10 +378,11 @@ pixel whose read reaches a cell without data. A mask is accepted only for
 reconstructions of finite reach.
 
 `epoch_d` is a static host float64 origin, never a leaf. `elapsed_s(time_d)`
-subtracts it in binary64: with a nonzero `epoch_d`, `time_d` must be a Python
-number, a NumPy float64 or integer array, or a JAX float64 array, and any other
-dtype raises `ValueError` (at trace time under `jit`), because a float32 time
-near a nonzero epoch has already lost the offset. The ways out are to pass
-`elapsed_s` formed on the host, to enable x64, or to move the scene epoch to the
-observation so that `epoch_d` is zero. Deep-contrast calculations also require
+subtracts a nonzero epoch in binary64. Python numbers, NumPy float64 or
+integer arrays, and concrete float64 JAX arrays can reach the host with their
+original precision. With x64 disabled, the host differences those times before
+converting elapsed seconds to float32. Traced absolute subtraction requires
+x64. A reduced-precision floating time at a nonzero epoch raises
+`hwoutils.PrecisionError` in either lane. Use the original data to form elapsed
+seconds on the host or to reconstruct the binary64 absolute time. Deep-contrast calculations also require
 float64/complex128 arrays.

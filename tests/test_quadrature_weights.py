@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.testing import ulps
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
 
@@ -128,7 +129,9 @@ def hosts():
     return Hosts()
 
 
-@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
+@pytest.mark.float64_only(
+    reason="quadrature convergence reference resolves residuals below float32 roundoff"
+)
 def test_accuracy_ladder_on_a_half_width_band(hosts):
     """Fails if the rule loses the accuracy measured before the build.
 
@@ -374,7 +377,6 @@ def test_layout_floor_on_eleven_twenty_percent_bands():
     }
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
     """Fails if padding carries weight, a slice loses its layout, or jit differs.
 
@@ -384,6 +386,9 @@ def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
     integral, jit must match eager, and the layout digest must be static
     (readable inside a traced function), equal on a rebuild and distinct for
     a slice, a different order and a hand-made rule (None).
+
+    Floating-point basis. Allow 16 operations for weights, pairwise
+    contraction in both reduction orders and normalization by the band width.
     """
     bands = (BAND, Band(400.0, 500.0))
     rule = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
@@ -401,17 +406,23 @@ def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
 
     joint = jax.jit(total)(rule, padded)
     assert seen == [rule.layout_digest]
-    np.testing.assert_allclose(joint, rule.integrate(values), rtol=1e-15)
+    np.testing.assert_allclose(
+        joint, rule.integrate(values), rtol=float(ulps(16, 1.0)), atol=0
+    )
     for i, band in enumerate(bands):
         row = rule.band(i)
         assert row.pieces == (rule.pieces[i],)
         alone = Quadrature.build((band,), order=4, breaks_nm=(550.0,), field_lod=10.0)
         assert alone.pieces == row.pieces
         expected = alone.integrate(contrast(alone.nodes_nm))
-        np.testing.assert_allclose(joint[i], expected[0], rtol=1e-13)
+        np.testing.assert_allclose(
+            joint[i], expected[0], rtol=float(ulps(16, 1.0)), atol=0
+        )
         assert row.layout_digest != rule.layout_digest
     constant = jnp.full(rule.nodes_nm.shape, 2.5)
-    np.testing.assert_allclose(rule.mean(constant), 2.5, rtol=1e-14)
+    np.testing.assert_allclose(
+        rule.mean(constant), 2.5, rtol=float(ulps(16, 1.0)), atol=0
+    )
     rebuilt = Quadrature.build(bands, order=4, breaks_nm=(550.0,), field_lod=10.0)
     assert (rule.digest, rule.layout_digest) == (
         rebuilt.digest,

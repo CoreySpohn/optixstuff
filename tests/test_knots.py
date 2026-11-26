@@ -202,7 +202,9 @@ def test_twin_coarse_tables_keep_the_identity_kind(precision):
         np.testing.assert_allclose(integral, truth, rtol=1e-11)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
+@pytest.mark.float64_only(
+    reason="near-knot integral verification resolves a 2e-8 relative mutation"
+)
 def test_fine_table_near_another_grid_is_integrated_exactly():
     """Closed-form basis (test k).
 

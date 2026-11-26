@@ -8,7 +8,7 @@ unocculted stellar flux; coherent interference can make the excess negative.
 import abc
 import math
 from dataclasses import replace
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Never
 
 import equinox as eqx
 import jax
@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 from hwoutils.constants import d2s
+from hwoutils.precision import PrecisionError, float_dtype, require_float64
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -125,24 +126,20 @@ def _sensitivity_scale(response, wavelengths):
     raise ValueError("a tabulated response must be read at its wavelength nodes")
 
 
-def _reduced_time_message(dtype, epoch_d: float) -> str:
-    mode = "x64" if jax.config.jax_enable_x64 else "x32"
-    return (
-        f"time_d of dtype {dtype} under {mode} cannot be measured from "
-        f"epoch_d={epoch_d!r}: "
-        "the offset is already lost before the subtraction. Pass elapsed_s "
-        "formed on the host, enable x64, or move the scene epoch to the "
-        "observation so that epoch_d is zero."
-    )
-
-
-def _x32_execution_message(epoch_d: float) -> str:
-    return (
-        "time_d is a float64 JAX array but x64 is off, so its subtraction from "
-        f"epoch_d={epoch_d!r} would run in float32; the array itself still "
-        "holds the time. Rerun under x64 (jax.enable_x64), or pass elapsed_s "
-        "formed on the host."
-    )
+def _reject_time_dtype(dtype: np.dtype, epoch_d: float) -> Never:
+    if dtype.itemsize < 8 and jnp.issubdtype(dtype.type, jnp.floating):
+        # The guard reads strong JAX leaves. Only the dtype is needed here.
+        try:
+            require_float64(
+                "Absolute epoch subtraction", jnp.empty(0, dtype=dtype.type)
+            )
+        except PrecisionError:
+            raise PrecisionError(
+                f"time_d of dtype {dtype} may have lost its offset from "
+                f"epoch_d={epoch_d!r}. Pass elapsed_s formed on the host from "
+                "the original times, or rebuild time_d in float64 from those times."
+            ) from None
+    raise ValueError(f"unsupported time_d dtype {dtype} for epoch_d={epoch_d!r}")
 
 
 class AbstractSpeckleField(eqx.Module):
@@ -161,14 +158,13 @@ class AbstractSpeckleField(eqx.Module):
     overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
     active dtype. With a nonzero ``epoch_d`` it subtracts in binary64 and
     requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
-    integer array (subtracted on the host), or a JAX float64 array with x64
-    enabled (subtracted on the device). Anything else raises ``ValueError``,
-    at trace time under ``jit``. A float32 time near a nonzero epoch has
-    already lost the offset; the ways out are to pass ``elapsed_s`` formed on
-    the host, to enable x64, or to move the scene epoch to the observation so
-    that ``epoch_d`` is zero. A float64 JAX array passed while x64 is off
-    still holds the time but would be subtracted in float32; it raises with
-    its own message, and rerunning under x64 recovers it.
+    integer array (subtracted on the host), or a JAX float64 array
+    (subtracted on the device when x64 is enabled). A concrete float64
+    JAX array can also be subtracted on the host when x64 is off.
+    A reduced-precision floating input raises ``PrecisionError``, at trace
+    time under ``jit``. Use the original times to form ``elapsed_s`` on the
+    host or to reconstruct the binary64 input. A traced float64 time
+    requires x64 execution.
 
     A NumPy array of either byte order is accepted in a concrete (eager)
     call, where the subtraction runs on the host. Under ``jit`` JAX itself
@@ -204,7 +200,7 @@ class AbstractSpeckleField(eqx.Module):
         Args:
             time_d: Scene time in days from the scene epoch, scalar or array.
                 Binary64 (a Python number, a NumPy float64 or integer array, or
-                a JAX float64 array with x64 enabled) when ``epoch_d`` is
+                a JAX float64 array) when ``epoch_d`` is
                 nonzero. Either byte order in a concrete call; native float64
                 under ``jit``, where JAX misreads a byte-swapped array before
                 this method runs.
@@ -214,28 +210,29 @@ class AbstractSpeckleField(eqx.Module):
 
         Raises:
             TypeError: If ``epoch_d`` is not a static host float.
-            ValueError: If ``epoch_d`` is nonzero and ``time_d`` is not binary64
-                (the offset is already lost), or is a float64 JAX array while
-                x64 is off (rerun under x64); the two messages differ.
+            ValueError: If a nonzero epoch receives an unsupported time type.
+            PrecisionError: If a nonzero epoch receives a reduced-precision
+                floating time, or a traced float64 time cannot run in float64.
         """
         epoch_d = self.epoch_d
         if type(epoch_d) is not float:
             raise TypeError("epoch_d must be a static host float, not a leaf")
+        dtype = float_dtype()
         if epoch_d == 0.0:
-            return jnp.asarray(time_d, dtype=float) * d2s
+            return jnp.asarray(time_d, dtype=dtype) * d2s
         if isinstance(time_d, jax.Array):
-            # A float64 array made under x64 still subtracts in float32 when
-            # x64 is off, so the device path needs both; each is static.
-            if time_d.dtype != jnp.float64:
-                raise ValueError(_reduced_time_message(time_d.dtype, epoch_d))
-            if not jax.config.jax_enable_x64:
-                raise ValueError(_x32_execution_message(epoch_d))
-            return (time_d - epoch_d) * d2s
+            if time_d.dtype != np.float64:
+                _reject_time_dtype(time_d.dtype, epoch_d)
+            if isinstance(time_d, jax.core.Tracer) or dtype == np.float64:
+                require_float64(
+                    "Traced epoch subtraction (or pass elapsed_s formed on the host)"
+                )
+                return (time_d - epoch_d) * d2s
         host = np.asarray(time_d)
         kind, size = host.dtype.kind, host.dtype.itemsize
         if not (kind in "iu" or (kind == "f" and size == 8)):
-            raise ValueError(_reduced_time_message(host.dtype, epoch_d))
-        return jnp.asarray((host.astype(np.float64) - epoch_d) * d2s, dtype=float)
+            _reject_time_dtype(host.dtype, epoch_d)
+        return jnp.asarray((host.astype(np.float64) - epoch_d) * d2s, dtype=dtype)
 
     def data_mask(self) -> Array | None:
         """Cells of ``grid`` that hold data, or None when every cell does.

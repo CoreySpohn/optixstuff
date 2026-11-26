@@ -6,13 +6,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.precision import PrecisionError
 
 from optixstuff import Band, Detector, FramePlan, Quadrature, Rates
 from optixstuff.detector import _floored
 
 
 @vv.case("detector-readout", "code-verification")
-def test_statistics_require_band_integration():
+def test_statistics_require_band_integration(precision):
     """Truth is the band-integrated electron input contract and zero-count law.
 
     Unit rejection, finite score after integration, and the zero-variance
@@ -34,6 +35,10 @@ def test_statistics_require_band_integration():
     malformed = eqx.tree_at(lambda r: r.thermal, rates, jnp.ones(3))
     with pytest.raises(ValueError, match="band-integrat"):
         detector.log_prob(0, malformed, plan)
+    if precision == np.float32:
+        with pytest.raises(PrecisionError, match="log density"):
+            detector.log_prob(1, rates.integrate(), plan)
+        return
     score = detector.log_prob(1, rates.integrate(), plan)
     assert score.shape == (1,) and np.isfinite(score).all()
     zero = Rates(quad.bands, "electron")

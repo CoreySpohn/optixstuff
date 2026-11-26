@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.testing import ulps
 from jax.test_util import check_grads
 
 from optixstuff.grids import Image, Measure, PixelGrid, resample
@@ -18,14 +19,15 @@ def _clear_caches():
     jax.clear_caches()
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_density_evaluates_centers_without_area_or_box_factors():
     """Fails if point samples are deposited, box-averaged or area-scaled.
 
     Local linear/Keys kernels reproduce an interior affine density exactly;
     nearest chooses floor(p+1/2). DFT modes have exact trigonometric
-    reconstructions. Absolute tolerance 2e-13 allows float64 kernel and
-    matrix summation at density <10. Each kernel needs a distinct stencil.
+    reconstructions. Each kernel needs a distinct stencil.
+
+    Floating-point basis. Allow 24 operations at peak sample scale for the
+    affine coordinates, the local kernel and the single-mode Fourier read.
     """
     source = PixelGrid.regular((8, 8), 0.5, "arcsec")
     x, y = source.coordinates()
@@ -44,14 +46,24 @@ def test_density_evaluates_centers_without_area_or_box_factors():
                 else 3 + 2 * tx - ty
             )
             result = resample(image, target, reconstruction=kernel)
-            np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
+            np.testing.assert_allclose(
+                result.data,
+                expected,
+                rtol=0,
+                atol=float(ulps(24, jnp.max(jnp.abs(expected)))),
+            )
             assert result.measure == Measure.density("grid")
         sy, sx = np.indices(source.shape)
         data = 4 + np.cos(2 * np.pi * sx / 8) * np.cos(2 * np.pi * sy / 8)
         expected = 4 + np.cos(2 * np.pi * px / 8) * np.cos(2 * np.pi * py / 8)
         sampled = replace(image, data=data, reconstruction="band_limited")
         result = resample(sampled, target, pad_factor=1)
-        np.testing.assert_allclose(result.data, expected, rtol=0, atol=2e-13)
+        np.testing.assert_allclose(
+            result.data,
+            expected,
+            rtol=0,
+            atol=float(ulps(24, jnp.max(jnp.abs(expected)))),
+        )
 
 
 @pytest.mark.float64_only(reason="finite-difference gradient reference")
@@ -127,18 +139,21 @@ def test_transmission_support_moments_band_integrals_and_transforms():
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_nonuniform_trapezoid_weights_batched_and_degenerate():
     """Fails if nonuniform PSD line widths or endpoint half-cells are wrong.
 
-    The integral of 2*x+3 is x**2+3*x on each increasing grid. This exact
-    algebra allows 2e-15 relative float64 summation error. Singleton span is
+    The integral of 2*x+3 is x**2+3*x on each increasing grid. Singleton span is
     exactly zero; validation assertions require exact failures.
+
+    Floating-point basis. Allow 12 operations for half-widths, the ramp and
+    the pairwise weighted sum.
     """
     x = jnp.array([[0, 0.25, 1, 3], [1, 2, 4, 8.0]])
     weights = jax.jit(trapezoid_weights)(x)
     expected = np.asarray(x[:, -1] ** 2 + 3 * x[:, -1] - x[:, 0] ** 2 - 3 * x[:, 0])
-    np.testing.assert_allclose(jnp.sum(weights * (2 * x + 3), -1), expected, rtol=2e-15)
+    np.testing.assert_allclose(
+        jnp.sum(weights * (2 * x + 3), -1), expected, rtol=float(ulps(12, 1.0)), atol=0
+    )
     np.testing.assert_array_equal(weights[0], [0.125, 0.5, 1.375, 1.0])
     np.testing.assert_array_equal(trapezoid_weights([2.0]), [0.0])
     for bad in ([], [1, 1], [2, 1], [0, np.inf]):

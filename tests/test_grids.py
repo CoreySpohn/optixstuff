@@ -8,8 +8,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.constants import arcsec2rad
+from hwoutils.numerics import eps
 from hwoutils.precision import complex_of
-from hwoutils.testing import ulps
+from hwoutils.testing import precision_pair, ulps
 
 from optixstuff.grids import (
     Frame,
@@ -72,7 +73,6 @@ def test_raster_corner_and_extent(shape, center, basis, extent):
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     ("basis", "corners", "x", "y"),
     [
@@ -91,28 +91,45 @@ def test_raster_corner_and_extent(shape, center, basis, extent):
     ],
 )
 def test_affine_grid_corners_and_radius(basis, corners, x, y):
-    """Fails if an axis is swapped or shear or rotation is silently lost."""
+    """Fails if an axis is swapped or shear or rotation is silently lost.
+
+    Floating-point basis. The integer affine coordinates are exact; allow four
+    operations for squaring, adding and taking the norm.
+    """
     grid = PixelGrid((2, 3), 2, 0, basis, "arcsec")
     with pytest.raises(ValueError, match="rotated or sheared"):
         grid.extent()
     np.testing.assert_array_equal(grid.corners(), corners)
-    np.testing.assert_allclose(grid.radius(), np.hypot(x, y), atol=1e-15, rtol=0)
+    np.testing.assert_allclose(
+        grid.radius(), np.hypot(x, y), rtol=float(ulps(4, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_frame_conversion_and_native_geometry(frame):
     """Fails if lambda/D uses wrong wavelength units or a duplicated constant.
 
     Primitives: 1 nm=1e-9 m, pi rad=180 degrees, 3600 arcsec/degree.
-    rtol=3e-15, atol=0 allows float64 arithmetic and rounded conversion constants.
+
+    Floating-point basis. Allow six operations for converting wavelength,
+    diameter and radians into arcseconds and for the inverse conversion.
+    The traced scale uses the input dtype. Concrete grid geometry and the
+    round trip use host binary64.
     """
     expected = 550e-9 / 7.2 * (180 / np.pi) * 3600
     actual = jax.jit(frame.lod_to_arcsec)(jnp.array(550.0))
-    np.testing.assert_allclose(actual, expected, rtol=3e-15, atol=0)
+    np.testing.assert_allclose(actual, expected, rtol=float(ulps(6, 1.0)), atol=0)
+    if actual.dtype == np.float64:
+        precision_pair(
+            frame.lod_to_arcsec,
+            (jnp.asarray(550.0),),
+            bound=float(ulps(6, np.float32(1.0))),
+        )
     grid = PixelGrid.focal(8, 0.25, frame)
     angular = grid.to_arcsec(550)
     assert angular.unit == "arcsec" and angular.frame == frame
-    np.testing.assert_allclose(angular.step, expected * 0.25, rtol=3e-15, atol=0)
+    np.testing.assert_allclose(
+        angular.step, expected * 0.25, rtol=6 * eps(np.float64), atol=0
+    )
     offaxis = PixelGrid(
         (3, 4),
         0.25,
@@ -124,7 +141,9 @@ def test_frame_conversion_and_native_geometry(frame):
     )
     restored = offaxis.to_arcsec(600).to_lod(600, frame)
     assert replace(restored, basis=offaxis.basis) == offaxis
-    np.testing.assert_allclose(restored.basis, offaxis.basis, atol=0, rtol=3e-15)
+    np.testing.assert_allclose(
+        restored.basis, offaxis.basis, rtol=6 * eps(np.float64), atol=0
+    )
     assert grid.is_native(550) and not grid.is_native(600)
     assert not angular.is_native(550)
     with pytest.raises(ValueError, match="convention"):
@@ -137,12 +156,14 @@ def test_frame_conversion_and_native_geometry(frame):
         replace(frame, coordinate_model="tangent")
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_sky_orientation_parity_anchor_and_roundtrip():
     """Fails on an east sign error, reversed PA, or use of inverse as forward.
 
-    North-up east-left anchors use exact zeros/ones. Determinants and round
-    trips allow atol=2e-15 for a few float64 trigonometric operations.
+    North-up east-left anchors use exact zeros/ones.
+
+    Floating-point basis. Allow 12 operations at vector scale for two
+    rotations, their trigonometric values, products and pairwise sums. The
+    rotation products run in the lane dtype on host constants.
     """
     orientation = SkyOrientation(0, -1)
     assert orientation.sky_to_detector(1, 0) == (-1, 0)
@@ -152,16 +173,18 @@ def test_sky_orientation_parity_anchor_and_roundtrip():
         east = orientation.sky_to_detector(1, 0)
         north = orientation.sky_to_detector(0, 1)
         determinant = east.x * north.y - north.x * east.y
-        np.testing.assert_allclose(determinant, parity, rtol=0, atol=2e-15)
+        np.testing.assert_allclose(
+            determinant, parity, rtol=0, atol=float(ulps(12, 1.0))
+        )
         detector = orientation.sky_to_detector(2.3, -0.7)
         sky = orientation.detector_to_sky(*detector)
         np.testing.assert_allclose(
-            [sky.east, sky.north], [2.3, -0.7], rtol=0, atol=2e-15
+            [sky.east, sky.north], [2.3, -0.7], rtol=0, atol=float(ulps(12, 2.3))
         )
         aligned = orientation.sky_to_detector(
             np.sin(np.deg2rad(31)), np.cos(np.deg2rad(31))
         )
-        np.testing.assert_allclose(aligned, [0, 1], rtol=0, atol=2e-15)
+        np.testing.assert_allclose(aligned, [0, 1], rtol=0, atol=float(ulps(12, 1.0)))
 
 
 def test_equal_grids_share_trace_and_arrays_transform(frame):
@@ -225,9 +248,13 @@ def test_validation_rejects_inconsistent_shapes_and_geometry(frame):
         _ = replace(grid, basis=((1, 0), (0, 2))).step
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_cell_solid_angle_and_measures():
-    """Fails if radiance integrates over square arcseconds or scales twice."""
+    """Fails if radiance integrates over square arcseconds or scales twice.
+
+    Floating-point basis. The host angular constant is checked in float64.
+    Allow eight lane operations for the determinant, angular scaling and
+    density conversion, and 12 for the additional footprint sum.
+    """
     # One full turn is 2*pi radians, 360 degrees, or 360*3600 arcseconds.
     radians = 2 * np.pi / (360 * 3600)
     np.testing.assert_allclose(arcsec2rad, radians, rtol=3e-16)
@@ -237,11 +264,17 @@ def test_cell_solid_angle_and_measures():
     )
     expected = 8 * radians**2
     flux = radiance.integrated()
-    np.testing.assert_allclose(flux.data, expected, rtol=6e-16)
-    np.testing.assert_allclose(flux.density("sr").data, 8.0, rtol=3e-16)
-    np.testing.assert_allclose(radiance.density("grid").data, expected, rtol=6e-16)
+    np.testing.assert_allclose(flux.data, expected, rtol=float(ulps(8, 1.0)), atol=0)
+    np.testing.assert_allclose(
+        flux.density("sr").data, 8.0, rtol=float(ulps(8, 1.0)), atol=0
+    )
+    np.testing.assert_allclose(
+        radiance.density("grid").data, expected, rtol=float(ulps(8, 1.0)), atol=0
+    )
     result = integrate_footprints(radiance, footprint_overlap(grid, grid))
-    np.testing.assert_allclose(result.data.sum(), 8 * expected, rtol=6e-16)
+    np.testing.assert_allclose(
+        result.data.sum(), 8 * expected, rtol=float(ulps(12, 1.0)), atol=0
+    )
     assert result.quantity == radiance.quantity
     with pytest.raises(ValueError, match="arcsec"):
         PixelGrid.pupil(2).cell_area("sr")
@@ -279,13 +312,14 @@ def test_resample_identity_with_leading_axes():
         assert actual.leading_axes == image.leading_axes
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_interior_flux_on_integer_regrid():
     """Fails if regridding drops or duplicates integrated source flux.
 
     A compact source must retain its sum on integer reductions/refinements.
-    rtol=3e-15, atol=0 is rounding only, independent of source shape or scale ratio.
-    Per-unit-area constants retain amplitude to the same float64 floor.
+    Per-unit-area constants retain amplitude.
+
+    Floating-point basis. Allow 24 operations for linear weights, area scaling
+    and pairwise sums across the source and target pixels.
     """
     source = PixelGrid.regular((12, 12), 1, "arcsec")
     coarse = PixelGrid.regular((6, 6), 2, "arcsec")
@@ -295,16 +329,20 @@ def test_resample_interior_flux_on_integer_regrid():
     image = Image(data, source, (), Measure.integral(), "phot/s")
     for target in (coarse, coarser, fine):
         actual = resample(image, target)
-        np.testing.assert_allclose(actual.data.sum(), data.sum(), rtol=3e-15, atol=0)
+        np.testing.assert_allclose(
+            actual.data.sum(), data.sum(), rtol=float(ulps(24, 1.0)), atol=0
+        )
     # Refinement samples a density, so a flat patch stays flat with no gaps.
     flat = Image(jnp.ones(source.shape) * 4, source, (), Measure.integral(), "phot/s")
     np.testing.assert_allclose(
-        resample(flat, fine).data[4:20, 4:20], 1, rtol=3e-15, atol=0
+        resample(flat, fine).data[4:20, 4:20], 1, rtol=float(ulps(24, 1.0)), atol=0
     )
     uniform = Image(
         jnp.ones(source.shape) * 7, source, (), Measure.density("grid"), "Jy"
     )
-    np.testing.assert_allclose(resample(uniform, coarse).data, 7, rtol=3e-15, atol=0)
+    np.testing.assert_allclose(
+        resample(uniform, coarse).data, 7, rtol=float(ulps(24, 1.0)), atol=0
+    )
 
 
 def test_resample_half_pixel_center_shift_matches_linear_ramp():
@@ -328,13 +366,15 @@ def test_resample_half_pixel_center_shift_matches_linear_ramp():
         )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_composes_anisotropic_rotation_and_orientation():
     """Fails if basis columns, inverse mapping, or orientation order are swapped.
 
-    An affine sky ramp is exact under linear interpolation. atol=3e-14
-    permits float64 matrix inversion/trig rounding at these coordinate scales.
-    The area tolerance 1e-16 permits two ULP at determinant 0.34.
+    An affine sky ramp is exact under linear interpolation.
+
+    Floating-point basis. Allow 48 operations at the ramp scale for both
+    affine maps, orientation, matrix inversion and the weighted read. The area
+    uses three host binary64 determinant operations. Compact deposition uses
+    48 operations including polygon clipping and reduction.
     """
     source = PixelGrid.regular((12, 14), 1, "arcsec", orientation=SkyOrientation(0))
     target = PixelGrid(
@@ -353,12 +393,21 @@ def test_resample_composes_anisotropic_rotation_and_orientation():
     target_sky = target.orientation.detector_to_sky(*target.coordinates())
     expected = 10 + 2 * target_sky.east - 3 * target_sky.north
     actual = jax.jit(resample)(image, target)
-    np.testing.assert_allclose(actual.data, expected, rtol=0, atol=3e-14)
-    np.testing.assert_allclose(target.pixel_area, 0.34, rtol=0, atol=1e-16)
+    np.testing.assert_allclose(
+        actual.data, expected, rtol=0, atol=float(ulps(48, jnp.max(jnp.abs(expected))))
+    )
+    np.testing.assert_allclose(
+        target.pixel_area, 0.34, rtol=0, atol=3 * eps(np.float64) * 0.34
+    )
     # Refinement (area ratio 0.34): per-pixel flux is the sampled density
     # times the target pixel area, exact for the affine ramp.
     refined = resample(replace(image, measure=Measure.integral()), target)
-    np.testing.assert_allclose(refined.data, 0.34 * expected, rtol=0, atol=3e-14)
+    np.testing.assert_allclose(
+        refined.data,
+        0.34 * expected,
+        rtol=0,
+        atol=float(ulps(48, 0.34 * jnp.max(jnp.abs(expected)))),
+    )
     # Coarsening (area ratio 3.06): deposition conserves a compact source.
     coarse = replace(
         target,
@@ -369,7 +418,9 @@ def test_resample_composes_anisotropic_rotation_and_orientation():
     )
     compact = jnp.zeros(source.shape).at[5:7, 6:8].set(1.0)
     flux = Image(compact, source, (), Measure.integral(), "phot/s")
-    np.testing.assert_allclose(resample(flux, coarse).data.sum(), 4, rtol=0, atol=3e-14)
+    np.testing.assert_allclose(
+        resample(flux, coarse).data.sum(), 4, rtol=0, atol=float(ulps(48, 4.0))
+    )
 
 
 def test_band_limited_periodic_exactness(precision):
@@ -437,13 +488,15 @@ def test_band_limited_periodic_exactness(precision):
             )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_band_limited_metadata_and_overrides():
     """Fails if reconstruction metadata disappears or overrides are ignored.
 
-    Basis: exact metadata and local-kernel parity; float64 DFT identity has
-    atol=3e-14. Rotation/shear must fail only for the Fourier path, including
-    rotation introduced by orientation with diagonal grid bases.
+    Metadata and local-kernel parity are exact. The Fourier path refuses
+    rotation and shear, including rotation introduced by orientation with
+    diagonal grid bases.
+
+    Floating-point basis. Allow 64 operations at the peak image scale for the
+    FFT and Fourier synthesis on the unchanged grid.
     """
     source = PixelGrid.regular((4, 5), 1, "arcsec")
     image = Image(
@@ -486,7 +539,7 @@ def test_band_limited_metadata_and_overrides():
         ).data,
         image.data,
         rtol=0,
-        atol=3e-14,
+        atol=float(ulps(64, jnp.max(jnp.abs(image.data)))),
     )
     assert resample(image, source).reconstruction == "band_limited"
     # Area decreases, but x coarsens: an area-only rule would be wrong.
@@ -605,8 +658,9 @@ def test_band_limited_jit_and_transpose_gradient():
 
 def _circle_square_areas(grid, radius):
     """Exact circle-square intersections from a signed quadrant primitive."""
-    x, y = map(np.asarray, grid.coordinates())
-    half = grid.step / 2
+    ny, nx = grid.shape
+    x = (np.arange(nx + 1) - grid.center_x - 0.5) * grid.step
+    y = (np.arange(ny + 1) - grid.center_y - 0.5) * grid.step
 
     def primitive(x, y):
         sign = np.sign(x) * np.sign(y)
@@ -621,15 +675,10 @@ def _circle_square_areas(grid, radius):
 
         return sign * (y * split + segment(x) - segment(split))
 
-    return (
-        primitive(x + half, y + half)
-        - primitive(x - half, y + half)
-        - primitive(x + half, y - half)
-        + primitive(x - half, y - half)
-    )
+    # Neighboring pixels share exactly the same host corner primitive.
+    return np.diff(np.diff(primitive(x[None, :], y[:, None]), axis=0), axis=1)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_band_limited_airy_aperture(frame):
     """Fails if Nyquist PSF photometry uses a local interpolation kernel.
 
@@ -650,6 +699,10 @@ def test_band_limited_airy_aperture(frame):
     boundary-strip gradient terms, using the reconstructed Fourier coefficient
     absolute sum to bound derivatives (each axis has bandwidth <=1).
     This tests density photometry; exact per-pixel boxes are tested separately.
+
+    The independent host-area reference stays in float64. Allow 32 float64
+    operations at aperture area scale for the segment primitive and the
+    pairwise pixel sum. The Airy bounds apply to the lane's reconstructed flux.
     """
     from scipy.special import j0, j1
 
@@ -672,7 +725,8 @@ def test_band_limited_airy_aperture(frame):
     aperture = PixelGrid.focal(282, 0.005, frame)
     weights = _circle_square_areas(aperture, radius)
     area = np.pi * radius**2
-    np.testing.assert_allclose(weights.sum(), area, rtol=0, atol=3e-14)
+    area_tolerance = 32 * np.finfo(weights.dtype).eps * area
+    np.testing.assert_allclose(weights.sum(), area, rtol=0, atol=area_tolerance)
     padded = PixelGrid.focal(64, 0.5, frame)
     x, y = map(np.asarray, padded.coordinates())
     wings = np.where((abs(x) >= 8) | (abs(y) >= 8), airy(x, y), 0)
@@ -889,9 +943,12 @@ def test_traced_wavelength_resample_matches_host_and_differentiates(
     np.testing.assert_allclose(jax.grad(scalar)(600.0), fd, rtol=1e-6)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_traced_roll_orientation_matches_host_values():
-    """Fails if a traced position angle disagrees with the host conversion."""
+    """Fails if a traced position angle disagrees with the host conversion.
+
+    Floating-point basis. Allow 12 operations at input vector scale for angle
+    conversion, two trigonometric values and the two rotations.
+    """
     east, north = jnp.array([0.3, -1.2]), jnp.array([0.7, 0.4])
     for parity in (-1, 1):
         host = SkyOrientation(37.0, parity)
@@ -901,30 +958,40 @@ def test_traced_roll_orientation_matches_host_values():
             )
         )(37.0)
         np.testing.assert_allclose(
-            traced, host.sky_to_detector(east, north), atol=1e-15
+            traced,
+            host.sky_to_detector(east, north),
+            rtol=0,
+            atol=float(ulps(12, np.max(np.abs([east, north])))),
         )
         back = jax.jit(
             lambda x, y, angle, parity=parity: tuple(
                 SkyOrientation(angle, parity).detector_to_sky(x, y)
             )
         )(*host.sky_to_detector(east, north), 37.0)
-        np.testing.assert_allclose(back, (east, north), atol=1e-15)
+        np.testing.assert_allclose(
+            back,
+            (east, north),
+            rtol=0,
+            atol=float(ulps(12, np.max(np.abs([east, north])))),
+        )
     with pytest.raises(ValueError, match="finite"):
         SkyOrientation(float("nan"))
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_coverage_requires_whole_footprint_and_margin_matches_resample():
     """Fails if a straddling pixel counts as covered or a margin is too small.
 
     A target shifted by a quarter pixel leaves its edge pixel straddling the
     source edge, so coverage is False there. Wherever coverage with the
-    reconstruction margin is True, resampling a field of ones returns 1 to
-    1e-12 for the three local reconstructions, on both a shifted and a refined
+    reconstruction margin is True, resampling a field of ones returns 1
+    for the three local reconstructions, on both a shifted and a refined
     grid. Band-limited interpolation of a constant over a zero-padded array
     rings with an algebraically decaying tail (about 1e-2 eight pixels in), so
     no finite margin makes it exact; its margin is the reach used to mask the
     edge band, and the test asserts only that the band is excluded.
+
+    Floating-point basis. Allow 32 operations at unit scale for the affine
+    map, cubic weights in both axes and accumulation. Coverage is exact.
     """
     from optixstuff.grids import coverage, reconstruction_margin
 
@@ -950,7 +1017,9 @@ def test_coverage_requires_whole_footprint_and_margin_matches_resample():
             if name == "band_limited":
                 assert not mask[0].any() and not mask[:, 0].any()
                 continue
-            np.testing.assert_allclose(actual[mask], 1.0, rtol=0, atol=1e-12)
+            np.testing.assert_allclose(
+                actual[mask], 1.0, rtol=0, atol=float(ulps(32, 1.0))
+            )
     assert [
         reconstruction_margin(n)
         for n in ("nearest", "linear", "cubic", "cubic_spline", "band_limited")

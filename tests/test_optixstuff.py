@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.leaves import check_tree
+from hwoutils.testing import ulps
 
 import optixstuff as ox
 from optixstuff.spectral import Transmission, spectral_breaks
@@ -53,12 +54,14 @@ class TestConstantThroughputElement:
 
 
 class TestInstrument:
-    @pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
     def test_transmission_elements_compose(self, simple_primary, simple_detector):
         """Fails if held responses lose knots, attenuation or parameter gradients.
 
         Exact algebra: at 550 nm the linear response is (0.2+0.8)/2;
-        the second element transmits 0.4. Allow 2e-15 floating-point error.
+        the second element transmits 0.4.
+
+        Floating-point basis. Allow eight operations at unit scale for linear
+        interpolation, scalar attenuation and its analytic transpose.
         """
         element = ox.TransmissiveElement(Transmission([500, 600], [0.2, 0.8]))
         path = ox.Instrument(
@@ -72,21 +75,21 @@ class TestInstrument:
             eqx.filter_jit(lambda p: p.system_throughput(550.0))(path),
             expected,
             rtol=0,
-            atol=2e-15,
+            atol=float(ulps(8, expected)),
         )
         np.testing.assert_array_equal(spectral_breaks(path), [500, 600])
         np.testing.assert_allclose(
             element.apply(jnp.array([[2.0, 3.0]]), 550),
             jnp.array([[2.0, 3.0]]) * ((0.2 + 0.8) / 2),
             rtol=0,
-            atol=2e-15,
+            atol=float(ulps(8, 1.8)),
         )
         gradient = eqx.filter_grad(lambda p: p.system_throughput(550.0))(path)
         np.testing.assert_allclose(
             gradient.attenuating_elements[0].transmission.transmission,
             [0.4 / 2, 0.4 / 2],
             rtol=0,
-            atol=2e-15,
+            atol=float(ulps(8, 0.2)),
         )
         assert path.system_throughput(499.0) == 0
         assert path.system_throughput(601.0) == 0
@@ -123,7 +126,6 @@ class TestInstrument:
         grad = eqx.filter_grad(lambda i: i.effective_area_m2(550.0))(plain)
         np.testing.assert_allclose(grad.flux_scale, area * 0.4, rtol=1e-6)
 
-    @pytest.mark.float64_only(reason="float64 Planck-law reference")
     def test_warm_emission_is_planck_times_emissivity_times_area(
         self, simple_primary, simple_detector
     ):
@@ -131,8 +133,10 @@ class TestInstrument:
 
         Basis: the closed-form photon radiance 2 c / lambda^4 / expm1(h c /
         (lambda k T)) written from the constants, times emissivity and the
-        geometric area, in float64; rtol 1e-12 for the exp and one product
-        chain. The default and a zero emissivity give exact zeros.
+        geometric area, in host float64. Allow eight operations at the
+        exponent scale for the divided wavelength-temperature product's
+        error amplified by exp, plus eight at unit scale for power,
+        normalization and area. The default and zero emissivity are exact.
         """
         from hwoutils.constants import c, h, k_B
 
@@ -149,11 +153,13 @@ class TestInstrument:
         warm = ox.WarmEmission(temperature_K=290.0, effective_emissivity=0.638)
         instrument = ox.Instrument(**kwargs, warm_emission=warm, flux_scale=1.7)
         lam_m = wavelength * 1e-9
-        radiance = 2 * c / lam_m**4 / np.expm1(h * c / (lam_m * k_B * 290.0)) * 1e-9
+        exponent = h * c / (lam_m * k_B * 290.0)
+        radiance = 2 * c / lam_m**4 / np.expm1(exponent) * 1e-9
         np.testing.assert_allclose(
             instrument.thermal_photon_rate_per_sr(wavelength),
             radiance * 0.638 * simple_primary.collecting_area_m2,
-            rtol=1e-12,
+            rtol=float(ulps(8, 1 + exponent.max())),
+            atol=0,
         )
         off = ox.Instrument(
             **kwargs, warm_emission=ox.WarmEmission(290.0, 0.0)

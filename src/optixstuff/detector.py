@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import jax.scipy.special as jsp
 import numpy as np
 from hwoutils.leaves import as_float_leaf
+from hwoutils.precision import float_dtype, require_float64
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -310,7 +311,7 @@ class AbstractDetector(eqx.Module):
         ``observed`` is in electrons and broadcasts against the mean of
         ``mean_and_variance(rates, plan)``; the result has the broadcast shape.
         Nothing is masked or summed: the caller masks the pixels it uses and
-        sums them, in the precision it needs. Pixels and bands are independent,
+        sums their float64 log densities. Pixels and bands are independent,
         as in ``mean_and_variance``, and every term is normalized, constants
         included. The form is a static fact of the detector, ``photon_counting``,
         so one form is traced and the density is continuous in every traced
@@ -345,11 +346,16 @@ class AbstractDetector(eqx.Module):
 
         Raises:
             ValueError: If the rates are not band-integrated electron rates.
+            PrecisionError: If float64 is unavailable.
         """
         _check_electrons(rates)
+        require_float64("Detector log density")
         floored, bad = _floored(rates)
         mean, variance = self.mean_and_variance(floored, plan)
-        observed = jnp.asarray(observed, dtype=mean.dtype)
+        # A forward model may supply float32 moments to a float64 likelihood.
+        dtype = float_dtype()
+        mean, variance = mean.astype(dtype), variance.astype(dtype)
+        observed = jnp.asarray(observed, dtype=dtype)
         if self.photon_counting:
             # Safe values keep the gradient finite where the mean is zero.
             positive = mean > 0
@@ -397,6 +403,10 @@ class AbstractDetector(eqx.Module):
 
         Returns:
             The root vector, in the shape of the law's parts described above.
+
+        Raises:
+            ValueError: If the rates are not band-integrated electron rates.
+            PrecisionError: If the process or the Fisher model lacks float64.
         """
         cls = type(self)
         if (
@@ -407,6 +417,8 @@ class AbstractDetector(eqx.Module):
                 f"{cls.__name__} overrides log_prob; its law has no closed-form "
                 "Fisher root here. Override fisher_root with the root of that law."
             )
+        _check_electrons(rates)
+        require_float64("Detector Fisher information", self, rates, plan)
         mean, variance = self.mean_and_variance(rates, plan)
         if self.photon_counting:
             positive = mean > 0

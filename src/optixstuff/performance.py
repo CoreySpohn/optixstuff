@@ -18,6 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.map_coordinates import map_coordinates
+from hwoutils.numerics import COARSEST
 from scipy.interpolate import CubicSpline, PchipInterpolator
 from scipy.optimize import root_scalar
 
@@ -49,10 +50,10 @@ DIAMETER_QUANTITIES = (
 )
 # A record at one diameter serves a star within this relative tolerance of it
 # (plus the absolute floor): the leakage excess grows as the diameter squared.
-_SINGLE_DIAMETER_RTOL = 1e-3
-_SINGLE_DIAMETER_ATOL = 1e-6
+_SINGLE_DIAMETER_RTOL = 1e-3  # tol: physical, 0.1% of the profile diameter
+_SINGLE_DIAMETER_ATOL = 1e-6  # tol: physical, 1e-6 lambda/D at zero diameter
 # Slack, as a fraction of the largest tabulated diameter, on the table's range.
-_DIAMETER_RANGE_RTOL = 1e-6
+_DIAMETER_RANGE_RTOL = 1e-6  # tol: algorithm, one ppm of the final diameter
 _QUINTIC_PAD = 48
 
 
@@ -1217,6 +1218,7 @@ class SampledProfile(eqx.Module):
     def supported(self, separation_lod):
         """Report where the profile holds data: from its first to its last sample.
 
+        The endpoints are inclusive at float32 coordinate resolution.
         Beyond that span ``evaluate`` only continues the end segments.
 
         Args:
@@ -1229,9 +1231,13 @@ class SampledProfile(eqx.Module):
 
 
 def _within_samples(x, separation_lod):
-    xp = jnp if isinstance(separation_lod, (jax.Array, jax.core.Tracer)) else np
-    q = xp.asarray(separation_lod)
-    return q, (q >= x[0]) & (q <= x[-1])
+    array = (jax.Array, jax.core.Tracer)
+    xp = jnp if isinstance(separation_lod, array) or isinstance(x, array) else np
+    # Support is an inclusive decision at the shared coordinate resolution.
+    # The interpolant still reads at the caller's full precision.
+    q = xp.asarray(separation_lod, dtype=COARSEST)
+    low, high = xp.asarray(x[0], dtype=COARSEST), xp.asarray(x[-1], dtype=COARSEST)
+    return q, (q >= low) & (q <= high)
 
 
 def ring_azimuth_samples(shape, center):
@@ -1314,18 +1320,6 @@ def _require(ok, value, message):
     return value
 
 
-def _diameter_abscissa(diameters):
-    """Spline abscissa of a diameter axis: a zero diameter is nudged to float32 eps.
-
-    The nudge matches the one the stellar map interpolation applies, so the
-    leakage at a diameter between knots is read with the rule the image route
-    reads the map with.
-    """
-    x = np.array(diameters, dtype=float)
-    x[x == 0] = np.finfo(np.float32).eps
-    return x
-
-
 def _diameter_spline_basis(diameters):
     """Cubic-spline basis of a diameter axis: coefficients for each unit sample.
 
@@ -1335,13 +1329,13 @@ def _diameter_spline_basis(diameters):
     samples, so the weights of a read at one diameter are these polynomials
     evaluated there, and a read is a weighted sum of the K samples.
     """
-    x = _diameter_abscissa(diameters)
+    x = np.asarray(diameters, dtype=np.float64)
     if len(x) == 1:
         return None
     return np.ascontiguousarray(CubicSpline(x, np.eye(len(x))).c.transpose(1, 0, 2))
 
 
-def _diameter_weights(diameters, basis, diameter):
+def _diameter_weights(diameters, basis, diameter, interval):
     """Spline weights of the K tabulated diameters at ``diameter``, shape (..., K)."""
     traced = (jax.Array, jax.core.Tracer)
     xp = jnp if isinstance(diameter, traced) or isinstance(diameters, traced) else np
@@ -1352,11 +1346,9 @@ def _diameter_weights(diameters, basis, diameter):
     if isinstance(basis, (np.ndarray, *traced)):
         basis = basis.astype(dtype)
     x = xp.asarray(diameters)
-    x = xp.where(x == 0, np.finfo(np.float32).eps, x)
     d = xp.asarray(diameter)
-    i = xp.clip(xp.searchsorted(x, d, side="right") - 1, 0, len(x) - 2)
-    dx = (d - x[i])[..., None]
-    c = xp.asarray(basis)[i]
+    dx = (d - x[interval])[..., None]
+    c = xp.asarray(basis)[interval]
     return ((c[..., 0, :] * dx + c[..., 1, :]) * dx + c[..., 2, :]) * dx + c[..., 3, :]
 
 
@@ -1415,14 +1407,16 @@ class PerformanceCurves(eqx.Module):
     Throughput and core area are functions of separation. The leakage fields
     and ``raw_contrast`` are functions of separation and of the stellar
     diameter: ``evaluate`` reads them at a diameter, interpolating the K
-    profiles with a cubic spline of the logarithm in diameter, the rule the
-    stellar map itself is interpolated with. A record of K > 1 diameters
+    profiles with a cubic spline of the logarithm on the measured diameter
+    axis. A record of K > 1 diameters
     requires the diameter at every leakage read and raises outside the
     tabulated range; reading it at zero diameter is an explicit choice, not a
     default. A record of one profile serves a star within ``1e-3`` of the
     profile's diameter (relative, with an absolute floor of ``1e-6``) and
-    raises for any other; a profile of unknown diameter (None) serves any star
-    and the caller vouches for it.
+    raises for any other. Range checks, measured-row matches and interval
+    selection use float32 coordinate resolution. The spline uses the original
+    query in the working precision. A profile of unknown diameter (None) serves
+    any star and the caller vouches for it.
 
     At one diameter every field is a function of separation only. For a stellar
     map that is not rotationally symmetric (a 2D product) the leakage is therefore
@@ -1567,14 +1561,19 @@ class PerformanceCurves(eqx.Module):
             )
             if diameters.ndim != 1:
                 raise ValueError("stellar_diameters_lod must be a scalar or a vector")
-            if not traced and (
-                not np.all(np.isfinite(diameters))
-                or diameters[0] < 0
-                or np.any(np.diff(diameters) <= 0)
-            ):
-                raise ValueError(
-                    "stellar_diameters_lod must be increasing, finite and nonnegative"
-                )
+            if not traced:
+                with np.errstate(over="ignore"):
+                    knots = diameters.astype(COARSEST)
+                if (
+                    not diameters.size
+                    or diameters[0] < 0
+                    or not np.all(np.isfinite(knots))
+                    or np.any(knots[1:] <= knots[:-1])
+                ):
+                    raise ValueError(
+                        "stellar_diameters_lod must be nonnegative, finite and "
+                        "increasing at float32 coordinate resolution"
+                    )
         n_diameters = 1 if diameters is None else len(diameters)
         self.stellar_diameters_lod = diameters
         self._diameter_basis = (
@@ -1667,19 +1666,9 @@ class PerformanceCurves(eqx.Module):
                 exact_knots=False,
             )
 
-        if n_rows == 1:
-            value = profile(0, separation_lod)
-            if stellar_diameter_lod is None or diameters is None:
-                return value
-            # The checked value is the result, so the check survives jit.
-            return _require(
-                abs(stellar_diameter_lod - diameters[0])
-                <= _SINGLE_DIAMETER_RTOL * diameters[0] + _SINGLE_DIAMETER_ATOL,
-                value,
-                "this record holds one profile, at one stellar diameter; a star "
-                "of a different diameter needs a record tabulated over diameter",
-            )
-        if stellar_diameter_lod is None:
+        if stellar_diameter_lod is None or diameters is None:
+            if n_rows == 1:
+                return profile(0, separation_lod)
             raise ValueError(
                 f"{name} of a record tabulated over diameter needs stellar_diameter_lod"
             )
@@ -1691,38 +1680,53 @@ class PerformanceCurves(eqx.Module):
             or isinstance(rows, jax.core.Tracer)
         )
         xp = jnp if use_jax else np
+        knots = xp.asarray(diameters, dtype=COARSEST)
+        query = xp.asarray(stellar_diameter_lod, dtype=COARSEST)
+        distance = xp.maximum(knots[0] - query, query - knots[-1])
+        if n_rows == 1:
+            return _require(
+                distance - _SINGLE_DIAMETER_ATOL <= _SINGLE_DIAMETER_RTOL * knots[0],
+                profile(0, separation_lod),
+                "this record holds one profile, at one stellar diameter; a star "
+                "of a different diameter needs a record tabulated over diameter",
+            )
         q, d = xp.broadcast_arrays(
             xp.asarray(separation_lod), xp.asarray(stellar_diameter_lod)
         )
-        slack = _DIAMETER_RANGE_RTOL * diameters[-1]
         d = _require(
-            (d >= diameters[0] - slack) & (d <= diameters[-1] + slack),
+            distance <= _DIAMETER_RANGE_RTOL * knots[-1],
             d,
             "the stellar diameter is outside the tabulated range of the record",
         )
         per_row = xp.stack([profile(k, q) for k in range(n_rows)], axis=-1)
-        knots = xp.asarray(diameters)
-        k = xp.minimum(xp.searchsorted(knots, d), n_rows - 1)
-        at_knot = d == knots[k]
+        query = xp.broadcast_to(query, d.shape)
+        k = xp.clip(xp.searchsorted(knots, query, side="right") - 1, 0, n_rows - 1)
+        at_knot = query == knots[k]
         measured = xp.take_along_axis(per_row, k[..., None], axis=-1)[..., 0]
-        weights = _diameter_weights(diameters, self._diameter_basis, d)
+        interval = xp.minimum(k, n_rows - 2)
+        weights = _diameter_weights(diameters, self._diameter_basis, d, interval)
         tiny = np.finfo(per_row.dtype).tiny
         logs = xp.log(xp.maximum(per_row, tiny))
-        value = xp.exp(xp.sum(weights * logs, axis=-1))
+        if use_jax:
+            # At a measured knot, the row supplies separation derivatives.
+            # The spline still supplies the diameter tangent there.
+            logs = xp.where(at_knot[..., None], jax.lax.stop_gradient(logs), logs)
+        # The weights sum to one. Center the log values on an adjacent row
+        # so error in that sum does not multiply the common log level.
+        reference = xp.take_along_axis(logs, k[..., None], axis=-1)
+        log_value = reference[..., 0] + xp.sum(weights * (logs - reference), axis=-1)
+        value = xp.exp(log_value)
         interpolated = xp.where(xp.all(per_row <= 0, axis=-1), 0.0, value)
         if use_jax:
-            # The measured value at a knot, with the interpolant's derivatives.
-            measured = jax.lax.stop_gradient(measured) + (
-                interpolated - jax.lax.stop_gradient(interpolated)
-            )
+            measured = measured + (interpolated - jax.lax.stop_gradient(interpolated))
         return xp.where(at_knot, measured, interpolated)
 
     def supported(self, separation_lod):
         """Report where the record holds data for this record's aperture rule.
 
         True where the separation lies from the first to the last sample and the
-        aperture (separation plus ``rule.radius_lod``) fits inside
-        ``data_extent_lod``; a ``HalfMaximum`` rule has no fixed radius, so only
+        aperture fits inside ``data_extent_lod`` at the shared float32
+        coordinate resolution. A ``HalfMaximum`` rule has no fixed radius, so only
         the separation is tested against the extent. The array extent alone is
         not enough: the samples can end inside it, and past the last sample
         ``evaluate`` only continues the end segment.
@@ -1735,7 +1739,7 @@ class PerformanceCurves(eqx.Module):
         """
         q, inside = _within_samples(self.separation_lod, separation_lod)
         radius = getattr(self.rule, "radius_lod", 0.0)
-        return inside & (q + radius <= self.data_extent_lod)
+        return inside & (q <= COARSEST(self.data_extent_lod - radius))
 
 
 def _iwa(separation, throughput):
