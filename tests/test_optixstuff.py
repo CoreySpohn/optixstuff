@@ -191,6 +191,59 @@ class TestInstrument:
         assert path.system_throughput(500.0) == pytest.approx(0.72)
 
 
+@pytest.mark.parametrize(
+    ("roll_deg", "east_pixels", "north_pixels", "offset_x_pixels", "dx", "dy"),
+    [
+        (0, 0, 0, 1, 1, 0),
+        (0, 1, 0, None, -1, 0),
+        (0, 0, 1, None, 0, 1),
+        (90, 0, 0, 1, 1, 0),
+    ],
+)
+def test_pointing_detector_pixel_sign(
+    roll_deg, east_pixels, north_pixels, offset_x_pixels, dx, dy
+):
+    """Sky rotation precedes translation along the detector axes."""
+    from hwoutils.conversions import arcsec_to_mas
+
+    from optixstuff.grids import PixelGrid
+
+    scale_arcsec = 0.05
+    cx, cy = 4.5, 3.0
+    grid = PixelGrid.regular((7, 10), scale_arcsec, "arcsec", center=(cx, cy))
+    offset_mas = (
+        None
+        if offset_x_pixels is None
+        else (arcsec_to_mas(offset_x_pixels * scale_arcsec), 0.0)
+    )
+    pointing = ox.Pointing(roll_deg, offset_mas)
+    x, y = jax.jit(
+        lambda p: p.detector_offsets_arcsec(
+            east_pixels * scale_arcsec, north_pixels * scale_arcsec, parity=-1
+        )
+    )(pointing)
+    assert grid.unit_to_pixel(x, y) == pytest.approx((cx + dx, cy + dy))
+
+
+def test_pointing_float_leaves(precision):
+    """Roll and offset trace as strong floats in the active precision lane."""
+    pointing = ox.Pointing(15, (1, -2))
+    roll, offset = jax.tree.leaves(pointing)
+    assert roll.shape == ()
+    assert offset.shape == (2,)
+    assert roll.dtype == offset.dtype == precision
+    assert not roll.weak_type
+    assert not offset.weak_type
+    assert ox.Pointing(15).offset_mas is None
+    assert len(jax.tree.leaves(ox.Pointing(15))) == 1
+
+
+def test_pointing_requires_two_offset_components():
+    """Reject offsets that cannot represent one detector (x, y) pair."""
+    with pytest.raises(ValueError, match="offset_mas must have shape"):
+        ox.Pointing(0, (1, 2, 3))
+
+
 def test_exposure_is_a_record_of_one_observation(precision):
     """Fails if Exposure loses a field, its ecliptic defaults, or its traced roll.
 
@@ -200,16 +253,22 @@ def test_exposure_is_a_record_of_one_observation(precision):
     from optixstuff.spectral import Band, Quadrature
 
     quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
-    exposure = ox.Exposure(time_d=3.0, roll_deg=15, quadrature=quadrature)
+    pointing = ox.Pointing(15)
+    exposure = ox.Exposure(time_d=3.0, pointing=pointing, quadrature=quadrature)
+    assert exposure.pointing is pointing
+    assert not hasattr(exposure, "roll_deg")
     assert exposure.plan is None
-    assert exposure.roll_deg == 15.0
+    assert exposure.pointing.roll_deg == 15.0
     assert check_tree(exposure) == ()
-    assert exposure.roll_deg.dtype == precision
+    assert exposure.pointing.roll_deg.dtype == precision
     assert not hasattr(exposure, "ecliptic_latitude_deg")
     assert not hasattr(exposure, "solar_longitude_deg")
-    assert exposure.roll_deg in jax.tree.leaves(exposure)
+    assert exposure.pointing.roll_deg in jax.tree.leaves(exposure)
     rolled = jax.vmap(
-        lambda r: eqx.tree_at(lambda e: e.roll_deg, exposure, r).roll_deg * 2.0
+        lambda r: (
+            eqx.tree_at(lambda e: e.pointing.roll_deg, exposure, r).pointing.roll_deg
+            * 2.0
+        )
     )(jnp.array([1.0, 2.0]))
     assert rolled.tolist() == [2.0, 4.0]
     planned = eqx.tree_at(
@@ -301,10 +360,10 @@ def test_exposure_time_is_a_strong_leaf_and_declares_no_reads(precision):
     from optixstuff.spectral import Band, Quadrature
 
     quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
-    exposure = ox.Exposure(time_d=1.0, roll_deg=0.0, quadrature=quadrature)
+    exposure = ox.Exposure(time_d=1.0, pointing=ox.Pointing(0.0), quadrature=quadrature)
     assert isinstance(exposure.time_d, jax.Array)
     assert exposure.time_d.dtype == precision
     assert not exposure.time_d.weak_type
     assert exposure.time_d in jax.tree.leaves(exposure)
     with pytest.raises(TypeError):
-        ox.Exposure(0.0, 0.0, quadrature, reads=("star",))
+        ox.Exposure(0.0, ox.Pointing(0.0), quadrature, reads=("star",))

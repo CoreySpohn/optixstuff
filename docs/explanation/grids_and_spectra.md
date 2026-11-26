@@ -187,6 +187,22 @@ of about 2e6 to 4e6.
 rate at one wavelength. Its single node has unit weight. A mean density
 is undefined for this zero-width channel.
 
+## Pointing and detector coordinates
+
+`Pointing.detector_offsets_arcsec(east_arcsec, north_arcsec, parity=-1)`
+rotates a target-relative sky position into detector coordinates, then adds
+the target's displacement from the optical axis. Roll is the position angle
+of detector +y, measured north through east. The displacement is a pair
+`(x, y)` in sky-projected milliarcseconds along columns and rows. It is
+converted to arcseconds in the transform. For an on-axis target, use
+`offset_mas=None`.
+
+At zero roll and parity -1, east points toward lower columns and north
+toward higher rows. A positive x pointing offset moves all sources toward
+higher columns independently of roll. `PixelGrid.unit_to_pixel` converts the
+transformed coordinates on an arcsecond grid to pixel coordinates using
+the optical axis at `(center_x, center_y)`.
+
 ## Measures and conservative integration
 
 An `Image` has a numerator unit and a spatial measure. For example, photon

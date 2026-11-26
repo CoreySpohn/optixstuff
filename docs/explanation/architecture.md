@@ -199,6 +199,17 @@ External writers must declare `template_origin = "centroid"` as a string in
 the format 2 archive. `load_psflet_pack` refuses packs from earlier format 2
 writers that omitted this field. Regenerate those packs before loading.
 
+## Exposure pointing
+
+An `Exposure` holds `Pointing(roll_deg, offset_mas=None)` alongside its
+observation time, wavelength quadrature, and optional frame plan. Construct an
+exposure with `pointing=Pointing(roll_deg)` for an on-axis target. The roll and
+any supplied offset are floating-point leaves, so a fit can address them at
+`exposure.pointing.roll_deg` and `exposure.pointing.offset_mas`.
+
+See [pointing and detector coordinates](grids_and_spectra.md#pointing-and-detector-coordinates)
+for the frame, sign, and units of the offset.
+
 ## Photon rates, electrons, and detector noise
 
 Scene readers supply photon `Rates` at `optixstuff.spectral.Quadrature` nodes.

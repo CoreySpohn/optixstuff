@@ -24,7 +24,7 @@ from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
 
-from optixstuff import Exposure
+from optixstuff import Exposure, Pointing
 from optixstuff.spectral import (
     _RULE_CACHE,
     Band,
@@ -550,7 +550,7 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
         np.interp(np.asarray(exact_rule.nodes_nm), knots, values)
     )
 
-    exposure = Exposure(0.0, 0.0, rule, resolution=resolution)
+    exposure = Exposure(0.0, Pointing(0.0), rule, resolution=resolution)
     np.testing.assert_array_equal(
         eqx.filter_jit(lambda e, t: e.resolution.rule(e.quadrature, t).apply(t.values))(
             exposure, star
@@ -558,7 +558,7 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
         read(resolution, star),
     )
     with pytest.raises(ValueError, match="another quadrature"):
-        Exposure(0.0, 0.0, exact_rule, resolution=resolution)
+        Exposure(0.0, Pointing(0.0), exact_rule, resolution=resolution)
 
     def shifted(a, b):
         u = Polynomial(

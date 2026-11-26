@@ -23,7 +23,7 @@ from optixstuff.detector import (
     IdealDetector,
 )
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
-from optixstuff.exposure import Exposure, FramePlan, frames_for_time
+from optixstuff.exposure import Exposure, FramePlan, Pointing, frames_for_time
 from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.instrument import (
     Instrument,
@@ -83,6 +83,7 @@ __all__ = [  # noqa: RUF022
     "MultiBandCoronagraph",
     "PerformanceCurves",
     "PixelGrid",
+    "Pointing",
     "PostProcessing",
     "ProductGrids",
     "PsfletPack",
