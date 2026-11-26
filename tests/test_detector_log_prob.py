@@ -5,6 +5,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.leaves import canonical
+from hwoutils.precision import PrecisionError
+from hwoutils.testing import ulps
 from scipy import stats
 
 import optixstuff as ox
@@ -30,21 +33,35 @@ def _noisy():
 
 
 @pytest.mark.float64_only(reason="float64 likelihood reference")
-def test_gaussian_form_matches_photomancy_gaussian_loglike():
+@pytest.mark.parametrize("forward_dtype", [np.float32, np.float64])
+def test_gaussian_form_matches_photomancy_gaussian_loglike(forward_dtype):
     """Fails if the noisy form drifts from the normalized per-pixel Gaussian.
 
     Reference: the photomancy ``gaussian_loglike`` expression
     ``sum(-0.5 z^2 - log sigma - 0.5 log 2 pi)``, ``sigma = sqrt(variance)``,
     rebuilt here with scipy, compared in float64 to 1e-12 relative.
     """
-    det = _noisy()
-    rates = _rates(np.linspace(1.0, 9.0, 6).reshape(1, 2, 3))
-    mean, var = det.mean_and_variance(rates, PLAN)
-    observed = np.asarray(mean) + np.array([[[1.0, -2.0, 0.5], [3.0, 0.0, -1.0]]])
-    expected = stats.norm.logpdf(observed, np.asarray(mean), np.sqrt(var)).sum()
-    np.testing.assert_allclose(
-        det.log_prob(observed, rates, PLAN).sum(), expected, rtol=1e-12
+    det = ox.Detector(
+        **_kw(
+            dark_current_e_per_pixel_s=0.25,
+            read_noise_e_rms=1.5,
+            excess_noise_factor_sq=1.5,
+        )
     )
+    rates = _rates(np.arange(1.0, 7.0).reshape(1, 2, 3))
+    det, rates, plan = canonical((det, rates, PLAN), precision=forward_dtype)
+    mean, var = det.mean_and_variance(rates, plan)
+    assert mean.dtype == forward_dtype
+    observed = np.asarray(mean, dtype=np.float64) + np.array(
+        [[[1.0000001, -2.0, 0.5], [3.0, 0.0, -1.0]]]
+    )
+    expected = stats.norm.logpdf(
+        observed, np.asarray(mean), np.sqrt(np.asarray(var, dtype=np.float64))
+    ).sum()
+    for score in (det.log_prob, eqx.filter_jit(det.log_prob)):
+        result = score(observed, rates, plan)
+        assert result.dtype == np.float64
+        np.testing.assert_allclose(result.sum(), expected, rtol=1e-12)
 
 
 @pytest.mark.float64_only(reason="float64 likelihood reference")
@@ -96,6 +113,7 @@ def test_gaussian_form_normalizes():
 @pytest.mark.parametrize(
     "make", [_noisy, lambda: ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(2, 3))]
 )
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_gradient_finite_including_zero_rate(make):
     """Fails if a gradient is NaN or infinite, also at zero rate with zero counts."""
     det = make()
@@ -108,8 +126,14 @@ def test_gradient_finite_including_zero_rate(make):
     assert np.all(np.isfinite(grad))
 
 
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_elementwise_shape_vmap_and_jit():
-    """Fails if the result is reduced, or vmap, jit and a loop disagree."""
+    """The Gaussian score has the broadcast shape in eager, vmap and jit.
+
+    Allow 32 binary64 operations for rate sums, count moments and the
+    normalized log density along each evaluation path.
+    """
+    rtol = float(ulps(32, 1.0))
     det = _noisy()
     planet = jnp.stack([jnp.full((1, 2, 3), 2.0), jnp.full((1, 2, 3), 5.0)])
     observed = jnp.full((2, 1, 2, 3), 4.0)
@@ -118,13 +142,14 @@ def test_elementwise_shape_vmap_and_jit():
         [det.log_prob(observed[i], _rates(planet[i]), PLAN) for i in range(2)]
     )
     assert mapped.shape == (2, 1, 2, 3)
-    np.testing.assert_allclose(mapped, loop, rtol=1e-6)
+    np.testing.assert_allclose(mapped, loop, rtol=rtol, atol=0)
     batched = det.log_prob(observed, _rates(planet[0]), PLAN)
     assert batched.shape == (2, 1, 2, 3)
     jitted = eqx.filter_jit(det.log_prob)(observed[0], _rates(planet[0]), PLAN)
-    np.testing.assert_allclose(jitted, loop[0], rtol=1e-6)
+    np.testing.assert_allclose(jitted, loop[0], rtol=rtol, atol=0)
 
 
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_zero_variance_gaussian_edges():
     """Fails if zero variance is not 0 at the mean and -inf elsewhere."""
     det = ox.Detector(pixel_scale_arcsec=0.01, shape=(1, 2))
@@ -134,6 +159,7 @@ def test_zero_variance_gaussian_edges():
     assert out[0, 0, 1] == -jnp.inf
 
 
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_impossible_observation_is_minus_inf():
     """Fails if excess noise above one, zero rate and 5 electrons is finite."""
     det = ox.Detector(pixel_scale_arcsec=0.01, shape=(1, 1), excess_noise_factor_sq=1.5)
@@ -164,8 +190,8 @@ def _frame(negative, peak=1.0):
     )
 
 
-@pytest.mark.float64_only(reason="float64 likelihood reference")
 @pytest.mark.parametrize("name", FLOOR_DETECTORS)
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_log_prob_and_draw_share_the_rate_floor(name):
     """Fails if the likelihood and the draws treat a negative rate differently.
 
@@ -175,8 +201,9 @@ def test_log_prob_and_draw_share_the_rate_floor(name):
     finite gradient, and the draw raises. A Poisson mean below zero must
     never score a zero count above one (log above zero), which would reward a
     model that drives a pixel negative. At a rate of exactly zero the floor
-    passes the full gradient (float64, 1e-6 against a rate of 1e-12), so a
-    fit started at zero flux is not slowed by half.
+    passes the full gradient, so a fit started at zero flux is not slowed
+    by half. The positive-rate gradient differs by order 1e-12 physically;
+    allow 16 binary64 operations for the moment and score arithmetic.
     """
     det = FLOOR_DETECTORS[name]()
     observed = jnp.asarray([[[3.0, 0.0]]])
@@ -194,7 +221,7 @@ def test_log_prob_and_draw_share_the_rate_floor(name):
 
     assert jnp.isfinite(jax.grad(score)(jnp.asarray(-2e-4)))
     at_zero, above = (jax.grad(score)(jnp.asarray(r)) for r in (0.0, 1e-12))
-    np.testing.assert_allclose(at_zero, above, rtol=1e-6)
+    np.testing.assert_allclose(at_zero, above, rtol=max(1e-11, float(ulps(16, 1.0))))
 
 
 def _saturated_edge(hostile):
@@ -244,15 +271,14 @@ def test_draw_floors_round_off_and_raises_beyond_it(precision):
         with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
             draw(key, hostile, PLAN).block_until_ready()
 
-    def fit(scale):
+    def draw_total(scale):
         rates = eqx.tree_at(
             lambda r: r.star_leakage, hostile, hostile.star_leakage * scale
         )
-        frame = jax.lax.stop_gradient(ideal.draw(key, rates, PLAN))
-        return ideal.log_prob(frame.astype(float), rates, PLAN).sum()
+        return scale * jnp.sum(ideal.draw(key, rates, PLAN))
 
     with pytest.raises(eqx.EquinoxRuntimeError, match="frame peak"):
-        jax.grad(fit)(jnp.asarray(1.0)).block_until_ready()
+        jax.grad(draw_total)(jnp.asarray(1.0)).block_until_ready()
     ringing = ox.Rates(
         BANDS,
         "electron",
@@ -286,6 +312,7 @@ def test_photon_counting_contract():
     assert ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(1, 1)).photon_counting
 
 
+@pytest.mark.float64_only(reason="detector log density requires float64")
 def test_poisson_form_matches_draw_frequencies():
     """Fails if exp(log_prob) differs from the empirical frequencies of draw."""
     det = ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(1, 1))
@@ -417,6 +444,7 @@ def test_fisher_root_matches_score_variance(name):
     assert se / fisher < 0.02
 
 
+@pytest.mark.float64_only(reason="Fisher information requires float64")
 @pytest.mark.parametrize("name", DETECTORS)
 def test_fisher_root_zero_outside_the_law_and_finite(name):
     """Fails if the root is NaN or nonzero where the law has no support.
@@ -442,21 +470,28 @@ def test_fisher_root_zero_outside_the_law_and_finite(name):
     assert np.all(np.isfinite(grad))
 
 
+@pytest.mark.float64_only(reason="Fisher information requires float64")
 @pytest.mark.parametrize("name", DETECTORS)
 def test_fisher_root_jit_equals_eager(name):
-    """Fails if jit changes the root or its Jacobian beyond float32 rounding."""
+    """JIT preserves the float64 Fisher root and its Jacobian.
+
+    Allow 32 operations through rate sums, detector moments and square roots,
+    and twice that for the differentiated products and quotients.
+    """
     det = DETECTORS[name]()
     planet = jnp.asarray(TEMPLATE)
 
     def root(p):
         return det.fisher_root(_rates(p), PLAN)
 
-    np.testing.assert_allclose(eqx.filter_jit(root)(planet), root(planet), rtol=1e-6)
+    np.testing.assert_allclose(
+        eqx.filter_jit(root)(planet), root(planet), rtol=float(ulps(32, 1.0)), atol=0
+    )
     np.testing.assert_allclose(
         eqx.filter_jit(jax.jacfwd(root))(planet),
         jax.jacfwd(root)(planet),
-        rtol=1e-5,
-        atol=1e-6,
+        rtol=float(ulps(64, 1.0)),
+        atol=0,
     )
 
 
@@ -469,3 +504,15 @@ def test_fisher_root_of_an_unknown_law_raises():
 
     with pytest.raises(NotImplementedError, match="Robust"):
         Robust(**_kw()).fisher_root(_rates(TEMPLATE), PLAN)
+
+
+@pytest.mark.float32_only(reason="checks inference refusal without x64")
+def test_detector_inference_requires_float64():
+    """Both score and curvature refuse before evaluation, including under jit."""
+    det = ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(2, 3))
+    for root in (det.fisher_root, eqx.filter_jit(det.fisher_root)):
+        with pytest.raises(PrecisionError, match=r"Fisher information.*Enable x64"):
+            root(_rates(TEMPLATE), PLAN)
+    for score in (det.log_prob, eqx.filter_jit(det.log_prob)):
+        with pytest.raises(PrecisionError, match=r"log density.*Enable x64"):
+            score(1, _rates(TEMPLATE), PLAN)

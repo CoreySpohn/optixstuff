@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
+from hwoutils.numerics import COARSEST
 
 from optixstuff.grids import (
     Frame,
@@ -22,21 +23,26 @@ from optixstuff.grids import (
     integrate_footprints,
     resample,
 )
-from optixstuff.spectral import Band, spectral_breaks
+from optixstuff.spectral import Band, same_wavelength, spectral_breaks
 
 # Under-blur grows with the difference of squared fractional widths. For a 10%
 # product, a 12.5% band has about 0.19 of the under-blur of a 20% band.
 WIDE_BAND_FACTOR = 1.25
 
-# Band edges and fractional widths are compared with a relative slack of four
-# float64 ulps, so a value equal to its limit up to unit conversion rounding
-# (for example 0.6 um becoming 599.9999999999999 nm) is not refused.
+# Fractional widths use a relative slack of four float64 eps to allow
+# rounding in the host width calculation at its limit.
 BAND_COMPARE_RTOL = 4 * float(np.finfo(np.float64).eps)
 
 
 def _within(value, limit):
     """Whether ``value <= limit`` up to ``BAND_COMPARE_RTOL`` of the limit."""
     return value <= limit + BAND_COMPARE_RTOL * abs(limit)
+
+
+def _wavelength_le(a, b):
+    """Compare both dispatch coordinates on the common float32 wavelength grid."""
+    a, b = COARSEST(a), COARSEST(b)
+    return a <= b or same_wavelength(a, b)
 
 
 def on_grid(image: Image, grid: PixelGrid) -> Image:
@@ -196,7 +202,11 @@ class AbstractCoronagraph(eqx.Module):
         product = self.bandpass
         if not self.band_averaged or product is None or allow_wide_bands:
             return
-        product_width = product.width_nm / product.center_nm
+        product_width = (
+            0.0
+            if same_wavelength(product.low_nm, product.high_nm)
+            else product.width_nm / product.center_nm
+        )
         for band in bands:
             width = band.width_nm / band.center_nm
             if _within(width, WIDE_BAND_FACTOR * product_width):
@@ -542,7 +552,9 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             wavelength_nm = self.reference_wavelength_nm
         wave = float(wavelength_nm)
         for model in self.coronagraphs:
-            if model.bandpass.low_nm <= wave <= model.bandpass.high_nm:
+            if _wavelength_le(model.bandpass.low_nm, wave) and _wavelength_le(
+                wave, model.bandpass.high_nm
+            ):
                 return model
         raise ValueError(f"No coronagraph bandpass covers {wave} nm")
 
@@ -553,6 +565,9 @@ class MultiBandCoronagraph(AbstractCoronagraph):
 
     def coronagraph_for_band(self, band):
         """Select the first band average covering both edges, or the center model.
+
+        Both edges use the float32 dispatch grid before computing the midpoint
+        for a single-wavelength model.
 
         Args:
             band: Concrete observing band.
@@ -565,10 +580,11 @@ class MultiBandCoronagraph(AbstractCoronagraph):
             ValueError: No child covers the required interval.
         """
         if not self.band_averaged:
-            return self.coronagraph_at(band.center_nm)
+            edges = np.asarray((band.low_nm, band.high_nm), dtype=COARSEST)
+            return self.coronagraph_at(edges.mean(dtype=np.float64))
         for model in self.coronagraphs:
             interval = model.bandpass
-            if _within(interval.low_nm, band.low_nm) and _within(
+            if _wavelength_le(interval.low_nm, band.low_nm) and _wavelength_le(
                 band.high_nm, interval.high_nm
             ):
                 return model

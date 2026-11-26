@@ -1,5 +1,7 @@
 """Tests for the PSFlet template pack record and its npz format."""
 
+from contextlib import nullcontext
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -104,19 +106,33 @@ def test_pack_validation_rejects_bad_shapes():
         )
 
 
-@pytest.mark.parametrize("step", [0.1, 0.2, 1 / 3])
-def test_pack_accepts_uniform_float32_offsets(step):
-    """Fails if rounding in the step differences rejects a uniform grid."""
-    # Starting away from zero lets three points expose the rounding.
-    offsets = (step * np.arange(12, 15)).astype(np.float32)
-    pack = PsfletPack(
-        templates=np.ones((1, 1, 3, 3), dtype=np.float32),
-        offsets=offsets,
-        wavelengths_nm=[650.0],
-        field_xy=[[0, 0]],
-        template_origin=TEMPLATE_ORIGIN,
-    )
-    np.testing.assert_array_equal(pack.offsets, offsets)
+@pytest.mark.parametrize(
+    ("offsets", "error"),
+    [
+        *((step * np.arange(24, 27), None) for step in (0.1, 0.2, 1 / 3)),
+        ((np.arange(24, 27) / 3).astype(np.float32), None),
+        ((0.5, 1.0, 1.5000014), None),
+        ((0.50000003, 1.00000003, 1.50000143), "uniform"),
+        ((0.5, 1.0, 1.50000146), "uniform"),
+        ((1.0, 1.0 + 2e-8, 1.0 + 4e-8), "ascending"),
+    ],
+)
+def test_pack_offset_admission(offsets, error, precision):
+    """Original host steps must be uniform and remain distinct in float32.
+
+    At offsets near 1.5, the eight-epsilon uniformity allowance is about
+    1.43e-6. The last step is perturbed on either side of that cutoff.
+    """
+    offsets = np.asarray(offsets)
+    with pytest.raises(ValueError, match=error) if error else nullcontext():
+        pack = PsfletPack(
+            templates=np.ones((1, 1, 3, 3), dtype=np.float32),
+            offsets=offsets,
+            wavelengths_nm=[650.0],
+            field_xy=[[0, 0]],
+            template_origin=TEMPLATE_ORIGIN,
+        )
+        np.testing.assert_array_equal(pack.offsets, offsets.astype(precision))
 
 
 def test_pack_requires_template_origin():

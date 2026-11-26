@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.constants import arcsec2rad
+from hwoutils.testing import ulps
 from scipy import special
 from scipy.interpolate import make_interp_spline
 
@@ -240,7 +241,6 @@ def _relative_errors(read, truth, mask):
 # Algebra ----------------------------------------------------------------------
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     "reconstruction", ["cubic_spline", "linear", "cubic", "nearest"]
 )
@@ -253,8 +253,11 @@ def test_constant_and_ramp_integrate_exactly(reconstruction):
     integrates to its value at the pixel center times the pixel area (nearest
     reproduces only the constant). A grid covering the table collects the sum
     of the table (partition of unity for the local kernels; for the spline the
-    ramp integrates to N times its mean over the footprint). Tolerance:
-    floating point, 1e-12 relative.
+    ramp integrates to N times its mean over the footprint).
+
+    Floating-point basis. Allow 96 operations at the peak pixel scale for the
+    coordinate transforms, two integrated kernel axes and their contractions,
+    and 96 relative for summing the covering pixels and the source.
     """
     n, step = 24, 0.5
     source = PixelGrid.regular((n, n), step, "arcsec")
@@ -276,50 +279,54 @@ def test_constant_and_ramp_integrate_exactly(reconstruction):
             np.testing.assert_allclose(
                 np.asarray(read.data)[supported],
                 expected[supported],
-                rtol=1e-12,
-                atol=0,
+                rtol=0,
+                atol=float(ulps(96, np.max(np.abs(expected[supported])))),
             )
         total = on_grid(image, covering).data.sum()
         np.testing.assert_allclose(
-            total, image.integrated().data.sum(), rtol=1e-12, atol=0
+            total, image.integrated().data.sum(), rtol=float(ulps(96, 1.0)), atol=0
         )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_cubic_spline_integrates_a_cubic_polynomial_exactly():
     """Fails if the spline coefficients skip the prefilter or its end condition.
 
     Truth: algebra. The not-a-knot spline of a cubic is the cubic, so the read of
     the separable p(x) q(y) at every supported pixel is the product of the
-    exact one-dimensional integrals, to the table edge. Tolerance: 1e-10
-    relative (the prefilter is a dense solve; measured 2.3e-13). Without the
+    exact one-dimensional integrals, to the table edge. Without the
     prefilter the read smooths the cubic by the 1/6, 2/3, 1/6 filter and is off
     by 3.9e-3.
+
+    Floating-point basis. Allow 192 operations at peak pixel flux for the
+    two spline prefilters and box contractions. Allow four boundary strips
+    at peak density for coordinate error, each of pixel width times eight
+    operations at the largest coordinate. The centered cubic integral is
+    evaluated in host float64 and remains well conditioned through zeros.
     """
 
     def p(t):
         return 1.0 + 0.02 * t - 3e-4 * t**2 + 2e-5 * t**3
 
-    def p_integral(t):
-        return t + 0.01 * t**2 - 1e-4 * t**3 + 5e-6 * t**4
-
     def q(t):
         return 0.8 - 0.01 * t + 1e-4 * t**2 - 1e-5 * t**3
-
-    def q_integral(t):
-        return 0.8 * t - 0.005 * t**2 + 1e-4 / 3 * t**3 - 2.5e-6 * t**4
 
     table = q(SAMPLES_LOD)[:, None] * p(SAMPLES_LOD)[None]
     target, centers = _target(0.37, 0.11)
     read = np.asarray(on_grid(_density(table), target).data)
-
-    def exact(f_integral):
-        return f_integral(centers + 0.185) - f_integral(centers - 0.185)
-
-    expected = exact(q_integral)[:, None] * exact(p_integral)[None]
+    width = target.step
+    # Only the even terms of the cubic about the cell center integrate.
+    px = width * p(centers) + width**3 / 24 * (-6e-4 + 1.2e-4 * centers)
+    qy = width * q(centers) + width**3 / 24 * (2e-4 - 6e-5 * centers)
+    expected = qy[:, None] * px[None, :]
     supported = _covered(target)
     assert supported.sum() > 0.9 * supported.size
-    np.testing.assert_allclose(read[supported], expected[supported], rtol=1e-10)
+    density_scale = np.max(np.abs(table))
+    coordinate_error = float(ulps(8, np.max(np.abs(centers))))
+    tolerance = float(ulps(192, density_scale * width**2))
+    tolerance += 4 * density_scale * width * coordinate_error
+    np.testing.assert_allclose(
+        read[supported], expected[supported], rtol=0, atol=tolerance
+    )
 
 
 @pytest.mark.parametrize(
@@ -608,7 +615,6 @@ def test_local_footprint_reads_have_finite_reach(reconstruction, pitch):
     assert changed == 0
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_absolute_scale_of_the_read():
     """Fails if the read integrates in the source cell area instead of the pixel.
 
@@ -618,7 +624,11 @@ def test_absolute_scale_of_the_read():
     pixel, with an integral measure. The steradian is typed here from the
     arcsecond. ``resample`` of a uniform cubic_spline cell integral gives the
     value times the ratio of the pixel areas, at pixels 0.6, 1 and 3.4 times
-    the cell. Tolerance: floating point, 1e-12 relative.
+    the cell.
+
+    Floating-point basis. The conversion constant is checked in float64. Allow
+    128 lane operations for geometry, spline prefiltering, two footprint
+    contractions and converting from surface density to pixel flux.
     """
     source = PixelGrid.regular((40, 40), 0.004, "arcsec")
     target = PixelGrid.regular((23, 23), 0.0061, "arcsec", center=(11.3, 10.8))
@@ -639,7 +649,10 @@ def test_absolute_scale_of_the_read():
         )
         assert supported.sum() > 100
         np.testing.assert_allclose(
-            np.asarray(read.data)[supported], 2.5e-3 * area, rtol=1e-12, atol=0
+            np.asarray(read.data)[supported],
+            0.0025 * area,
+            rtol=float(ulps(128, 1.0)),
+            atol=0,
         )
     # resample of a cubic_spline cell integral: a uniform 3 per cell becomes 3
     # times the ratio of the pixel areas.
@@ -660,20 +673,26 @@ def test_absolute_scale_of_the_read():
         )
         assert supported.sum() > 20
         np.testing.assert_allclose(
-            np.asarray(read.data)[supported], 3.0 * ratio**2, rtol=1e-12, atol=0
+            np.asarray(read.data)[supported],
+            3.0 * ratio**2,
+            rtol=float(ulps(128, 1.0)),
+            atol=0,
         )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
     """Fails if the footprint read leaks into ``resample`` or rotation is admitted.
 
     Truth: algebra. ``resample`` of a density samples the reconstruction at the
     target centers and keeps the density measure: a linear ramp read on a grid
     rotated by 30 degrees (linear) and a cubic polynomial read on an aligned
-    grid (cubic_spline) return the polynomial at the centers, to 1e-12
-    relative. ``on_grid`` of a cubic_spline or linear density on a rotated grid
+    grid (cubic_spline) return the polynomial at the centers.
+    ``on_grid`` of a cubic_spline or linear density on a rotated grid
     raises, because the footprint read is axis-aligned only.
+
+    Floating-point basis. Allow 24 operations at peak sample scale for
+    coordinate transforms, evaluating the polynomial, and separable
+    interpolation. The signed cubic can cancel near zero.
     """
     source = PixelGrid.regular((40, 40), 0.5, "arcsec")
     x, y = source.coordinates()
@@ -697,9 +716,9 @@ def test_resample_keeps_center_samples_and_on_grid_refuses_rotation():
         image = Image(field(x, y), source, (), DENSITY, "flux", reconstruction)
         sampled = resample(image, grid)
         assert sampled.measure == DENSITY
-        np.testing.assert_allclose(
-            sampled.data, field(*grid.coordinates()), rtol=1e-12, atol=0
-        )
+        expected = field(*grid.coordinates())
+        tolerance = float(ulps(24, jnp.max(jnp.abs(expected))))
+        np.testing.assert_allclose(sampled.data, expected, rtol=0, atol=tolerance)
     for reconstruction in ("cubic_spline", "linear"):
         image = Image(cubic(x, y), source, (), DENSITY, "flux", reconstruction)
         with pytest.raises(NotImplementedError, match="rotated"):
@@ -771,7 +790,6 @@ def _reference_axis(reconstruction, samples, low, high):
     return out
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(
     "reconstruction", ["nearest", "linear", "cubic", "cubic_spline", "band_limited"]
 )
@@ -784,10 +802,14 @@ def test_every_density_is_read_by_its_footprint_integral(reconstruction):
     twice its length (band-limited), by Gauss-Legendre on half-cell pieces.
     The table is separable, so a pixel is the product of two one-dimensional
     integrals. Pitches 0.25 (aligned, equal to the cell), 0.15 and 0.6 lambda/D
-    (offset). Tolerance: floating point, 1e-12 of the largest pixel. The
+    (offset). The
     midpoint read (cell integral, then sample or deposit) differs by percent
     at one of these pitches for each of nearest, linear and cubic, and so
     does a center sample of the band-limited interpolant.
+
+    Floating-point basis. Allow 192 operations at peak pixel scale for
+    coordinate differences across the 40-cell table, the two separable kernel
+    integrals or Fourier synthesis, and the weighted contractions.
     """
     rng = np.random.default_rng(0)
     n = 40
@@ -806,18 +828,21 @@ def test_every_density_is_read_by_its_footprint_integral(reconstruction):
             reconstruction, rows, positions - width / 2, positions + width / 2
         )
         truth = np.outer(y_axis, axis) * CELL**2
-        np.testing.assert_allclose(read, truth, rtol=0, atol=1e-12 * truth.max())
+        np.testing.assert_allclose(
+            read, truth, rtol=0, atol=float(ulps(192, np.max(np.abs(truth))))
+        )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_non_square_table_and_anisotropic_flipped_pixels():
     """Fails if the read mixes the axes of a non-square table or pixel.
 
     Truth: algebra. A separable cubic q(y) p(x) with different coefficients on
     a 36 by 52 table of 0.22 by 0.3 arcsec cells, read onto pixels of 0.37 by
     0.29 arcsec, and the same with the x axis flipped, is the product of the
-    exact one-dimensional integrals at every supported pixel. Tolerance: 1e-10
-    relative, as for the square cubic test.
+    exact one-dimensional integrals at every supported pixel.
+
+    Floating-point basis. Allow 128 operations for the anisotropic coordinate
+    map, two spline axes, and weighted footprint integration.
     """
 
     def p(t):
@@ -848,10 +873,11 @@ def test_non_square_table_and_anisotropic_flipped_pixels():
             coverage(source, target, reconstruction="cubic_spline", measure=DENSITY)
         )
         assert supported.sum() > 300
-        np.testing.assert_allclose(read[supported], expected[supported], rtol=1e-10)
+        np.testing.assert_allclose(
+            read[supported], expected[supported], rtol=float(ulps(128, 1.0)), atol=0
+        )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_traced_orientation_that_differs_raises():
     """Fails if a rotation hidden behind a traced angle is read as axis-aligned.
 
@@ -860,6 +886,9 @@ def test_traced_orientation_that_differs_raises():
     and differs from the source's may hold any rotation, so both raise rather
     than return the unrotated read. A target that shares the source's
     orientation still reads under a traced pixel scale.
+
+    Floating-point basis. Allow 128 operations for the inverse pixel geometry
+    and both spline axes in the eager and fused footprint read.
     """
     orientation = SkyOrientation(0.0)
     source = PixelGrid.regular((40, 40), 0.5, "arcsec", orientation=orientation)
@@ -885,4 +914,6 @@ def test_traced_orientation_that_differs_raises():
         )
         return on_grid(image, grid).data
 
-    np.testing.assert_allclose(jax.jit(scaled)(0.7), scaled(0.7), rtol=1e-12, atol=0)
+    np.testing.assert_allclose(
+        jax.jit(scaled)(0.7), scaled(0.7), rtol=float(ulps(128, 1.0)), atol=0
+    )

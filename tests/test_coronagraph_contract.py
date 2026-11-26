@@ -106,6 +106,21 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
     assert Quadrature.build([limit], make_instrument(edge)).bands == (limit,)
 
 
+def test_unresolved_product_has_no_positive_width_tiles(monkeypatch):
+    """Adjacent binary64 edges at 600 nm admit only a zero-width observation."""
+    product = Band(np.nextafter(600.0, 0.0), 600.0)
+    model = GaussianTableCoronagraph(bandpass=product, band_averaged=True)
+
+    def fail_if_tiled(self, n, spacing):
+        pytest.fail(f"Unresolved product requested {n} tiles")
+
+    monkeypatch.setattr(Band, "channels", fail_if_tiled)
+    model.check_bands((Band(600.0, 600.0),))
+    for band in (Band(599.99999, 600.00001), product):
+        with pytest.raises(ValueError, match="No positive-width tile fits"):
+            model.check_bands((band,))
+
+
 def test_band_average_requires_one_covering_child():
     """Coverage is inclusive at declared edges and exact across the 550 nm split."""
     blue = GaussianTableCoronagraph(bandpass=Band(450, 550), band_averaged=True)
@@ -118,13 +133,46 @@ def test_band_average_requires_one_covering_child():
             Quadrature.build([Band(510, 590)], coro, allow_wide_bands=allow)
     with pytest.raises(ValueError, match="covers"):
         Quadrature.build([Band(700, 720)], coro)
-    # An edge one ulp below 600 nm, as a micron-to-nm conversion leaves it,
-    # still covers a band that ends at 600 nm.
-    below = np.nextafter(600.0, 0.0)
-    converted = GaussianTableCoronagraph(bandpass=Band(500, below), band_averaged=True)
-    later = GaussianTableCoronagraph(bandpass=Band(600, 700), band_averaged=True)
-    split = ox.MultiBandCoronagraph([converted, later])
-    assert split.coronagraph_for_band(Band(550, 600)) is converted
+    # Exact selection at a float64 conversion edge and a stored float32 edge.
+    for edge, below in ((600.0, np.nextafter(600.0, 0.0)), (565.1, np.float32(565.1))):
+        converted = GaussianTableCoronagraph(
+            bandpass=Band(500, below), band_averaged=True
+        )
+        later = GaussianTableCoronagraph(bandpass=Band(edge, 700), band_averaged=True)
+        split = ox.MultiBandCoronagraph([converted, later])
+        assert split.coronagraph_for_band(Band(550, edge)) is converted
+        assert split.coronagraph_at(edge) is converted
+        assert split.coronagraph_at(jnp.asarray(edge)) is converted
+        assert split.coronagraph_at(edge + 0.01) is later
+
+
+def test_dispatch_at_the_wavelength_merge_threshold():
+    """Three float32 spacings merge, four do not, for points and both band edges."""
+    spacing = float(np.spacing(np.float32(600.0)))
+    for edge in (600.0, 600.0 + 0.25 * spacing):
+        blue = GaussianTableCoronagraph(bandpass=Band(500, edge), band_averaged=True)
+        red = GaussianTableCoronagraph(bandpass=Band(edge, 700), band_averaged=True)
+        blue_first = ox.MultiBandCoronagraph([blue, red])
+        red_first = ox.MultiBandCoronagraph([red, blue])
+        for steps, above, below in ((3.25, blue, red), (3.75, red, blue)):
+            for scalar in (float, np.float32, jnp.asarray):
+                high = scalar(600.0 + steps * spacing)
+                low = scalar(600.0 - steps * spacing)
+                assert blue_first.coronagraph_at(high) is above
+                assert red_first.coronagraph_at(low) is below
+                upper = Band(scalar(599.9999), high)
+                lower = Band(low, scalar(600.0001))
+                assert blue_first.coronagraph_for_band(upper) is above
+                assert red_first.coronagraph_for_band(lower) is below
+
+    blue = GaussianTableCoronagraph(bandpass=Band(500, 600))
+    red = GaussianTableCoronagraph(bandpass=Band(600, 700))
+    mono = ox.MultiBandCoronagraph([blue, red])
+    # Rounded edges at two and five spacings give a midpoint at 3.5, rounding to four.
+    for low_steps, child in ((1.4, blue), (1.6, red)):
+        for scalar in (float, np.float32, jnp.asarray):
+            band = Band(scalar(600 + low_steps * spacing), scalar(600 + 5.2 * spacing))
+            assert mono.coronagraph_for_band(band) is child
 
 
 def test_overlapping_band_products_use_first_full_coverage():

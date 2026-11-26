@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.testing import ulps
 from scipy.special import i0, j1
 
 from optixstuff.performance import azimuthal_mean_profile
@@ -49,10 +50,13 @@ def test_keys_bit_identical():
     np.testing.assert_array_equal(explicit.view(np.uint64), default.view(np.uint64))
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize("center", [(63.5, 63.5), (59.25, 67.75)])
 def test_quadratic_circle_mean(center):
-    """Preserve the axis, row/column order, radius scale and pixel-area units."""
+    """Preserve the axis, row/column order, radius scale and pixel-area units.
+
+    Floating-point basis. Allow 64 operations for circle coordinates, the
+    cubic weights on each axis, their products, and the angular reduction.
+    """
     pixel_scale = 0.25
     y, x = (np.indices((128, 128)) - 63.5) * pixel_scale
     # Linear and unequal quadratic terms expose swapped axes/offset centers.
@@ -64,7 +68,9 @@ def test_quadratic_circle_mean(center):
     actual = np.asarray(
         _circle_mean(density * pixel_scale**2, center, radii_lod / pixel_scale)
     )
-    np.testing.assert_allclose(actual / pixel_scale**2, expected, rtol=1e-12)
+    np.testing.assert_allclose(
+        actual / pixel_scale**2, expected, rtol=float(ulps(64, 1.0)), atol=0
+    )
 
 
 def test_displaced_gaussian_circle_mean():
@@ -79,18 +85,33 @@ def test_displaced_gaussian_circle_mean():
     np.testing.assert_allclose(actual, expected, rtol=5e-5)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_partial_circle_normalizes_only_in_image_arcs():
-    """A constant stays constant on short corner arcs and vanishes outside."""
+    """A constant stays constant on short corner arcs and vanishes outside.
+
+    Floating-point basis. Allow 64 operations at unit scale for Keys weights,
+    angular reduction and normalization. Exterior circles are exactly zero.
+    """
     corner = np.hypot(63.5, 63.5)
     radii = np.array([0, 64, 80, corner - 0.001, corner, corner + 0.001])
     actual = np.asarray(_circle_mean(np.ones((128, 128)), (63.5, 63.5), radii))
-    np.testing.assert_allclose(actual, [1, 1, 1, 1, 1, 0], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        actual, [1, 1, 1, 1, 1, 0], rtol=float(ulps(64, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 @pytest.mark.parametrize("pixel_scale", [0.25, 0.125])
-@pytest.mark.parametrize("kind", ["airy", "gaussian"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "airy",
+        pytest.param(
+            "gaussian",
+            marks=pytest.mark.float64_only(
+                reason="analytic Gaussian convergence residual below float32 resolution"
+            ),
+        ),
+    ],
+)
 def test_quintic_analytic_circle_mean(pixel_scale, kind):
     """Quintic reaches twice the measured spline error at both pixel scales."""
     size = round(32 / pixel_scale)
@@ -126,9 +147,13 @@ def test_quintic_analytic_circle_mean(pixel_scale, kind):
     assert np.all(100 * np.abs(actual / expected - 1) < 2 * bounds)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_partial_circle_and_tangency():
-    """Quintic preserves in-image normalization, tangencies and exterior zero."""
+    """Quintic preserves in-image normalization, tangencies and exterior zero.
+
+    Floating-point basis. Allow 128 operations at unit scale for the separable
+    quintic prefilter, six spline weights per axis and angular normalization.
+    Exterior circles are exactly zero.
+    """
     corner = np.hypot(7.5, 9.5)
     actual = np.asarray(
         _selectable_circle_mean(
@@ -138,12 +163,17 @@ def test_quintic_partial_circle_and_tangency():
             interpolation="quintic",
         )
     )
-    np.testing.assert_allclose(actual, [1, 1, 1, 1, 1, 0], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        actual, [1, 1, 1, 1, 1, 0], rtol=float(ulps(128, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_image_gradient():
-    """The prefilter and spatial evaluation participate in reverse-mode AD."""
+    """The prefilter and spatial evaluation participate in reverse-mode AD.
+
+    Floating-point basis. Allow 128 operations for the transposed angular
+    reduction, separable prefilter, and summing the image cotangents.
+    """
 
     def total(image):
         return azimuthal_mean_profile(
@@ -157,7 +187,7 @@ def test_quintic_image_gradient():
     gradient = np.asarray(eqx.filter_jit(jax.grad(total))(image))
     assert np.all(np.isfinite(gradient))
     # Three nonempty circles: adding a constant adds it to each mean.
-    np.testing.assert_allclose(gradient.sum(), 3, rtol=1e-12)
+    np.testing.assert_allclose(gradient.sum(), 3, rtol=float(ulps(128, 1.0)), atol=0)
 
 
 def test_unknown_interpolation_rejected():
@@ -198,9 +228,13 @@ def test_quintic_coordinate_gradients():
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_quintic_nearest_sample_extension():
-    """Nonconstant edge samples match an independently prefiltered nearest halo."""
+    """Nonconstant edge samples match an independently prefiltered nearest halo.
+
+    Floating-point basis. Allow 128 operations for the two prefilters and six
+    quintic weights per axis at the unit sample scale. The SciPy reference is
+    evaluated in float64.
+    """
     y, x = np.indices((8, 11))
     image = ((7 * x + 11 * y) % 23) / 32.0
     centers = np.array([[0.2, 0.4], [0.1, 9.8], [6.9, 0.25], [6.8, 9.7]])
@@ -225,13 +259,17 @@ def test_quintic_nearest_sample_extension():
         )(centers)
 
     actual = np.asarray(read(image, centers))
-    np.testing.assert_allclose(actual, expected, rtol=1e-13)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=float(ulps(128, 1.0)))
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize("shape", [(1, 1), (1, 7), (3, 4)])
 def test_quintic_interpolates_small_images(shape):
-    """Degenerate and small rectangular images reproduce their pixel-center data."""
+    """Degenerate and small rectangular images reproduce their pixel-center data.
+
+    Floating-point basis. Allow 128 operations at peak image scale for the two
+    prefilters, six weights per axis and summation; this includes zero
+    samples.
+    """
     image = np.arange(np.prod(shape), dtype=float).reshape(shape) / 7
     centers = np.indices(shape).reshape(2, -1).T
 
@@ -247,4 +285,6 @@ def test_quintic_interpolates_small_images(shape):
         )(centers)
 
     actual = np.asarray(read(image, centers))
-    np.testing.assert_allclose(actual, image.ravel(), rtol=1e-13, atol=1e-14)
+    np.testing.assert_allclose(
+        actual, image.ravel(), rtol=0, atol=float(ulps(128, np.max(np.abs(image))))
+    )

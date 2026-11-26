@@ -2,10 +2,14 @@
 
 from dataclasses import replace
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.numerics import eps
+from hwoutils.testing import ulps
+from scipy.interpolate import CubicSpline
 
 from optixstuff import SampledProfile
 from optixstuff.apertures import Circular, HalfMaximum
@@ -60,13 +64,15 @@ def test_circular_centre_offset_gaussian(displaced_gaussian_source):
             Circular(radius, centre=invalid)
 
 
-@pytest.mark.float64_only(reason="float64 aperture coverage reference")
 def test_source_centre_exact_coverage_and_quadrature(displaced_gaussian_source):
     """Fails if pixelization or oversampling moves the source-centred disk.
 
-    Basis: floating-point, 256 eps for exact native coverage and pi R**2.
+    Basis: floating-point, 256 operations for exact native coverage and
+    pi R**2, including segment integration and subpixel and pixel sums in
+    the host measurement dtype.
     Equal physical subpixel pitch (0.02 lod) also preserves throughput to
-    256 eps across two detector pitches; Gaussian alias error <1e-18.
+    256 lane operations across two detector pitches for the sampled Gaussian
+    intensity, Fourier reconstruction and weighted sums; alias error <1e-18.
     Fixed detector pitch with factors 5,10,20 retains a finite quadrature
     residual: require refinement toward the independent offset integral,
     rather than falsely calling midpoint intensity samples exact integrals.
@@ -90,24 +96,24 @@ def test_source_centre_exact_coverage_and_quadrature(displaced_gaussian_source):
         radius,
         epsabs=1e-14,
     )[0]
-    tolerance = 256 * np.finfo(float).eps
     fluxes = []
     rule = Circular(radius)
     for pitch, factor in ((0.2, 10), (0.1, 5)):
         source, star = displaced_gaussian_source(pitch)
         psf = source(0.375)
-        native = rule.weights(psf, (0.375, 0.0), oversample=1)
+        native = np.asarray(rule.weights(psf, (0.375, 0.0), oversample=1))
+        coverage_tol = 256 * np.finfo(native.dtype).eps
         for oversample in (factor, 20):
-            weights = rule.weights(psf, (0.375, 0.0), oversample=oversample)
-            np.testing.assert_allclose(weights, native, atol=tolerance, rtol=0)
+            weights = np.asarray(rule.weights(psf, (0.375, 0.0), oversample=oversample))
+            np.testing.assert_allclose(weights, native, atol=coverage_tol, rtol=0)
             np.testing.assert_allclose(
-                float(weights.sum()) * pitch**2, np.pi * radius**2, rtol=tolerance
+                weights.sum() * pitch**2, np.pi * radius**2, rtol=coverage_tol, atol=0
             )
         record = _performance_curves(
             source, star, rule, separations_lod=[0.375], oversample=factor
         )
         fluxes.append(record.throughput[0])
-    np.testing.assert_allclose(fluxes[0], fluxes[1], rtol=tolerance)
+    np.testing.assert_allclose(fluxes[0], fluxes[1], rtol=float(ulps(256, 1.0)), atol=0)
     source, star = displaced_gaussian_source(0.2)
     errors = [
         abs(
@@ -121,13 +127,15 @@ def test_source_centre_exact_coverage_and_quadrature(displaced_gaussian_source):
     assert errors[2] < errors[1] < errors[0] < 1e-4
 
 
-@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 def test_record_interpolation_spaces():
     """Fails if contrast is interpolated linearly or throughput logarithmically.
 
-    The two-point midpoint is exactly an arithmetic/geometric mean; 2e-14
-    permits float64 log/power roundoff only.
+    The two-point midpoint is exactly an arithmetic or geometric mean.
+    Allow 48 operations for the log-space polynomial, powers of ten and
+    their analytic tangents at the host or device read dtype. Compare the
+    tiny radial tangent of the log floor to its correctly rounded lane value.
     """
+    rtol = float(ulps(48, 1.0))
     record = PerformanceCurves(
         separation_lod=np.array([0.0, 2.0]),
         frame=Frame(500, 6, "circumscribed"),
@@ -144,20 +152,30 @@ def test_record_interpolation_spaces():
         iwa_lod=1.0,
         data_extent_lod=4.0,
     )
-    for name in ("leakage_fraction", "leakage_density_lod2", "raw_contrast"):
-        np.testing.assert_allclose(record.evaluate(name, 1.0), 1e-6, rtol=2e-14)
-    np.testing.assert_allclose(record.evaluate("throughput", 1.0), 0.5, rtol=2e-14)
-    for name in ("leakage_fraction_variance", "leakage_density_variance_lod2"):
-        np.testing.assert_allclose(record.evaluate(name, 1.0), 1e-8, rtol=2e-14)
-    np.testing.assert_allclose(record.evaluate("throughput_variance", 1.0), 0.25)
-    np.testing.assert_allclose(record.evaluate("core_area_variance_lod2", 1.0), 0.75)
+    midpoints = {
+        "leakage_fraction": 1e-6,
+        "leakage_density_lod2": 1e-6,
+        "raw_contrast": 1e-6,
+        "throughput": 0.5,
+        "leakage_fraction_variance": 1e-8,
+        "leakage_density_variance_lod2": 1e-8,
+        "throughput_variance": 0.25,
+        "core_area_variance_lod2": 0.75,
+    }
+    for name, midpoint in midpoints.items():
+        for radius in (np.float64(1.0), jnp.asarray(1.0)):
+            value = record.evaluate(name, radius)
+            assert value.dtype == radius.dtype
+            np.testing.assert_allclose(
+                value, midpoint, rtol=48 * eps(value.dtype), atol=0
+            )
     slope = np.log(1e4) / 2
     for point in (0.0, 1.0, 2.0):
         derivative = jax.grad(lambda q: record.evaluate("raw_contrast", q))(
             jnp.asarray(point)
         )
         np.testing.assert_allclose(
-            derivative, slope * 1e-8 * np.exp(slope * point), rtol=2e-14
+            derivative, slope * 1e-8 * np.exp(slope * point), rtol=rtol, atol=0
         )
     assert np.isposinf(record.evaluate("raw_contrast", jnp.asarray(10000.0)))
 
@@ -179,11 +197,13 @@ def test_record_interpolation_spaces():
         predicted = knots[0] * 2.0**q if space == "log" else 0.06 * q
         slope = predicted * np.log(2) if space == "log" else np.full(5, 0.06)
         values = jax.jit(evaluate)(1.0, q)
-        np.testing.assert_array_equal(np.asarray(values)[[1, 3]], knots)
-        np.testing.assert_allclose(values, predicted, rtol=2e-14)
+        np.testing.assert_array_equal(
+            np.asarray(values)[[1, 3]], np.asarray(knots, dtype=values.dtype)
+        )
+        np.testing.assert_allclose(values, predicted, rtol=rtol, atol=0)
         d_amp, d_radius = jax.vmap(jax.grad(evaluate, (0, 1)), (None, 0))(1.0, q)
-        np.testing.assert_allclose(d_amp, predicted, rtol=2e-14)
-        np.testing.assert_allclose(d_radius, slope, rtol=2e-14)
+        np.testing.assert_allclose(d_amp, predicted, rtol=rtol, atol=0)
+        np.testing.assert_allclose(d_radius, slope, rtol=rtol, atol=0)
 
     # Even a zero ordinate is returned verbatim at its knot. Its sample
     # derivative is one, while the radial derivative uses the log fit.
@@ -200,7 +220,8 @@ def test_record_interpolation_spaces():
     for jacobian in (jax.jacfwd, jax.jacrev):
         d_samples, d_radius = jacobian(log_profile, (0, 1))(samples, 0.0)
         np.testing.assert_array_equal(d_samples, [1.0, 0.0])
-        np.testing.assert_allclose(d_radius, 1e-300 * 150 * np.log(10), atol=0)
+        tiny_slope = np.dtype(d_radius.dtype).type(1e-300 * 150 * np.log(10))
+        np.testing.assert_allclose(d_radius, tiny_slope, rtol=rtol, atol=0)
 
 
 def _short_record(rule, last, extent):
@@ -252,12 +273,16 @@ def test_record_supported_ends_at_the_last_sample(separation, expected):
 def test_record_supported_also_needs_the_aperture_inside_the_extent():
     """Fails if the extent test is dropped when the samples run to the edge.
 
-    Basis: samples end at 4.0, the extent is 4.5 and the radius 0.7, so the
-    aperture fits up to separation 3.8 exactly (comparison, no tolerance).
+    The samples end at 4.0, the extent is 4.5 and the radius is 0.7.
+    The aperture fits up to 3.8 at float32 coordinate resolution in either
+    lane. One float32 spacing past that boundary is outside the extent.
     """
     record = _short_record(Circular(0.7), last=4.0, extent=4.5)
-    flags = np.asarray(record.supported(np.array([3.8, 3.8 + 1e-9, 4.0])))
-    np.testing.assert_array_equal(flags, [True, False, False])
+    beyond = np.nextafter(np.float32(3.8), np.float32(np.inf))
+    q = np.array([3.8, np.nextafter(3.8, np.inf), beyond, 4.0])
+    compiled = jax.jit(lambda s: record.supported(s))(jnp.asarray(q))
+    for flags in (record.supported(q), compiled):
+        np.testing.assert_array_equal(flags, [True, True, False, False])
 
 
 def test_profile_supported_spans_the_samples():
@@ -333,13 +358,14 @@ def _gaussian_source():
     return source, x, y, grid
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
+@pytest.mark.medium(reason="measures and independently rereads both aperture rules")
 def test_geometric_rules_preserve_primitive_curves():
     """Fails if the record moves a core or renormalizes its planet flux.
 
-    Parent values are computed here from retained low-level measurements;
-    2e-12 is float64 summation roundoff for identical quadrature. The ring
-    mean uses the parent's spatial reader, divided by typed pixel area.
+    Compare the host record with retained low-level measurements. Allow
+    128 lane operations for the coordinate map, Fourier sampling or cubic
+    weights, and pairwise sums of the subpixels. The ring mean uses the
+    parent's spatial reader divided by pixel area.
     """
     from optixstuff.performance import (
         _rule_samples,
@@ -385,13 +411,21 @@ def test_geometric_rules_preserve_primitive_curves():
                     half_width_pix=12,
                     nominal_center=nominal,
                 )
-            np.testing.assert_allclose(record.throughput[i], tau, rtol=2e-12)
-            np.testing.assert_allclose(record.core_area_lod2[i], area, rtol=2e-12)
-            fine, coverage, _, _, factor = _rule_samples(rule, source(sep), (sep, 0.0))
-            assert record.throughput[i] == float(jnp.sum(fine * coverage) / factor**2)
-            assert record.core_area_lod2[i] == (
-                float(jnp.sum(coverage)) * grid.pixel_area / factor**2
+            rtol = float(ulps(128, 1.0))
+            np.testing.assert_allclose(record.throughput[i], tau, rtol=rtol, atol=0)
+            np.testing.assert_allclose(
+                record.core_area_lod2[i], area, rtol=rtol, atol=0
             )
+            # This primitive is the host measurement path (binary64).
+            psf = source(sep)
+            with jax.enable_x64():
+                fine, coverage, _, _, factor = _rule_samples(rule, psf, (sep, 0.0))
+                assert record.throughput[i] == float(
+                    jnp.sum(fine * coverage) / factor**2
+                )
+                assert record.core_area_lod2[i] == (
+                    float(jnp.sum(coverage)) * grid.pixel_area / factor**2
+                )
         for mean, variance in (
             ("throughput", "throughput_variance"),
             ("core_area_lod2", "core_area_variance_lod2"),
@@ -403,7 +437,10 @@ def test_geometric_rules_preserve_primitive_curves():
             )
         parent_mean = azimuthal_mean_profile(star.data, (24.0, 24.0), seps / 0.25)
         np.testing.assert_allclose(
-            record.leakage_density_lod2[0], parent_mean / 0.25**2, rtol=2e-12
+            record.leakage_density_lod2[0],
+            parent_mean / 0.25**2,
+            rtol=float(ulps(128, 1.0)),
+            atol=0,
         )
 
 
@@ -651,20 +688,22 @@ def test_record_uniform_sky_uses_the_record_frame():
         replace(record, uniform_sky=sky)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_diameter_knots_read_the_measured_rows_exactly():
     """Single-row reads give the exact-algebra oracle and catch log-floor leakage.
 
-    Match the previous between-knot log spline to float64 roundoff.
-    At a knot the separation slope equals the row's own (counted once), to
-    1e-9 relative (spline-weight roundoff).
+    At the zero-diameter knot the selected row is flat, so its separation
+    slope is exactly zero. The spline still supplies the diameter tangent.
+    The independent float64 solution on the first interval is analytic.
+    Allow 48 operations for both row log fits, the diameter weights, exp,
+    and the tangent. At a positive knot the analytic radial slope is nonzero.
+    Between mixed-zero rows, the cubic weights and three-term dot product
+    allow 12 rounding operations at the largest input log magnitude. The
+    float64 reference uses the read dtype's positive floor.
     """
-    from scipy.interpolate import CubicSpline
-
     diameters = np.array([0.0, 0.2, 0.5])
     q = np.array([1.0, 1.25, 2.0])
     base = _short_record(Circular(0.7), last=2.0, extent=4.0)
-    rows = np.array([[0.0, 0.0], [1e-8, 2e-8], [3e-8, 4e-8]])
+    rows = np.array([[0.0, 0.0], [1e-8, 2e-8], [0.0, 4e-8]])
     record = replace(
         base,
         stellar_diameters_lod=diameters,
@@ -691,37 +730,65 @@ def test_diameter_knots_read_the_measured_rows_exactly():
         np.testing.assert_array_equal(actual, expected(separations))
         np.testing.assert_array_equal(np.asarray(actual)[:, 0, [0, 2]], 0.0)
     assert np.all(np.isfinite(jax.grad(lambda d: read(1.25, d)[0])(0.0)))
-    # At a knot the separation slope is the row's own, counted once.
-    positive = replace(
-        base,
-        stellar_diameters_lod=np.array([0.1, 0.2]),
-        **dict.fromkeys(DIAMETER_QUANTITIES, np.array([[1e-9, 4e-9], [2e-9, 8e-9]])),
-    )
-    row = replace(base, **dict.fromkeys(DIAMETER_QUANTITIES, (1e-9, 4e-9)))
-    slope = jax.grad(lambda s: positive.evaluate("leakage_fraction", s, 0.1))(1.5)
-    np.testing.assert_allclose(
-        slope,
-        jax.grad(lambda s: row.evaluate("leakage_fraction", s))(1.5),
-        rtol=1e-9,
-    )
+
+    # The last row has a measured zero at radius 1. A diameter just below
+    # 0.5 rounds onto that row; a resolved offset still reads the spline.
+    for evaluate, axis in (
+        (read, np.asarray),
+        (read, jnp.asarray),
+        (jax.jit(read), jnp.asarray),
+    ):
+        near, between = evaluate(axis(1.0), axis([0.5 - 1e-8, 0.4999998]))[0]
+        assert near == 0.0
+        assert between > 0.0
 
     samples = np.asarray(read_rows(q)[0])
-    spline = CubicSpline(
-        [np.finfo(np.float32).eps, *diameters[1:]],
-        np.log(np.maximum(samples, np.finfo(np.float64).tiny)),
+    for evaluate, separations in ((read, q), (jax.jit(read), jnp.asarray(q))):
+        between = np.asarray(evaluate(separations, 0.1)[0])
+        logs = np.log(np.maximum(samples, np.finfo(between.dtype).tiny))
+        expected_log = CubicSpline(diameters, logs)(0.1)
+        assert np.all(np.isfinite(between) & (between > 0))
+        np.testing.assert_allclose(
+            np.log(between.astype(np.float64)),
+            expected_log,
+            atol=12 * eps(between.dtype) * np.max(np.abs(logs)),
+            rtol=0,
+        )
+    # At zero diameter the first row has no separation slope. The second
+    # row varies with separation and contributes only to the diameter tangent.
+    positive = replace(
+        base,
+        stellar_diameters_lod=np.array([0.0, 0.001]),
+        **dict.fromkeys(DIAMETER_QUANTITIES, np.array([[1e-8, 1e-8], [1e-8, 1e-6]])),
     )
-    between = read(q, 0.1)[0]
-    np.testing.assert_allclose(between, np.exp(spline(0.1)), rtol=5e-13, atol=0)
-    assert np.all(np.isfinite(between) & (between > 0))
+
+    def leakage(s, d):
+        return positive.evaluate("leakage_fraction", s, d)
+
+    radial, diameter = jax.grad(leakage, (0, 1))(1.5, 0.0)
+    assert radial == 0.0
+    log_slope = np.log(10.0) / 0.001
+    tolerance = float(ulps(48, 1.0))
+    np.testing.assert_allclose(diameter, 1e-8 * log_slope, rtol=tolerance, atol=0)
+    radial_at_positive = jax.grad(leakage, 0)
+    for gradient in (radial_at_positive, jax.jit(radial_at_positive)):
+        np.testing.assert_allclose(
+            gradient(1.5, 0.001), 1e-7 * np.log(100.0), rtol=tolerance, atol=0
+        )
+    d = 1e-10
+    expected = 1e-8 * np.exp(d * log_slope)
+    np.testing.assert_allclose(
+        jax.jit(leakage)(1.5, d), expected, rtol=tolerance, atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_record_tabulates_the_leakage_at_each_diameter():
     """Fails if a leakage profile is read from the wrong diameter plane.
 
     Each row of the record is the aperture sum of its own plane; the aperture
     is covered entirely by the uniform map, so the sum is the level times the
-    aperture's pixel count to within 256 eps of float64 roundoff. Each row
+    aperture's pixel count. Allow 256 operations for native map conversion,
+    Fourier interpolation and the weighted subpixel sum. Each row
     is returned exactly at the measured separation and diameter knots.
     """
     levels, record = _diameter_record()
@@ -731,7 +798,7 @@ def test_record_tabulates_the_leakage_at_each_diameter():
     np.testing.assert_allclose(
         record.leakage_fraction,
         levels[:, None] * pixels,
-        rtol=256 * np.finfo(float).eps,
+        rtol=float(ulps(256, 1.0)),
         atol=0,
     )
     for k, diameter in enumerate(DIAMETERS):
@@ -741,25 +808,28 @@ def test_record_tabulates_the_leakage_at_each_diameter():
         )
 
 
-def test_record_reads_between_diameters_with_the_stellar_map_rule():
-    """Fails if the diameter is interpolated by a rule other than the map's.
+def test_record_reads_between_diameters_on_the_measured_axis():
+    """Fails if diameter interpolation shifts a knot or uses the wrong spline.
 
-    The stellar map is read with a cubic spline of the logarithm in diameter
-    (a zero diameter nudged to float32 eps). The reference applies scipy's
-    spline to the tabulated rows. 1e-12 is float64 roundoff of the weights.
+    The reference applies SciPy's float64 log spline directly to the
+    tabulated rows. Allow 128 operations for the diameter weights, log and
+    exp at the NumPy or JAX read dtype.
     A linear rule in place of the spline differs by more than 1e-3 at 0.2,
     which the check requires, so a switch to it fails.
     """
-    from scipy.interpolate import CubicSpline
-
     _, record = _diameter_record()
-    x = DIAMETERS.copy()
-    x[0] = np.finfo(np.float32).eps
-    spline = CubicSpline(x, np.log(record.leakage_density_lod2))
-    for diameter in (0.002, 0.02, 0.05, 0.2, 0.7):
-        expected = np.exp(spline(diameter))
-        read = record.evaluate("leakage_density_lod2", record.separation_lod, diameter)
-        np.testing.assert_allclose(read, expected, rtol=1e-12)
+    spline = CubicSpline(DIAMETERS, np.log(record.leakage_density_lod2))
+
+    def leakage(separation, diameter):
+        return record.evaluate("leakage_density_lod2", separation, diameter)
+
+    diameters = np.array([0.002, 0.02, 0.05, 0.2, 0.7])
+    for evaluate, axis in ((leakage, np.asarray), (jax.jit(leakage), jnp.asarray)):
+        queries = axis(diameters)
+        read = evaluate(axis(record.separation_lod), queries[:, None])
+        assert read.dtype == queries.dtype
+        expected = np.exp(spline(np.asarray(queries, dtype=np.float64)))
+        np.testing.assert_allclose(read, expected, rtol=128 * eps(read.dtype), atol=0)
     linear = np.array(
         [np.interp(0.2, DIAMETERS, record.leakage_density_lod2[:, s]) for s in range(4)]
     )
@@ -787,16 +857,28 @@ def test_record_reads_every_leakage_quantity_at_a_diameter():
 
 def test_record_over_diameter_refuses_a_silent_read():
     """Fails if a read without, or outside, the tabulated diameters returns a value."""
-    _, record = _diameter_record()
+    _, record = _diameter_record([0.0, 1.0])
     with pytest.raises(ValueError, match="needs stellar_diameter_lod"):
         record.evaluate("leakage_density_lod2", 1.0)
     for outside in (-0.01, 1.01):
         with pytest.raises(ValueError, match="outside the tabulated range"):
             record.evaluate("leakage_density_lod2", 1.0, outside)
-    read = jax.jit(lambda d: record.evaluate("leakage_density_lod2", 1.0, d))
-    with pytest.raises(Exception, match="outside the tabulated range"):
-        read(jnp.asarray(2.0))
-    assert np.isfinite(read(jnp.asarray(0.5)))
+
+    def read(diameter):
+        return record.evaluate("leakage_density_lod2", 1.0, diameter)
+
+    # The query rounds to the last admitted float32 coordinate. The next
+    # float32 coordinate is beyond the table's relative slack.
+    edge = 1.00000101
+    outside = float(np.nextafter(np.float32(edge), np.float32(np.inf)))
+    for evaluate, asarray, error in (
+        (read, np.asarray, ValueError),
+        (read, jnp.asarray, ValueError),
+        (eqx.filter_jit(read), jnp.asarray, eqx.EquinoxRuntimeError),
+    ):
+        assert np.isfinite(evaluate(asarray(edge)))
+        with pytest.raises(error, match="outside the tabulated range"):
+            np.asarray(evaluate(asarray(outside)))
 
 
 def test_record_of_one_profile_serves_only_its_own_star():
@@ -834,8 +916,20 @@ def test_record_of_one_profile_serves_only_its_own_star():
         unknown.evaluate("leakage_fraction", 1.0, 0.5), unknown.leakage_fraction[0]
     )
     assert unknown.stellar_diameters_lod is None
-    with pytest.raises(Exception, match="one profile"):
-        jax.jit(lambda d: sized.evaluate("leakage_fraction", 1.0, d))(jnp.asarray(0.0))
+
+    def read(diameter):
+        return sized.evaluate("leakage_fraction", 1.0, diameter)
+
+    edge = 0.3003010001
+    outside = float(np.nextafter(np.float32(edge), np.float32(np.inf)))
+    for evaluate, asarray, error in (
+        (read, np.asarray, ValueError),
+        (read, jnp.asarray, ValueError),
+        (eqx.filter_jit(read), jnp.asarray, eqx.EquinoxRuntimeError),
+    ):
+        assert np.isfinite(evaluate(asarray(edge)))
+        with pytest.raises(error, match="one profile"):
+            np.asarray(evaluate(asarray(outside)))
 
 
 @pytest.mark.float64_only(reason="finite-difference gradient reference")
@@ -917,7 +1011,7 @@ def test_record_diameter_axis_validation():
             stellar_diameter_lod=0.0,
             **base,
         )
-    for bad in ([1.0, 0.0], [-0.1, 1.0], [0.0, np.nan]):
+    for bad in ([1.0, 0.0], [-0.1, 1.0], [0.0, np.nan], [1.0, 1.0 + 1e-9]):
         with pytest.raises(ValueError, match="increasing"):
             performance_curves(
                 source, two, Circular(0.7), stellar_diameters_lod=bad, **base

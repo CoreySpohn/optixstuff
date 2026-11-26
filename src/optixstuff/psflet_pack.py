@@ -28,6 +28,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.leaves import HostGrid
+from hwoutils.numerics import COARSEST, is_uniform
 from jax import Array
 
 from optixstuff.spectral import as_knots
@@ -57,6 +58,27 @@ def _pack_grid(wavelengths_nm) -> HostGrid:
     return grid
 
 
+def _pack_offsets(offsets):
+    """Validate the host axis and its float32 storage before device conversion."""
+    values = np.asarray(offsets, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        raise ValueError(
+            "offsets must be a one-dimensional axis of at least two points"
+        )
+    with np.errstate(over="ignore"):
+        coarse = values.astype(COARSEST)
+    # A pack written by either lane must still be usable when reloaded.
+    for axis in (values, coarse):
+        if not np.all(axis[1:] > axis[:-1]):
+            raise ValueError("offsets must be ascending at float32 resolution")
+        if not is_uniform(axis):
+            raise ValueError("offsets must be finite and uniform")
+    # Integer coordinates are physical offsets too. Use a floating storage
+    # type so wide integers cannot wrap when the active lane narrows them.
+    source = np.asarray(offsets)
+    return jnp.asarray(values if source.dtype.kind in "iu" else source)
+
+
 def _optional_asarray(x):
     return None if x is None else jnp.asarray(x)
 
@@ -81,7 +103,7 @@ class PsfletPack(eqx.Module):
     """
 
     templates: Array = eqx.field(converter=jnp.asarray)
-    offsets: Array = eqx.field(converter=jnp.asarray)
+    offsets: Array = eqx.field(converter=_pack_offsets)
     wavelengths_nm: HostGrid = eqx.field(static=True, converter=_pack_grid)
     field_xy: Array = eqx.field(converter=jnp.asarray)
     template_origin: str = eqx.field(static=True)
@@ -118,16 +140,6 @@ class PsfletPack(eqx.Module):
         n_field, n_lam, n_off, _ = self.templates.shape
         if self.offsets.shape != (n_off,):
             raise ValueError("offsets must match the template plane size")
-        steps = jnp.diff(self.offsets)
-        if not bool(jnp.all(steps > 0)):
-            raise ValueError("offsets must be ascending")
-        # Rounding in the step differences scales with the offsets themselves.
-        atol = 0.0
-        if jnp.issubdtype(self.offsets.dtype, jnp.inexact):
-            eps = jnp.finfo(self.offsets.dtype).eps
-            atol = 8 * eps * jnp.max(jnp.abs(self.offsets))
-        if not bool(jnp.allclose(steps, steps[0], rtol=1e-6, atol=atol)):
-            raise ValueError("offsets must be uniform")
         if len(self.wavelengths_nm) != n_lam:
             raise ValueError("wavelengths_nm must match the template plane count")
         if self.field_xy.shape != (n_field, 2):

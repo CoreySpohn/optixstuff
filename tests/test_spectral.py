@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.testing import ulps
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -69,13 +70,15 @@ def test_band_validates_geometry():
         band.channels(3, "invalid")
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_split_quadrature_weights_and_piecewise_linear_integral():
     """Fails if kinks are unsplit or padding carries weight.
 
-    Order one exactly integrates each linear segment. rtol=3e-15, atol=0 allows
-    float64 node arithmetic and summation; weight sums allow 4 ULP of width.
+    Order one exactly integrates each linear segment.
     The primitive is independent: integral(2+x+3*max(x-2,0)).
+
+    Floating-point basis. Allow 16 operations for linear evaluation,
+    weighting, pairwise sums and division by the width. Weight sums allow four
+    spacings in the dtype of the rule.
     """
     bands = (Band(1, 6), Band(2, 3), Band(6, 7))
     knots = np.array([1.0, 2.0, 4.0, 6.0])
@@ -84,7 +87,9 @@ def test_split_quadrature_weights_and_piecewise_linear_integral():
     for order in (1, 3):
         rule = Quadrature.build(bands, order=order, breaks_nm=knots)
         np.testing.assert_array_max_ulp(
-            np.asarray(rule.weights().sum(-1)), widths, maxulp=4
+            np.asarray(rule.weights().sum(-1)),
+            widths.astype(rule.weights().dtype),
+            maxulp=4,
         )
         padded = np.asarray(rule.weights()) == 0
         centers = np.broadcast_to(
@@ -94,28 +99,36 @@ def test_split_quadrature_weights_and_piecewise_linear_integral():
             np.asarray(rule.nodes_nm)[padded], centers[padded]
         )
         values = 2 + rule.nodes_nm + 3 * jnp.maximum(rule.nodes_nm - 2, 0)
-        np.testing.assert_allclose(rule.integrate(values), expected, rtol=3e-15, atol=0)
+        np.testing.assert_allclose(
+            rule.integrate(values), expected, rtol=float(ulps(16, 1.0)), atol=0
+        )
         padded_values = jnp.where(padded, jnp.nan, values)
         np.testing.assert_allclose(
-            rule.integrate(padded_values), expected, rtol=3e-15, atol=0
+            rule.integrate(padded_values), expected, rtol=float(ulps(16, 1.0)), atol=0
         )
         assert np.isnan(rule.integrate(values.at[0, 0].set(jnp.nan))[0])
         vector = jnp.stack((values, -2 * values), axis=-1)
         result = jax.jit(lambda q, v: q.integrate(v))(rule, vector)
         np.testing.assert_allclose(
-            result, expected[:, None] * [1, -2], rtol=3e-15, atol=0
+            result, expected[:, None] * [1, -2], rtol=float(ulps(16, 1.0)), atol=0
         )
         mean = rule.mean(vector)
-        np.testing.assert_allclose(mean, result / widths[:, None], rtol=3e-15)
+        np.testing.assert_allclose(
+            mean, result / widths[:, None], rtol=float(ulps(16, 1.0)), atol=0
+        )
         row = rule.band(1)
         assert isinstance(row, Quadrature)
         assert row.bands == (bands[1],)
         np.testing.assert_array_equal(row.weights(), rule.weights()[1:2])
         np.testing.assert_array_equal(row.nodes_nm, rule.nodes_nm[1:2])
-        np.testing.assert_allclose(row.integrate(vector[1:2]), result[1:2], rtol=3e-15)
+        np.testing.assert_allclose(
+            row.integrate(vector[1:2]), result[1:2], rtol=float(ulps(16, 1.0)), atol=0
+        )
 
 
-@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
+@pytest.mark.float64_only(
+    reason="order-four convergence reference is below float32 resolution"
+)
 def test_smooth_integrand_converges_over_three_orders():
     """Fails if order is ignored or weights have the wrong normalization.
 
@@ -151,9 +164,12 @@ def test_monochromatic_selects_an_integrated_rate():
         rebin_bands(rule.integrate(rates), rule.bands, rule.bands)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_polynomial_exactness_with_declared_breaks():
-    """Fails if the order-four rule loses degree-seven exactness on any piece."""
+    """Fails if the order-four rule loses degree-seven exactness on any piece.
+
+    Floating-point basis. Allow 32 operations for coordinate offsets amplified
+    by the seventh power, weight products and the signed sum.
+    """
     band = Band(1.0, 6.0)
     curve = Transmission([2, 4], [1, 1])
     rule = Quadrature.build((band,), curve)
@@ -162,12 +178,17 @@ def test_polynomial_exactness_with_declared_breaks():
         x < 2, (x - 1) ** 7, jnp.where(x < 4, 3 * (x - 2) ** 7, 1 - (x - 4) ** 7)
     )
     exact = 1 / 8 + 3 * 2**8 / 8 + 2 - 2**8 / 8
-    np.testing.assert_allclose(rule.integrate(values), [exact], rtol=4e-15, atol=0)
+    np.testing.assert_allclose(
+        rule.integrate(values), [exact], rtol=float(ulps(32, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_spectral_breaks_require_declarations_and_split_one_node_rule_at_kink():
-    """Fails if undeclared models are accepted or an interpolation kink is missed."""
+    """Fails if undeclared models are accepted or an interpolation kink is missed.
+
+    Floating-point basis. Allow 24 operations for node narrowing, the
+    wavelength differences and two weighted interpolations.
+    """
     spectrum = Transmission([500, 537, 580], [1, 3, 2])
     overlapping = Transmission([537, 555], [1, 1])
     assert isinstance(spectrum, SpectralBreaks)
@@ -186,46 +207,64 @@ def test_spectral_breaks_require_declarations_and_split_one_node_rule_at_kink():
     exact = (1 + 3) * 37 / 2 + (3 + 2) * 43 / 2
     split = Quadrature.build((band,), spectrum, order=1)
     np.testing.assert_allclose(
-        split.integrate(spectrum(split.nodes_nm)), [exact], rtol=3e-15
+        split.integrate(spectrum(split.nodes_nm)),
+        [exact],
+        rtol=float(ulps(24, 1.0)),
+        atol=0,
     )
     unsplit = Quadrature.build((band,), order=1)
     assert abs(float(unsplit.integrate(spectrum(unsplit.nodes_nm))[0]) - exact) > 1
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_conserves_total_flux():
-    """Fails if overlap weights lose flux; float64 floor of 8 eps on exact tiling."""
+    """Fails if overlap weights lose flux.
+
+    Floating-point basis. Allow 16 operations for wavelength squaring,
+    quadrature, overlap fractions and wavelength reductions.
+    """
     src_edges = Band(600.0, 700.0).channels(24, "log")
     dst_edges = Band(600.0, 700.0).channels(8, "log")
     q = Quadrature.build(src_edges, order=3)
     values = q.integrate(q.nodes_nm**2)
     exact = (700.0**3 - 600.0**3) / 3
-    assert jnp.allclose(values.sum(), exact, rtol=2e-15, atol=0)
+    np.testing.assert_allclose(values.sum(), exact, rtol=float(ulps(16, 1.0)), atol=0)
     out = rebin_bands(values, src_edges, dst_edges)
     assert out.shape == (8,)
-    assert jnp.allclose(out.sum(), values.sum(), rtol=2e-15, atol=0)
+    np.testing.assert_allclose(
+        out.sum(), values.sum(), rtol=float(ulps(16, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_nested_grid_equals_reshape_sum():
-    """On an exactly nested grid the overlap rebin reduces to reshape-sum."""
+    """On an exactly nested grid the overlap rebin reduces to reshape-sum.
+
+    Floating-point basis. Allow eight operations for the two sums over four
+    weighted source cells and the overlap scaling.
+    """
     edges = Band(600.0, 700.0).channels(8, "log")
     n = len(edges)
     edges_hi = tuple(sub for band in edges for sub in band.channels(4, "log"))
     vals = (jnp.arange(n * 4, dtype=float) + 1.0) ** 1.3
     out = rebin_bands(vals, edges_hi, edges)
-    assert jnp.allclose(out, vals.reshape(n, 4).sum(axis=1), rtol=1e-10)
+    np.testing.assert_allclose(
+        out, vals.reshape(n, 4).sum(axis=1), rtol=float(ulps(8, 1.0)), atol=0
+    )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_rebin_along_cube_axis():
-    """Rebinning applies along the chosen axis of a (n_wav, ny, nx) cube."""
+    """Rebinning applies along the chosen axis of a (n_wav, ny, nx) cube.
+
+    Floating-point basis. Allow 12 operations for overlap fractions and the
+    two reductions over the source and target wavelength axes.
+    """
     src_edges = Band(600.0, 700.0).channels(12, "log")
     dst_edges = Band(600.0, 700.0).channels(4, "log")
     cube = jax.random.uniform(jax.random.PRNGKey(0), (12, 3, 2))
     out = rebin_bands(cube, src_edges, dst_edges, axis=0)
     assert out.shape == (4, 3, 2)
-    assert jnp.allclose(out.sum(axis=0), cube.sum(axis=0), rtol=2e-15, atol=0)
+    np.testing.assert_allclose(
+        out.sum(axis=0), cube.sum(axis=0), rtol=float(ulps(12, 1.0)), atol=0
+    )
 
 
 def test_rebin_partial_overlap_takes_fraction():

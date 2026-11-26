@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.testing import ulps
 
 import optixstuff as ox
 from optixstuff import Detector, FramePlan, Rates
@@ -53,12 +54,15 @@ def _rates(bands=_BAND):
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_snr_is_detector_statistics_plus_residual_squares():
     """Fails if S/N departs from detector variance or residuals lose time squared.
 
     Basis: exact algebra against ``detector.mean_and_variance`` at a whole
-    number of frames, with a 1e-12 relative float64 rounding allowance.
+    number of frames.
+
+    Floating-point basis. Allow 24 operations per relative comparison for
+    detector moments, summed noise terms, the square root, and converting S/N
+    back to variance.
     """
     rates, detector = _rates(), _detector()
     e = detector.electrons(rates)
@@ -74,19 +78,21 @@ def test_snr_is_detector_statistics_plus_residual_squares():
         )
         expected = base + (f * e.star_leakage * 3600) ** 2 + (g * e.exozodi * 3600) ** 2
         np.testing.assert_allclose(
-            (e.planet * 3600 / actual) ** 2, expected, rtol=1e-12, atol=0
+            (e.planet * 3600 / actual) ** 2, expected, rtol=float(ulps(24, 1.0)), atol=0
         )
     kwargs = dict(frame_time_s=100.0, post_processing=reference)
     np.testing.assert_allclose(
         ox.snr(rates, detector, 3600.0, **kwargs),
         e.planet * 3600 / jnp.sqrt(base),
-        rtol=1e-12,
+        rtol=float(ulps(24, 1.0)),
+        atol=0,
     )
     # Electron rates are read as they are; zero time gives zero, not NaN.
     np.testing.assert_allclose(
         ox.snr(e, detector, 3600.0, **kwargs),
         ox.snr(rates, detector, 3600.0, **kwargs),
-        rtol=1e-12,
+        rtol=float(ulps(24, 1.0)),
+        atol=0,
     )
     np.testing.assert_array_equal(ox.snr(rates, detector, 0.0, **kwargs), [0.0])
     for bad in (-0.01, 1.01, np.nan):
@@ -178,12 +184,14 @@ def test_an_undefined_frame_time_reads_unreachable():
             assert np.isnan(solved.time_s).all()
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_per_band_targets_and_frame_times():
     """Fails if (W,) targets, times or frame times mix bands.
 
-    Basis: each band of a two-band call equals its own one-band call to a
-    1e-12 relative rounding allowance.
+    Each band of a two-band call equals its own one-band call.
+
+    Exact-algebra basis. The per-band and combined paths allow 32 rounding
+    operations through the variance or inverse quadratic, including both
+    paths' products and sums.
     """
     bands = (Band(500.0, 550.0), Band(550.0, 600.0))
     rates, detector = _rates(bands), _detector()
@@ -199,11 +207,14 @@ def test_per_band_targets_and_frame_times():
         single = ox.exposure_time(
             one, detector, target[i], frame_time_s=frame[i], post_processing=pp
         )
-        np.testing.assert_allclose(both.time_s[i], single.time_s[0], rtol=1e-12)
+        np.testing.assert_allclose(
+            both.time_s[i], single.time_s[0], rtol=float(ulps(32, 1.0)), atol=0
+        )
         np.testing.assert_allclose(
             snrs[i],
             ox.snr(one, detector, time, frame_time_s=frame[i], post_processing=pp)[0],
-            rtol=1e-12,
+            rtol=float(ulps(32, 1.0)),
+            atol=0,
         )
     with pytest.raises(ValueError, match="scalar or shape"):
         ox.snr(
@@ -237,13 +248,14 @@ def test_background_variance_factor_one_is_the_unscaled_result():
         ox.PostProcessing(0.1, 0.2, 1.0)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_background_variance_factor_scales_everything_but_the_planet():
     """Fails if the factor touches the planet shot noise or misses a background.
 
-    Basis: exact algebra, 1e-12 relative float64 rounding allowance, against
-    the AYO equation ``t = snr**2 (p + m b') / (p**2 - snr**2 f2)`` with ``b'``
-    the detector variance rate minus the planet's own shot variance rate.
+    The reference is the AYO equation ``t = snr**2 (p + m b') / (p**2 - snr**2 f2)``.
+    Here ``b'`` is the detector variance rate minus the planet's shot variance rate.
+
+    Floating-point basis. Allow 32 operations for per-component noise, the
+    background factor, and the positive inverse quadratic root.
     """
     rates, detector = _rates(), _detector()
     e = detector.electrons(rates)
@@ -267,7 +279,9 @@ def test_background_variance_factor_scales_everything_but_the_planet():
             )
             / (e.planet**2 - target**2 * floor)
         )
-        np.testing.assert_allclose(solved.time_s, expected, rtol=1e-12)
+        np.testing.assert_allclose(
+            solved.time_s, expected, rtol=float(ulps(32, 1.0)), atol=0
+        )
     for bad in (0.99, -1.0, np.nan, np.inf):
         with pytest.raises(ValueError, match="background_variance_factor"):
             ox.PostProcessing(0, 0, background_variance_factor=bad)
@@ -325,13 +339,14 @@ def test_ayo_science_time_from_dumped_rates():
     np.testing.assert_allclose(once.time_s, [215336.1], rtol=1e-6)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_trailing_batch_axes_broadcast_against_the_band_axis():
     """Fails if rate fields with a trailing batch axis break the calculation.
 
-    Basis: each batch member equals its own unbatched call to a 1e-12 relative
-    rounding allowance. Per-band pixel counts, frame times and targets must
-    align with the band axis, not the last axis, of ``(W, K)`` electron rates.
+    Each batch member equals its own unbatched call. Pixel counts, frame times
+    and targets align with the band axis of the ``(W, K)`` electron rates.
+
+    Exact-algebra basis. Allow 32 operations for the two routes through
+    detector moments and the S/N square root or inverse quadratic.
     """
     bands = (Band(500.0, 550.0), Band(550.0, 600.0))
     detector = _detector()
@@ -374,11 +389,14 @@ def test_trailing_batch_axes_broadcast_against_the_band_axis():
         single = ox.exposure_time(
             one, detector, target, frame_time_s=frame, post_processing=pp
         )
-        np.testing.assert_allclose(got.time_s[:, k], single.time_s, rtol=1e-12)
+        np.testing.assert_allclose(
+            got.time_s[:, k], single.time_s, rtol=float(ulps(32, 1.0)), atol=0
+        )
         np.testing.assert_allclose(
             got_snr[:, k],
             ox.snr(one, detector, 5000.0, frame_time_s=frame, post_processing=pp),
-            rtol=1e-12,
+            rtol=float(ulps(32, 1.0)),
+            atol=0,
         )
 
 

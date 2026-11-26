@@ -140,7 +140,10 @@ negative mean returns -1 without notice. The remedy is a break at the edge
 ## Likelihood and Fisher information
 
 `log_prob(observed, electrons, plan)` is the elementwise log density of an
-observed frame. A detector with `photon_counting=True` scores the Poisson pmf
+observed frame. It requires an x64-enabled process and raises
+`hwoutils.PrecisionError` when x64 is unavailable. A float32 forward model
+can supply the moments. The detector converts the moments and observation
+to float64 before evaluating the log density. A detector with `photon_counting=True` scores the Poisson pmf
 of the mean. Every other detector scores the Gaussian with the mean and
 variance of `mean_and_variance`, the moment-matched approximation of `draw`.
 The total rate passes through the same floor as `draw`: a total within the
@@ -154,7 +157,8 @@ negative meets a wall, not a penalty.
 `fisher_root(electrons, plan)` returns a vector `r` whose Jacobian gives the
 expected information of that likelihood. For parameters `theta` that enter
 through the rates, `J = dr/dtheta` and the information is `J^T J`, summed over
-independent pixels and bands.
+independent pixels and bands. This curvature calculation requires a float64
+detector, rates and frame plan.
 
 ```text
 Poisson:   r = 2 sqrt(mean)                      J^T J = sum dm^2 / m

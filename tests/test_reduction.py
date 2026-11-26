@@ -8,6 +8,7 @@ over the nodes is visible; a flat response would check only the total.
 The ``phoenix`` fixture (conftest) is a public PHOENIX stellar spectrum.
 """
 
+import math
 import re
 from itertools import pairwise
 
@@ -18,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.leaves import HostGrid, as_float_leaf
+from hwoutils.testing import ulps
 from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
@@ -90,17 +92,19 @@ def linear_integral(knots, values, lo, hi, poly_of_wavelength):
     """Exact integral over [lo, hi] of a linear table times a polynomial.
 
     ``poly_of_wavelength`` returns the polynomial on a cell as a function of
-    ``u = (wavelength - lo)``; each cell is integrated in closed form.
+    ``u = (wavelength - lo)``. Integrate in coordinates local to each
+    cell so differencing distant primitives cannot dominate the reference.
     """
     inside = knots[(knots > lo) & (knots < hi)]
     edges = np.concatenate(([lo], inside, [hi]))
-    total = 0.0
+    integrals = []
     for a, b in pairwise(edges):
+        width = b - a
         ya, yb = np.interp([a, b], knots, values)
-        source = Polynomial([ya - (yb - ya) / (b - a) * (a - lo), (yb - ya) / (b - a)])
-        integral = (source * poly_of_wavelength(a, b)).integ()
-        total += integral(b - lo) - integral(a - lo)
-    return total
+        source = Polynomial([ya, (yb - ya) / width])
+        response = poly_of_wavelength(a, b)(Polynomial([a - lo, 1.0]))
+        integrals.append((source * response).integ()(width))
+    return math.fsum(integrals)
 
 
 def build(bands, *tables, **kwargs):
@@ -121,7 +125,9 @@ LAYOUTS = {
 }
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
+@pytest.mark.float64_only(
+    reason="verifies the high-order analytic remainder below float32 roundoff"
+)
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_reduction_is_exact_below_the_order_and_misses_by_the_remainder(layout):
     """Fails if a node-effective value is not the source's moment on its node.
@@ -181,7 +187,9 @@ def test_reduction_is_exact_below_the_order_and_misses_by_the_remainder(layout):
                 assert abs(estimate[w] - truth + remainder) < 1e-12 * abs(truth)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
+@pytest.mark.float64_only(
+    reason="verifies exactness at a resolution that distinguishes the wrong order"
+)
 def test_fine_kind_integrates_a_product_of_two_tables():
     """Fails if the fine rule under-integrates a source of degree two between knots.
 
@@ -242,19 +250,22 @@ def test_build_refuses_a_plain_host_grid_that_knots_refuse():
         ProductEdges(cases["strictly increasing"])
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     """Fails if transposing the interpolant differs from evaluating it on the fine rule.
 
     PHOENIX 5800 K over 540 to 595 nm, order 4, cubic response. The table
     kind (the interpolant transposed) must equal the fine kind (the
     interpolant evaluated at ``fine_nm``) for a linear and a cubic
-    interpolant (floating-point, 1e-13; spike 2e-15), and the linear table
-    must equal its exact per-cell integral (floating-point, 1e-12; spike
-    1e-15). Mutation, each measured on this band before the test was written:
+    interpolant, and the linear table must equal its exact per-cell integral.
+    Mutation, each measured on this band before the test was written:
     a point sample at the nodes misses by +5.1e-2, the band mean at every node
     by -2.6e-2, the node rows reversed by -4.6e-2; each must miss by more than
     5e-3.
+
+    Floating-point basis. Allow 64 operations for the two interpolant
+    contractions and their pairwise reductions; the exact-integral comparison
+    also includes 550/27.5 scaling of wavelength rounding in the cubic
+    response.
     """
     knots, values = phoenix
     band = Band(540.0, 595.0)
@@ -273,7 +284,10 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
             table.values, fine.fine_nm.ravel()
         ).reshape(fine.fine_nm.shape)
         np.testing.assert_allclose(
-            composed.apply(table.values), fine.apply(at_fine), rtol=1e-13
+            composed.apply(table.values),
+            fine.apply(at_fine),
+            rtol=float(ulps(64, 1.0)),
+            atol=0,
         )
         assert composed.nbytes < 0.1e6
     node_values = np.asarray(composed.apply(table.values))[0]
@@ -299,7 +313,7 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     def error(node_values):
         return np.sum(weights * node_values * response(nodes)) / truth - 1
 
-    assert abs(error(exact)) < 1e-12
+    assert abs(error(exact)) < float(ulps(64, 1.0))
     mean = np.sum(weights * exact) / band.width_nm
     mutants = {
         "point sample": np.interp(nodes, knots, values),
@@ -311,7 +325,6 @@ def test_table_kind_matches_fine_kind_and_truth_on_phoenix(phoenix):
     assert node_values.shape == (4,)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_a_band_that_leaves_the_table_is_refused(phoenix):
     """Fails if a piece outside the table, or straddling its end, gets a value.
 
@@ -323,7 +336,11 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
     1 nm beyond it is refused, with enough digits that the two ends differ in
     the message. Mutation: a build that zero-fills beyond the table returns a
     value and fails here. The same band ended at the table end gives the exact
-    per-cell integral (floating-point, 1e-12).
+    per-cell integral.
+
+    Floating-point basis for the integral. Allow 64 operations for
+    interpolation, weighted contraction and the normalized cubic response. The
+    boundary decisions are exact.
     """
     knots, values = phoenix
     end = knots[-1]
@@ -363,7 +380,10 @@ def test_a_band_that_leaves_the_table_is_refused(phoenix):
 
     truth = linear_integral(knots, values, ended.low_nm, ended.high_nm, shifted)
     np.testing.assert_allclose(
-        band_sums(rule, node_values, response)[0], truth, rtol=1e-12
+        band_sums(rule, node_values, response)[0],
+        truth,
+        rtol=float(ulps(64, 1.0)),
+        atol=0,
     )
 
 
@@ -471,7 +491,6 @@ def test_traced_contract_of_the_operator(phoenix):
         )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     """Fails if a source can be integrated by a rule built for another table.
 
@@ -481,10 +500,13 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
     is refused; the knots are not a leaf, so ``eqx.tree_at`` cannot reach
     them; two tables on one grid share one rule;
     a table whose knots are all piece edges takes the identity kind and holds
-    no arrays (exact Gauss per piece: the cubic-response integral to 1e-12),
+    no arrays (exact Gauss per piece for the cubic response),
     unless a piece has fewer nodes than the source's degree.
     An exposure carries its resolution through jit and refuses one built for
     another quadrature.
+
+    Floating-point basis for the integral. Allow 64 operations for
+    interpolation, weighted contraction and the normalized cubic response.
     """
     knots, values = phoenix
     band = Band(560.0, 580.0)
@@ -546,7 +568,10 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
 
     truth = linear_integral(knots, values, band.low_nm, band.high_nm, shifted)
     np.testing.assert_allclose(
-        band_sums(exact_rule, node_values, cubic(band))[0], truth, rtol=1e-12
+        band_sums(exact_rule, node_values, cubic(band))[0],
+        truth,
+        rtol=float(ulps(64, 1.0)),
+        atol=0,
     )
 
 
@@ -566,31 +591,45 @@ def _reduce(rule, knots):
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_breaks_that_differ_by_rounding_are_one_break_and_the_reduction_is_finite():
     """Fails if breaks that differ by rounding make a piece of zero width.
 
-    A caller break at 950.0 beside a model knot one ulp below it must give the
-    pieces, nodes and weights of the build with only one of them, to rounding,
-    and keep the model knot; of two model knots the smaller is kept. A break
-    one ulp inside either edge of a band is dropped. Every reduction is finite.
-    Truth: the build with a single break, or with none for the edge cases.
-    Tolerance 1e-12 relative, basis the ulp-sized shift of one piece edge; a
-    piece of 1e-13 nm gives NaN blocks.
+    Coalescing a caller break and model knot keeps the model knot exactly.
+    Comparing the rule against the caller break alone moves one edge. The
+    node changes by at most that displacement plus four rounding operations
+    in the affine map. The weight changes by the displacement divided by
+    the piece width, plus four rounding operations in the weight scaling.
+    The smaller of two model knots is kept, and breaks within one ULP of
+    the outer edges are dropped. Every reduction has finite blocks.
     """
     near = float(np.nextafter(950.0, 0.0))
     band, knots = Band(900.0, 1000.0), np.linspace(890.0, 1010.0, 41)
     merged = Quadrature.build((band,), _Declares(near), breaks_nm=[950.0])
     reverse = Quadrature.build((band,), _Declares(950.0), breaks_nm=[near])
     both = Quadrature.build((band,), _Declares(950.0, near))
-    for single, kept in (
-        (Quadrature.build((band,), breaks_nm=[950.0]), near),
-        (Quadrature.build((band,), _Declares(near)), near),
-    ):
-        assert len(merged.pieces[0]) == len(single.pieces[0]) == 2
-        np.testing.assert_allclose(merged.nodes_nm, single.nodes_nm, rtol=1e-12)
-        np.testing.assert_allclose(merged.weights_nm, single.weights_nm, rtol=1e-12)
-        assert merged.pieces[0][0][1] == kept
+    model_only = Quadrature.build((band,), _Declares(near))
+    caller_only = Quadrature.build((band,), breaks_nm=[950.0])
+    assert (
+        merged.pieces == model_only.pieces == (((900.0, near, 4), (near, 1000.0, 4)),)
+    )
+    np.testing.assert_array_equal(merged.nodes_nm, model_only.nodes_nm)
+    np.testing.assert_array_equal(merged.weights_nm, model_only.weights_nm)
+    assert len(caller_only.pieces[0]) == 2
+    displacement = 950.0 - near
+    node_scale = jnp.max(caller_only.nodes_nm)
+    np.testing.assert_allclose(
+        merged.nodes_nm,
+        caller_only.nodes_nm,
+        atol=displacement + float(ulps(4, node_scale)),
+        rtol=0,
+    )
+    width = min(950.0 - band.low_nm, band.high_nm - 950.0)
+    np.testing.assert_allclose(
+        merged.weights_nm,
+        caller_only.weights_nm,
+        rtol=displacement / width + float(ulps(4, 1.0)),
+        atol=0,
+    )
     assert reverse.pieces[0][0][1] == 950.0
     assert both.pieces[0][0][1] == near
     edge_band = Band(900.0, 950.0)
@@ -634,16 +673,17 @@ def test_reduction_refuses_a_piece_that_is_too_narrow_or_has_equal_nodes():
         _reduce(coincident, knots)
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_reduction_cache_separates_rules_with_equal_pieces_and_other_weights():
     """Fails if a rule with the pieces of another but other weights reuses its operator.
 
     Two quadratures with equal pieces and weights that differ by 1e-3 on one
-    node are built in one process, in both orders. Each reduction must equal
-    ``_build_arrays`` called directly on that rule (no cache), to rounding
-    (1e-14 relative to the block scale), and the two must differ by more than
-    1e-4 of it. The node-effective values divide by the weights, so the second
+    node are built in one process, in both orders. The two block tables differ
+    by more than 1e-6 of their peak scale. The node-effective values divide
+    by the weights, so the second
     build gets the first rule's operator when the cache key ignores them.
+
+    Exact-algebra basis. The cached result equals the independently built
+    block rounded once to its storage dtype, for both build orders.
     """
     band, knots = Band(500.0, 560.0), np.linspace(490.0, 570.0, 33)
     interpolant = lambda v, w: jnp.interp(w, knots, v)  # noqa: E731
@@ -665,8 +705,8 @@ def test_reduction_cache_separates_rules_with_equal_pieces_and_other_weights():
             reduction = Reduction.build(
                 rules[name], knots, degree=1, interpolant=interpolant
             )
-            np.testing.assert_allclose(
-                reduction.blocks, truth[name], rtol=0, atol=1e-14 * scale
+            np.testing.assert_array_equal(
+                reduction.blocks, truth[name].astype(reduction.blocks.dtype)
             )
 
 

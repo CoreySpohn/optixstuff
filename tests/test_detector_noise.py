@@ -74,43 +74,15 @@ def test_frames_for_invalid_and_zero_time(make_plan):
 
 
 @pytest.mark.parametrize(
-    ("dtype", "time_s", "frame_time_s", "expected"),
-    [
-        pytest.param(
-            jnp.float32,
-            655360.25,
-            1.0,
-            655361,
-            marks=pytest.mark.float32_only(
-                reason="float32 frame count near a coarse spacing"
-            ),
-        ),
-        pytest.param(
-            jnp.float64,
-            0.3,
-            0.1,
-            3,
-            marks=pytest.mark.float64_only(
-                reason="float64 products land on the frame-count boundary"
-            ),
-        ),
-        pytest.param(
-            jnp.float64,
-            0.7,
-            0.1,
-            7,
-            marks=pytest.mark.float64_only(
-                reason="float64 products land on the frame-count boundary"
-            ),
-        ),
-    ],
+    ("time_s", "frame_time_s", "expected"),
+    [(655360.25, 1.0, 655361), (0.3, 0.1, 3), (0.7, 0.1, 7)],
 )
 def test_frames_cover_the_request_in_the_working_dtype(
-    dtype, time_s, frame_time_s, expected
+    precision, time_s, frame_time_s, expected
 ):
     """Hand values give exact counts and catch tolerant or division-only rounding."""
-    request = jnp.asarray(time_s, dtype=dtype)
-    plan = ox.frames_for_time(request, jnp.asarray(frame_time_s, dtype=dtype))
+    request = jnp.asarray(time_s, dtype=precision)
+    plan = ox.frames_for_time(request, jnp.asarray(frame_time_s, dtype=precision))
     assert plan.n_frames == expected
     assert plan.live_time_s >= request
     assert (plan.n_frames - 1) * plan.frame_time_s < request

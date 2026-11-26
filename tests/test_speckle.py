@@ -13,7 +13,9 @@ from conftest import (
     make_linear_speckle,
     table_coronagraph,
 )
-from hwoutils.constants import s2d
+from hwoutils.constants import d2s, s2d
+from hwoutils.precision import PrecisionError
+from hwoutils.testing import ulps
 
 import optixstuff as ox
 from optixstuff.grids import Frame, Image, Measure, PixelGrid, resample
@@ -36,13 +38,15 @@ def test_focal_response_integrates_density_over_the_grid():
     )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 @pytest.mark.parametrize(("law", "expected"), [("amplitude", 1.0), ("opd", 0.25)])
 def test_wavelength_law_halo_ratio(law, expected):
     """Squared OPD phase and achromatic transmission give analytic halo ratios.
 
-    Float64 allows 1e-12 relative error. Scaling every sensitivity by
+    Scaling every sensitivity by
     reference wavelength over wavelength incorrectly quarters the amplitude halo.
+
+    Floating-point basis. Allow 12 operations for amplitude scaling, complex
+    magnitude squared, pixel area and forming the halo ratio.
     """
     grid = PixelGrid.focal(2, 0.25, Frame(500.0, 1.0, "circumscribed"))
     response = ox.FocalResponse(
@@ -55,7 +59,7 @@ def test_wavelength_law_halo_ratio(law, expected):
     )
     field = SinusoidalSpeckle(response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1))
     blue, red = field.realize(wavelength_nm=jnp.array([500, 1000])).data
-    np.testing.assert_allclose(red / blue, expected, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(red / blue, expected, rtol=float(ulps(12, 1.0)), atol=0)
 
 
 def test_focal_response_requires_law_matching_layout(linear_speckle):
@@ -75,13 +79,15 @@ def test_focal_response_requires_law_matching_layout(linear_speckle):
         replace(r, e_nom=r.e_nom[None], G=r.G[None])
 
 
-@pytest.mark.float64_only(reason="reference accuracy below float32 resolution")
 def test_law_and_cancellation(linear_speckle):
     """Fails if conjugation, energy normalization or stable cross term is lost.
 
-    Float64 intensity difference: absolute error <= 1e-10 of nominal peak.
     At eps=1e-18 with E=G=1, the naive difference is exactly zero; the
-    nonzero 2e-18 cross term must instead survive to 16 float64 eps relative.
+    nonzero 2e-18 cross term must instead survive.
+
+    Floating-point basis. Allow 32 operations at the nominal intensity scale
+    for the phase, complex contraction and intensity calculation. Allow 16
+    relative operations for the isolated nonzero cross term.
     """
     field = linear_speckle
     time = 0.17
@@ -97,7 +103,12 @@ def test_law_and_cancellation(linear_speckle):
     )
     got = field.realize(wavelength_nm=500.0, elapsed_s=time).data
     np.testing.assert_allclose(
-        got, expected, rtol=0, atol=1e-10 * np.max(np.abs(nominal) ** 2) / 7.3
+        got,
+        expected,
+        rtol=0,
+        atol=float(
+            ulps(32, np.max(np.abs(nominal) ** 2) * field.grid.pixel_area / 7.3)
+        ),
     )
     tiny = eqx.tree_at(
         lambda f: (f.response.e_nom, f.response.G, f.offset_nm, f.amplitude_nm),
@@ -119,7 +130,7 @@ def test_law_and_cancellation(linear_speckle):
     np.testing.assert_allclose(
         tiny.realize(wavelength_nm=500.0).data,
         (2e-18 + 1e-36) * field.grid.pixel_area / 7.3,
-        rtol=16 * np.finfo(float).eps,
+        rtol=float(ulps(16, 1.0)),
         atol=0,
     )
 
@@ -156,13 +167,16 @@ def test_chromatic_linear_and_quadratic_terms(linear_speckle, precision):
         )
 
 
-@pytest.mark.float64_only(reason="float64 roundoff in the reference calculation")
 def test_broadened_node_integral(linear_speckle):
     """Fails if a band-center sample replaces the normalized node integral.
 
-    Weights in nm sum to widths 200, 200 nm; exact weighted algebra to 32
-    float64 eps. For zero nominal field, center error is B*(mean(r^2)-r_c^2),
+    Weights in nm sum to widths 200, 200 nm. For zero nominal field,
+    center error is B*(mean(r^2)-r_c^2),
     where B=|G eps|^2/E_in and r=500/lambda; it is nonzero in both bands.
+
+    Floating-point basis. Allow 32 operations for the weighted node sum and
+    coherent read. For the halo difference use the full halo scale before
+    subtraction, with 32 operations for both operands.
     """
     field = linear_speckle
     nodes = np.array([[400.0, 500.0, 600.0], [600.0, 700.0, 800.0]])
@@ -179,10 +193,15 @@ def test_broadened_node_integral(linear_speckle):
         ]
     )
     got = field.broadened(quadrature=quadrature)
-    np.testing.assert_allclose(got.data, expected, rtol=32 * np.finfo(float).eps)
+    np.testing.assert_allclose(got.data, expected, rtol=float(ulps(32, 1.0)), atol=0)
     assert got.leading_axes == ("band",)
     compiled = eqx.filter_jit(field.broadened)(quadrature=quadrature)
-    np.testing.assert_allclose(compiled.data, got.data, rtol=32 * np.finfo(float).eps)
+    np.testing.assert_allclose(
+        compiled.data,
+        got.data,
+        rtol=0,
+        atol=float(ulps(32, jnp.max(jnp.abs(got.data)))),
+    )
     halo = eqx.tree_at(
         lambda f: f.response.e_nom, field, jnp.zeros_like(field.response.e_nom)
     )
@@ -199,78 +218,67 @@ def test_broadened_node_integral(linear_speckle):
         - halo.realize(wavelength_nm=jnp.array([500.0, 700.0])).data
     )
     np.testing.assert_allclose(
-        difference, correction[:, None, None] * b, rtol=1e-13, atol=0
+        difference,
+        correction[:, None, None] * b,
+        rtol=0,
+        atol=float(ulps(32, np.max(np.abs(b)))),
     )
 
 
 _EPOCHS_D = (60000.123, 60000.125)
 
 
-@pytest.mark.float32_only(
-    reason="checks host epoch subtraction with float32 device output"
-)
-def test_elapsed_s_is_exact_on_the_host_under_x32():
-    """Fails if the kernel casts ``time_d`` to the active dtype before subtracting.
+@pytest.mark.float32_only(reason="checks float32 epoch conditioning and traced refusal")
+def test_elapsed_s_conditions_absolute_times_before_narrowing():
+    """Fails if an absolute time is rounded before subtracting the epoch.
 
-    Truth: 10 s after each epoch, formed in binary64 on the host. Tolerance
-    basis floating-point: the binary64 sum ``epoch + 10 * s2d`` carries at most
-    half an ulp of 60000 d (3.2e-7 s), and the float32 result at 10 s rounds by
-    at most 4.8e-7 s; 1e-6 s covers both. Casting first returns 337.5 s or 0.
-    A big-endian binary64 array holds the same value and is accepted; a
-    complex64 (eight bytes, float32 parts) is refused, so a guard keyed on
-    the size alone fails.
+    The float64 reference subtracts before converting days to seconds.
+    The only float32 rounding is storage of the offset, so compare exactly
+    to the correctly rounded reference. A float64 JAX array retains the
+    input when it leaves its construction scope; a trace still requires x64.
     """
+    elapsed_under_jit = eqx.filter_jit(lambda field, time: field.elapsed_s(time))
     for epoch in _EPOCHS_D:
         field = make_linear_speckle(epoch_d=epoch)
-        for time in (epoch + 10 * s2d, np.asarray(epoch + 10 * s2d, ">f8")):
-            elapsed = field.elapsed_s(time)
+        time = epoch + 10 * s2d
+        reference = np.float32((np.float64(time) - epoch) * d2s)
+        with jax.enable_x64():
+            carried = jnp.asarray(time)
+        for concrete in (time, np.asarray(time, ">f8"), carried):
+            elapsed = field.elapsed_s(concrete)
             assert elapsed.dtype == jnp.float32
-            np.testing.assert_allclose(elapsed, 10.0, rtol=0, atol=1e-6)
-        # Eight bytes is not binary64: complex64 holds two float32 parts.
-        for time in (np.complex64(epoch + 10 * s2d), np.float16(1.0)):
-            with pytest.raises(ValueError, match="already lost"):
-                field.elapsed_s(time)
+            np.testing.assert_array_equal(elapsed, reference)
+        with pytest.raises(PrecisionError, match=r"pass elapsed_s.*Enable x64"):
+            elapsed_under_jit(field, carried)
 
 
-def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch():
-    """Fails if a float32 time near a nonzero epoch is subtracted silently.
+def test_elapsed_s_refuses_reduced_precision_at_a_nonzero_epoch(precision):
+    """Subtracting a nonzero epoch requires the original absolute time.
 
-    Under x32 a traced Python float, an eager JAX array and a NumPy float32
-    all hold the time in float32 and must raise, and so does a float64 JAX
-    array made under x64 (with x64 off it subtracts in float32: 337.5 s);
-    with ``epoch_d = 0`` nothing cancels and all are accepted. Fails if the
-    dtype check is removed (the jit call returns 337.5 s), if it is keyed on
-    the x64 flag rather than the dtype (the NumPy float32 call passes) or on
-    the dtype alone (the carried float64 array passes). The carried array is
-    refused for x32 execution, with its own message, and the same array under
-    x64 gives 10 s (1e-6 s, the binary64 rounding of the sum). Exact (raise
-    or not, and which message).
+    Host, device and traced float32 absolute times are refused in either
+    lane. Complex values are refused even when they occupy eight bytes.
+    At epoch zero, one day is exactly 86400 seconds in both output dtypes.
     """
-    time = _EPOCHS_D[0] + 10 * s2d
-    with jax.enable_x64(True):
-        carried = jnp.asarray(time, dtype=jnp.float64)
-    with jax.enable_x64(False):
-        anchored = make_linear_speckle(epoch_d=_EPOCHS_D[0])
-        zero = make_linear_speckle()
-        for field, refused in ((anchored, True), (zero, False)):
-            calls = (
-                lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(t),
-                lambda t, f=field: f.elapsed_s(jnp.asarray(t)),
-                lambda t, f=field: f.elapsed_s(np.float32(t)),
-                lambda t, f=field: f.elapsed_s(carried),
-                lambda t, f=field: jax.jit(lambda u: f.elapsed_s(u))(carried),
-            )
-            for i, call in enumerate(calls):
-                if refused:
-                    # The carried float64 still holds the time: x32 execution,
-                    # not a lost offset, and the message says to rerun.
-                    match = "rerun under x64" if i >= 3 else "already lost"
-                    with pytest.raises(ValueError, match=f"(?i)epoch_d.*{match}"):
-                        call(time)
-                else:
-                    assert call(time).dtype == jnp.float32
-    with jax.enable_x64(True):
-        np.testing.assert_allclose(anchored.elapsed_s(carried), 10.0, atol=1e-6)
+    anchored = make_linear_speckle(epoch_d=_EPOCHS_D[0])
+    time = np.float32(_EPOCHS_D[0] + 10 * s2d)
+    compiled = eqx.filter_jit(lambda field, t: field.elapsed_s(t))
+    remedy = r"elapsed_s formed on the host.*original"
+    for reduced in (time, jnp.asarray(time), np.float16(1)):
+        with pytest.raises(PrecisionError, match=remedy):
+            anchored.elapsed_s(reduced)
+    with pytest.raises(PrecisionError, match=remedy):
+        compiled(anchored, jnp.asarray(time))
+    with pytest.raises(ValueError, match="time_d"):
+        anchored.elapsed_s(np.complex64(time))
+
+    zero = make_linear_speckle()
+    with jax.enable_x64():
+        carried = jnp.asarray(np.float64(1.0))
+    assert carried.dtype == np.float64
+    for days in (np.float32(1), jnp.asarray(1.0, dtype=precision), carried):
+        for elapsed in (zero.elapsed_s(days), compiled(zero, days)):
+            assert elapsed.dtype == precision
+            np.testing.assert_array_equal(elapsed, 86400)
 
 
 @pytest.mark.float64_only(reason="absolute epoch must retain the sub-day offset")
