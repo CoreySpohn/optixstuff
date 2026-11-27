@@ -24,6 +24,7 @@ from hwoutils.numerics import COARSEST
 from hwoutils.precision import like
 from scipy.interpolate import CubicSpline, PchipInterpolator
 from scipy.optimize import root_scalar
+from scipy.sparse import csr_array, vstack
 
 from optixstuff._interpolation import _host_knot_coordinates
 from optixstuff.grids import (
@@ -1067,6 +1068,70 @@ def _stellar_samples(data, sg, planet_grid, sy, sx, shape, factor):
     return jnp.where(inside, jnp.real(by @ spectrum @ bx.T) * ratio**2, 0)
 
 
+_ring_disk_coverage = jax.jit(_circle_square_weights)
+
+
+def _ring_angle_count(radius):
+    """Uniform angles with at most one eighth of a subpixel of arc between centers."""
+    quarter_arc = np.pi * radius / 2
+    return 4 * max(64, int(np.ceil(8 * quarter_arc)))
+
+
+def _circular_ring_weights(grid, separation, rule, factor):
+    """Average exact disk coverage on the common subpixel lattice."""
+    shape = tuple(n * factor for n in grid.shape)
+    radius = rule.radius_lod / grid.step * factor
+    orbit = separation / grid.step * factor
+    oy = (grid.center_y + 0.5) * factor
+    ox = (grid.center_x + 0.5) * factor
+    far_corner = np.hypot(max(oy, shape[0] - oy), max(ox, shape[1] - ox))
+    if orbit >= far_corner + radius:
+        return csr_array((1, shape[0] * shape[1]))
+
+    count = _ring_angle_count(orbit)
+    # A centered lattice has exact reflection symmetry in both axes. Only
+    # the coverage is reflected; the stellar intensities can be asymmetric.
+    quarter = grid.is_geometric
+    angles = count // 4 + 1 if quarter else count
+    phi = np.arange(angles) * (2 * np.pi / count)
+    cy = oy - 0.5 + orbit * np.sin(phi)
+    cx = ox - 0.5 + orbit * np.cos(phi)
+
+    # Only cells within the local disk can contribute at each angle. Clip
+    # the window to the planet image, as in circular_aperture.
+    width = 2 * int(np.ceil(radius)) + 2
+    ny, nx = min(width, shape[0]), min(width, shape[1])
+    sy = np.clip(np.floor(cy - radius).astype(int), 0, shape[0] - ny)
+    sx = np.clip(np.floor(cx - radius).astype(int), 0, shape[1] - nx)
+    rows = np.arange(ny)[:, None]
+    cols = np.arange(nx)[None, :]
+    total = np.zeros(shape)
+    # Bound temporary coverage storage independently of the angular count.
+    batch = max(1, min(128, 262144 // (ny * nx)))
+    for start in range(0, angles, batch):
+        chunk = slice(start, start + batch)
+        masks = np.asarray(
+            _ring_disk_coverage(
+                rows + (sy[chunk] - cy[chunk])[:, None, None],
+                cols + (sx[chunk] - cx[chunk])[:, None, None],
+                radius,
+            )
+        )
+        for i, mask in enumerate(masks, start):
+            y, x = sy[i], sx[i]
+            # The two quadrant endpoints each appear twice under reflection.
+            if quarter and i in (0, angles - 1):
+                mask = mask * 0.5
+            total[y : y + ny, x : x + nx] += mask
+    if quarter:
+        total += total[::-1, :]
+        total += total[:, ::-1]
+
+    row = csr_array(total.reshape(1, -1))
+    row.data /= count * factor**2
+    return row
+
+
 def _separation_axis(separation_lod):
     if isinstance(separation_lod, (jax.Array, jax.core.Tracer)):
         x = jnp.asarray(separation_lod, dtype=jnp.result_type(separation_lod, 1.0))
@@ -1324,10 +1389,7 @@ def ring_azimuth_samples(shape, center):
 def ring_symmetrized(image, grid=None, n_theta=None):
     """Return ``image`` with every pixel replaced by the mean of its ring.
 
-    The angle average of an aperture sum at distance s from the axis equals the
-    aperture sum at +x of the azimuthally averaged map, so weighting this map
-    with ordinary aperture pixel weights at +x gives the ring-averaged aperture
-    leakage with the same circle and pixel weights.
+    This radial projection tabulates a profile at native pixel centers.
 
     The ring mean at radius r is the mean of the map at ``n_theta`` equally
     spaced angles (in-image arcs only), evaluated at the radii of
@@ -1492,10 +1554,10 @@ class PerformanceCurves(eqx.Module):
       symmetric map; for a 2D map it is a single cut.
     - ``aperture_ring_mean``: the same aperture averaged over position angle,
       (1 / 2 pi) times the integral over phi of the aperture sum centred at
-      (s cos phi, s sin phi). It is computed as the aperture weights summed over
-      the azimuthally symmetrized stellar map (:func:`ring_symmetrized`), which
-      is the same quantity because the angle average of an aperture is
-      rotationally symmetric.
+      (s cos phi, s sin phi). For a source-centered circle, each center uses
+      the exact subpixel disk coverage and the original stellar map's
+      band-limited samples. At zero separation a single aperture is exact.
+      PSF-defined apertures use native coverage on the projected ring map.
     - ``azimuthal_ring_mean`` (deprecated): the point-sample ring mean times the
       aperture area; it ignores the aperture extent and agrees with
       ``aperture_ring_mean`` only as the aperture shrinks to a point.
@@ -1871,8 +1933,7 @@ def performance_curves(
     coverage at CORE_OVERSAMPLE subpixels per side.
 
     ``leakage_rule`` is ``aperture_mean`` (the +x aperture), ``aperture_ring_mean``
-    (that aperture averaged over position angle, summed as native exact-coverage
-    pixel weights over the ring-symmetrized stellar map on the PSF grid) or the
+    (that aperture averaged over position angle) or the
     deprecated ``azimuthal_ring_mean``; see :class:`PerformanceCurves`.
 
     Args:
@@ -1989,15 +2050,22 @@ def _performance_curves(
         sf.reference_wavelength_nm
     )
     tau, area = [], []
-    leakage = [[] for _ in stellars]
+    leakage = np.empty((len(stellars), len(separations)))
     _require_host_photometry(images, stellars, locations)
     with jax.enable_x64():  # precision-ok: host build of faint-leakage records
+        circular_ring = (
+            leakage_rule == RING_RULE
+            and isinstance(rule, Circular)
+            and rule.centre == "source"
+        )
+        ring_columns = []
+        ring_weights = []
         symmetric = (
             [ring_symmetrized(image, grid).data for image in stellars]
-            if leakage_rule == RING_RULE
+            if leakage_rule == RING_RULE and not circular_ring
             else None
         )
-        for psf, position in zip(images, locations, strict=True):
+        for column, (psf, position) in enumerate(zip(images, locations, strict=True)):
             if psf.grid != grid:
                 raise ValueError("off-axis Images must share one grid")
             fine, weights, sy, sx, factor = _rule_samples(
@@ -2005,7 +2073,12 @@ def _performance_curves(
             )
             tau.append(float(jnp.sum(fine * weights) / factor**2))
             area.append(float(jnp.sum(weights)) * grid.pixel_area / factor**2)
-            if symmetric is None:
+            if circular_ring and separations[column] > 0:
+                ring_columns.append(column)
+                ring_weights.append(
+                    _circular_ring_weights(grid, separations[column], rule, factor)
+                )
+            elif symmetric is None:
                 for row, image in zip(leakage, stellars, strict=True):
                     star = _stellar_samples(
                         like(image.data, fine),
@@ -2016,14 +2089,23 @@ def _performance_curves(
                         weights.shape,
                         factor,
                     )
-                    row.append(float(jnp.sum(star * weights) / factor**2))
+                    row[column] = float(jnp.sum(star * weights) / factor**2)
             else:
                 # Native exact-coverage weights on the symmetrized map; the
                 # band-limited samples ripple on its ring edges.
                 native = _rule_weights(rule, psf, position, oversample)
                 for row, ring in zip(leakage, symmetric, strict=True):
-                    row.append(float(jnp.sum(native * ring)))
-        tau, area, leakage = np.asarray(tau), np.asarray(area), np.asarray(leakage)
+                    row[column] = float(jnp.sum(native * ring))
+        tau, area = np.asarray(tau), np.asarray(area)
+        if ring_weights:
+            # Sample each original stellar plane once for all angular sums.
+            coverage = vstack(ring_weights, format="csr")
+            shape = tuple(n * oversample for n in grid.shape)
+            for row, image in zip(leakage, stellars, strict=True):
+                star = _stellar_samples(
+                    like(image.data, fine), image.grid, grid, 0, 0, shape, oversample
+                )
+                row[ring_columns] = coverage @ np.asarray(star).ravel()
         density = np.divide(leakage, area, out=np.zeros_like(leakage), where=area > 0)
         if leakage_rule == "azimuthal_ring_mean":
             density = np.stack(

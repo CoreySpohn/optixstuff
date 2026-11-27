@@ -454,6 +454,15 @@ def test_absolute_leakage_sampling():
 
     source, _, _, grid = _gaussian_source()
     rule, sep = Circular(0.7), 1.0
+    centered = source(0.0)
+    for mode in ("aperture_mean", "aperture_ring_mean"):
+        identity = performance_curves(
+            source, centered, rule, separations_lod=[0.0], leakage_rule=mode
+        )
+        # Identical spatial integrals, followed by the density/area round trip.
+        np.testing.assert_allclose(
+            identity.raw_contrast, 1.0, rtol=0, atol=float(ulps(8, 1.0))
+        )
     star = Image(
         source(sep).data / 8, grid, (), Measure.integral(), "stellar_flux_fraction"
     )
@@ -564,9 +573,11 @@ def test_ring_rule_on_a_modulated_map(separation):
 
     Fails if the ring rule keeps any of the cos 2 phi modulation (the +x reading
     would pass it), averages a point instead of the aperture, or reads the
-    band-limited samples of the symmetrized map, which ripple on its ring edges.
+    native stellar pixels in place of the reconstructed aperture integral.
     """
-    source, star, _ = _modulated_star()
+    from optixstuff.performance import circular_aperture
+
+    source, star, grid = _modulated_star()
     rule = Circular(0.7)
     kwargs = {"separations_lod": [separation]}
     along_x = performance_curves(source, star, rule, **kwargs)
@@ -584,6 +595,27 @@ def test_ring_rule_on_a_modulated_map(separation):
     np.testing.assert_allclose(along_x.leakage_fraction[0], x_axis, rtol=1e-3)
     np.testing.assert_allclose(ring.leakage_fraction[0], ring_ref, rtol=1e-3)
     assert abs(along_x.leakage_fraction[0] / ring.leakage_fraction[0] - 1) > 0.05
+    if separation == 2.0:
+        # Independent position-angle quadrature at one radius. The 1 ppm
+        # bound covers the finite angular step of the two disk averages.
+        phi = jnp.arange(1024) * (2 * np.pi / 1024)
+        centers = grid.unit_to_pixel(
+            separation * jnp.cos(phi), separation * jnp.sin(phi)
+        )
+
+        def flux(center):
+            return circular_aperture(
+                star.data,
+                rule.radius_lod / grid.step,
+                grid.step,
+                half_width_pix=int(np.ceil(rule.radius_lod / grid.step)) + 1,
+                fixed_center=center,
+            )[0]
+
+        direct = jax.lax.map(flux, jnp.stack((centers.y, centers.x), axis=1))
+        np.testing.assert_allclose(
+            ring.leakage_fraction[0, 0], direct.mean(), rtol=1e-6
+        )
     assert ring.leakage_rule == "aperture_ring_mean"
     np.testing.assert_allclose(
         ring.leakage_density_lod2, ring.leakage_fraction / ring.core_area_lod2
