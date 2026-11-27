@@ -54,6 +54,7 @@ test = [
     "psutil>=5.9.4",
     "eyepiece>=0.17.0",
     "numpy>=2.0",
+    "yippy>=4.0.0",  # unreleased: next release, see .github/sibling-pins.txt
 ]
 
 [project.urls]
@@ -62,6 +63,7 @@ Issues = "https://github.com/CoreySpohn/optixstuff/issues"
 
 [tool.hatch.version]
 source = "vcs"
+raw-options = { dist_name = "optixstuff" }
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/optixstuff/_version.py"
