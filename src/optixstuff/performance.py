@@ -1820,7 +1820,7 @@ class PerformanceCurves(eqx.Module):
             dtype = np.result_type(
                 np.asarray(separation_lod),
                 np.asarray(stellar_diameter_lod),
-                diameters,
+                diameters.dtype,
                 1.0,
             )
         q, d = xp.broadcast_arrays(
