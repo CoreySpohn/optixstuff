@@ -953,13 +953,14 @@ _LOCAL_ANTIDERIVATIVE = {
 
 @functools.lru_cache(maxsize=32)
 def _not_a_knot_prefilter(n_source):
-    """Map from N samples to the N + 4 cubic B-spline coefficients c_-2..c_N+1.
+    """Map from N samples to the N + 4 cubic B-spline coefficients ``c_-2..c_N+1``.
 
-    c_-1..c_N solve the interpolation conditions (c_n-1 + 4 c_n + c_n+1) / 6 =
-    d_n and the not-a-knot conditions (zero fourth difference of the
-    coefficients about knots 1 and N - 2, a continuous third derivative there).
-    The ghosts c_-2 and c_N+1 continue the end pieces, so the expansion is the
-    not-a-knot spline, end pieces extended, on [-1, N]. Host float64.
+    ``c_-1..c_N`` solve the interpolation conditions
+    ``(c_n-1 + 4 c_n + c_n+1) / 6 = d_n`` and the not-a-knot conditions (zero
+    fourth difference of the coefficients about knots 1 and N - 2, a continuous
+    third derivative there). The ghosts ``c_-2`` and ``c_N+1`` continue the end
+    pieces, so the expansion is the not-a-knot spline, end pieces extended, on
+    [-1, N]. Host float64.
     """
     if n_source < 4:
         raise ValueError("cubic_spline needs at least 4 samples along each axis")
