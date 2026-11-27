@@ -1064,11 +1064,12 @@ def _compose(interpolant, size, moments, points):
     """
 
     def rows(moment, wave):
-        transpose = jax.linear_transpose(
+        # A VJP supplies primal values for interpolation branches that need them.
+        _, pullback = jax.vjp(
             lambda values: moment @ interpolant(values, wave),
             jnp.zeros(size, dtype=moment.dtype),
         )
-        return jax.vmap(lambda row: transpose(row)[0])(
+        return jax.vmap(lambda row: pullback(row)[0])(
             jnp.eye(moment.shape[0], dtype=moment.dtype)
         )
 

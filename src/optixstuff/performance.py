@@ -17,6 +17,7 @@ import interpax
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.interpolation import interp_linear
 from hwoutils.leaves import is_traced
 from hwoutils.map_coordinates import map_coordinates
 from hwoutils.numerics import COARSEST
@@ -1371,7 +1372,7 @@ def ring_symmetrized(image, grid=None, n_theta=None):
         profile = azimuthal_mean_profile(data, center, jnp.asarray(radii), n_theta)
         rows, cols = jnp.indices(grid.shape)
         stellar_radius = jnp.hypot(rows - grid.center_y, cols - grid.center_x) * ratio
-        symmetric = jnp.interp(stellar_radius, jnp.asarray(radii), profile)
+        symmetric = interp_linear(stellar_radius, jnp.asarray(radii), profile)
         symmetric = jnp.where(stellar_radius <= radii[-1], symmetric, 0.0) * ratio**2
     return replace(image, data=symmetric, grid=grid)
 
