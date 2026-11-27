@@ -39,6 +39,8 @@ from optixstuff.radial import radial_profile
 
 from .apertures import ApertureRule, Circular, HalfMaximum
 
+# Revision 2 integrates source-centered circular leakage on the throughput lattice.
+RECORD_ALGORITHM_VERSION = 2
 CORE_OVERSAMPLE = 10
 PEAK_SEARCH_RADIUS_LOD = 1.0
 CORE_WINDOW_LOD = 3.0
@@ -1557,6 +1559,7 @@ class PerformanceCurves(eqx.Module):
       (s cos phi, s sin phi). For a source-centered circle, each center uses
       the exact subpixel disk coverage and the original stellar map's
       band-limited samples. At zero separation a single aperture is exact.
+      Only rings inside the data extent sample the star alone (zero extension outside).
       PSF-defined apertures use native coverage on the projected ring map.
     - ``azimuthal_ring_mean`` (deprecated): the point-sample ring mean times the
       aperture area; it ignores the aperture extent and agrees with
