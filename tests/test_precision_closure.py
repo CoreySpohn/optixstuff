@@ -724,6 +724,7 @@ def test_forward_precision_closed(group, entry, monkeypatch):
 
 
 @pytest.mark.xfail(
+    jax.__version_info__ < (0, 12, 1),
     strict=True,
     raises=_UpstreamPrecisionFailure,
     reason="JAX exact Poisson traces float64 uniform bounds under x64.",

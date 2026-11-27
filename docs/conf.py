@@ -40,6 +40,7 @@ autodoc_typehints = "description"
 napoleon_use_ivar = True
 
 myst_enable_extensions = ["amsmath", "dollarmath"]
+myst_heading_anchors = 3
 myst_fence_as_directive = ["mermaid"]
 
 html_theme = "sphinx_book_theme"
