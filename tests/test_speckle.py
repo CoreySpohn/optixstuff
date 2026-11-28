@@ -14,6 +14,7 @@ from conftest import (
     table_coronagraph,
 )
 from hwoutils.constants import d2s, s2d
+from hwoutils.epoch import Epoch
 from hwoutils.precision import PrecisionError
 from hwoutils.testing import ulps
 
@@ -57,7 +58,9 @@ def test_wavelength_law_halo_ratio(law, expected):
         500.0,
         wavelength_law=law,
     )
-    field = SinusoidalSpeckle(response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1))
+    field = SinusoidalSpeckle(
+        response, jnp.ones(1), jnp.zeros(1), jnp.zeros(1), epoch=Epoch()
+    )
     blue, red = field.realize(wavelength_nm=jnp.array([500, 1000])).data
     np.testing.assert_allclose(red / blue, expected, rtol=float(ulps(12, 1.0)), atol=0)
 

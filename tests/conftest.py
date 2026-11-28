@@ -10,6 +10,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.epoch import Epoch
 from hypothesis import settings
 
 import optixstuff as ox
@@ -262,7 +263,7 @@ class SinusoidalSpeckle(ox.LinearSpeckleField):
         )
 
 
-def make_linear_speckle(epoch_d=0.0):
+def make_linear_speckle(epoch_d=0.0, epoch=None):
     """Small asymmetric complex field in the active precision."""
     import jax.numpy as jnp
 
@@ -281,6 +282,7 @@ def make_linear_speckle(epoch_d=0.0):
         offset_nm=jnp.array([0.03, -0.02]),
         amplitude_nm=jnp.array([0.05, 0.04]),
         angular_frequency_per_s=jnp.array([2.0, 3.0]),
+        epoch=Epoch() if epoch is None else epoch,
         epoch_d=epoch_d,
     )
 

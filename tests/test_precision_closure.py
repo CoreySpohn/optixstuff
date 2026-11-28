@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import make_instrument, make_linear_speckle, synthetic_coronagraph
+from hwoutils.epoch import Epoch
 from hwoutils.leaves import canonical
 from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 from test_disperser import _lenslet
@@ -287,6 +288,51 @@ def _detector_case(entry):
             0,
         ),
         "occupied_time": (ox.FramePlan.occupied_time_s, (plan, detector), 2),
+        "collection_span": (
+            lambda p, r: p.collection_span_s(read_time_s=r, overlaps_read=False),
+            (plan, jnp.array(4.0)),
+            4,
+        ),
+        "collection_midpoint": (
+            lambda p, r: p.collection_midpoint_s(read_time_s=r, overlaps_read=False),
+            (plan, jnp.array(4.0)),
+            4,
+        ),
+        "event_midpoint": (
+            lambda e, r: e.collection_midpoint_s(read_time_s=r, overlaps_read=True),
+            (
+                ox.Exposure(
+                    1.0,
+                    ox.Pointing(0.0),
+                    plan,
+                    epoch=Epoch(),
+                    instrument="eac1",
+                    bands=rule.bands,
+                ),
+                jnp.array(4.0),
+            ),
+            4,
+        ),
+        "on_epoch_zero": (
+            lambda e: e.on_epoch(e.epoch).time_d,
+            (
+                ox.Exposure(
+                    1.5,
+                    ox.Pointing(0.0),
+                    epoch=Epoch(),
+                    instrument="eac1",
+                    bands=rule.bands,
+                ),
+            ),
+            0,
+        ),
+        "sampling": (
+            lambda n, w: ox.SpectralSampling(
+                ox.Quadrature(rule.bands, n, w)
+            ).quadrature.integrate(n),
+            (rule.nodes_nm, rule.weights_nm),
+            6,
+        ),
         "qe": (ox.Detector.quantum_efficiency, (detector, wave), 8),
         "ideal_qe": (ox.IdealDetector.quantum_efficiency, (ideal, wave), 0),
         "electrons": (ox.AbstractDetector.electrons, (detector, photons), 16),
@@ -584,6 +630,11 @@ def _optics_case(entry):
                 "frame_plan",
                 "frame_plan_float_duration",
                 "occupied_time",
+                "collection_span",
+                "collection_midpoint",
+                "event_midpoint",
+                "on_epoch_zero",
+                "sampling",
                 "qe",
                 "ideal_qe",
                 "electrons",

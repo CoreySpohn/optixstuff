@@ -1,14 +1,20 @@
 """Observation pointing and whole-frame detector integration plans."""
 
+import re
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.conversions import mas_to_arcsec
+from hwoutils.epoch import Epoch
 from hwoutils.leaves import as_float_leaf, as_leaf, is_traced
+from hwoutils.precision import PrecisionError, require_float64
 
 from optixstuff.grids import SkyOrientation
-from optixstuff.spectral import Quadrature, Resolution
+from optixstuff.spectral import Band
+
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 
 
 def _band_shape(first, second):
@@ -136,6 +142,50 @@ class FramePlan(eqx.Module):
         dtype = _timing_dtype(self.frame_time_s, self.n_frames, read_time_s)
         return self.n_frames.astype(dtype) * (self.frame_time_s + read_time_s)
 
+    def collection_span_s(self, *, read_time_s, overlaps_read: bool) -> jnp.ndarray:
+        """Seconds from the first gate opening to the last gate closing.
+
+        Frame ``k`` collects on ``[k * (frame_time_s + r), k * (frame_time_s + r)
+        + frame_time_s]``, with ``r`` zero when reads overlap collection and
+        ``read_time_s`` otherwise. The caller states the gates: a simulation may
+        pass its detector's values, and archived data passes the recorded
+        values. A fitted read time is never the source for archived data.
+
+        Args:
+            read_time_s: Seconds of read between frames, scalar or shape (W,).
+            overlaps_read: Whether collection continues during the read.
+
+        Returns:
+            Span in seconds, scalar or shape (W,). NaN for zero frames or a NaN
+            count, which have no collection.
+        """
+        dtype = _timing_dtype(self.frame_time_s, self.n_frames, read_time_s)
+        counts = self.n_frames.astype(dtype)
+        frame = self.frame_time_s.astype(dtype)
+        stride = frame if overlaps_read else frame + jnp.asarray(read_time_s, dtype)
+        span = (counts - 1) * stride + frame
+        return jnp.where(counts >= 1, span, jnp.asarray(jnp.nan, dtype))
+
+    def collection_midpoint_s(self, *, read_time_s, overlaps_read: bool) -> jnp.ndarray:
+        """Seconds from the first gate opening to the middle of collection.
+
+        The gates are symmetric about the midpoint of the span, which is not
+        half of ``occupied_time_s``: the last read follows the last gate.
+
+        Args:
+            read_time_s: Seconds of read between frames, scalar or shape (W,).
+            overlaps_read: Whether collection continues during the read.
+
+        Returns:
+            Midpoint offset in seconds, scalar or shape (W,); NaN when there is
+            no collection. Add it to an elapsed-seconds value, never to a time
+            in days.
+        """
+        return (
+            self.collection_span_s(read_time_s=read_time_s, overlaps_read=overlaps_read)
+            / 2
+        )
+
 
 def frames_for_time(time_s, frame_time_s) -> FramePlan:
     """Round requested collecting seconds up to a whole-frame plan.
@@ -238,41 +288,117 @@ class Pointing(eqx.Module):
 
 
 class Exposure(eqx.Module):
-    """Everything about one observation except the scene and the instrument.
+    """The commanded observation event: when, where and with which configuration.
 
-    The record holds when and where the telescope points, how each
-    band is integrated over wavelength, and (for a drawn frame) how long the
-    detector collects. Build it on the host with ``coronagraphoto.build_exposure``.
-    The pointing values, observation time and quadrature nodes and weights
-    are array leaves, so an exposure can be an argument of JIT, vmap and grad.
+    The event holds no scene, no observatory and no build product, so a
+    scheduler can build it alone. The pointing values and the start time are
+    array leaves, so an event can be an argument of JIT, vmap and grad. The
+    epoch, configuration name and commanded bands are static: events stack
+    only when all three are equal. The wavelength rule and the operators that
+    serve it live in ``SpectralSampling``, passed beside the event.
 
-    ``resolution`` holds the operators that turn each tabulated source of the
-    scene into node-effective values on ``quadrature``; it is empty for a scene
-    with no table. The build reads the knot grids of those tables, and
-    ``reads`` names them, so a fit refuses to free a leaf the operators were
-    built from.
+    ``time_d`` is the start of photon collection, in days from ``epoch``. It is
+    never a midpoint and never days from a scene epoch. A consumer that needs
+    scene days calls ``exposure.on_epoch(scene.epoch).time_d`` on the host; a
+    hardware clock takes ``exposure.on_epoch(clock_epoch).time_d``.
 
     Attributes:
-        time_d: Observation time in days from the scene epoch, a float leaf of
-            the active dtype. The local-zodi
-            sightline is derived from it, the scene's epoch and the target's
-            sky position, not stored here.
-        pointing: Roll and optional detector-frame offset for this observation.
-        quadrature: Per-band wavelength nodes and weights.
-        plan: Whole-frame integration plan; None when only expected rates
-            are wanted.
-        resolution: Operators of the scene's tabulated sources on
-            ``quadrature``; empty when the scene has none.
+        time_d: Start of collection in days from ``epoch``, a float leaf of the
+            active dtype.
+        pointing: Commanded roll and optional detector-frame offset.
+        plan: Whole-frame integration plan; None when only an instant rate is
+            wanted.
+        epoch: Day zero of ``time_d``; static host metadata.
+        instrument: Name of the instrument configuration; static.
+        bands: Ordered commanded science bands; static and the only band axis
+            of an image.
     """
 
     time_d: jnp.ndarray | float = eqx.field(converter=as_float_leaf)
     pointing: Pointing
-    quadrature: Quadrature
     plan: FramePlan | None = None
-    resolution: Resolution = eqx.field(default_factory=Resolution)
+    epoch: Epoch = eqx.field(static=True, kw_only=True)
+    instrument: str = eqx.field(static=True, kw_only=True)
+    bands: tuple[Band, ...] = eqx.field(static=True, converter=tuple, kw_only=True)
 
     def __check_init__(self):
-        """Require a resolution built for this quadrature."""
-        built = self.resolution.quadratures
-        if built and built[0].layout_digest != self.quadrature.layout_digest:
-            raise ValueError("the resolution was built for another quadrature")
+        """Require typed static fields and a plan that fits the bands."""
+        if not isinstance(self.epoch, Epoch):
+            raise TypeError(f"epoch must be an Epoch, got {type(self.epoch).__name__}")
+        if not isinstance(self.instrument, str) or not _NAME.fullmatch(self.instrument):
+            raise ValueError(f"invalid instrument name {self.instrument!r}")
+        if not self.bands or not all(isinstance(band, Band) for band in self.bands):
+            raise ValueError("bands must be a nonempty tuple of Band")
+        if self.plan is not None and jnp.ndim(self.time_d) == 0:
+            for leaf in (self.plan.frame_time_s, self.plan.n_frames):
+                if not isinstance(leaf, jax.core.Tracer) and leaf.shape not in (
+                    (),
+                    (len(self.bands),),
+                ):
+                    raise ValueError(
+                        f"plan has shape {leaf.shape} but the event has "
+                        f"{len(self.bands)} bands"
+                    )
+
+    def on_epoch(self, epoch: Epoch) -> "Exposure":
+        """State the same instant on another day zero.
+
+        Equal epochs return the event itself. Two epochs for one instant with a
+        different split return an event on the other epoch with the same
+        ``time_d``. Otherwise the shift is added in binary64 on the host, or on
+        the device for a float64 tracer, or the call is refused.
+
+        Args:
+            epoch: The target epoch, on the same time scale.
+
+        Returns:
+            The event with ``epoch`` and ``time_d`` stated on the target epoch.
+
+        Raises:
+            ValueError: If the time scales differ.
+            PrecisionError: If a nonzero shift would be added to a float32
+                ``time_d``. Build the event on the target epoch from the
+                original host date instead.
+        """
+        if epoch == self.epoch:
+            return self
+        shift = self.epoch.days_between(epoch)
+        time_d = self.time_d
+        if shift != 0.0:
+            if time_d.dtype != np.float64:
+                raise PrecisionError(
+                    f"time_d of dtype {time_d.dtype} may have lost its offset "
+                    f"of {shift!r} d between the two epochs. Build the event on "
+                    "the target epoch from the original host date."
+                )
+            if isinstance(time_d, jax.core.Tracer):
+                require_float64("Traced epoch shift (or build the event on the target)")
+                time_d = time_d + shift
+            else:
+                time_d = np.asarray(time_d, dtype=np.float64) + np.float64(shift)
+        return Exposure(
+            time_d,
+            self.pointing,
+            self.plan,
+            epoch=epoch,
+            instrument=self.instrument,
+            bands=self.bands,
+        )
+
+    def collection_midpoint_s(self, *, read_time_s, overlaps_read: bool) -> jnp.ndarray:
+        """Seconds from ``time_d`` to the middle of collection.
+
+        Args:
+            read_time_s: Seconds of read between frames, from the stated gates.
+            overlaps_read: Whether collection continues during the read.
+
+        Returns:
+            Zero in the dtype of ``time_d`` when there is no plan (an instant),
+            else ``plan.collection_midpoint_s``. An offset in seconds: add it to
+            an elapsed-seconds value, never to ``time_d`` in days.
+        """
+        if self.plan is None:
+            return jnp.zeros((), dtype=self.time_d.dtype)
+        return self.plan.collection_midpoint_s(
+            read_time_s=read_time_s, overlaps_read=overlaps_read
+        )

@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
-from hwoutils.epoch import elapsed_seconds
+from hwoutils.epoch import Epoch, elapsed_seconds
 from hwoutils.precision import like
 from jax.typing import ArrayLike
 from jaxtyping import Array
@@ -159,12 +159,15 @@ class AbstractSpeckleField(eqx.Module):
     dtype and used as given. Implementations never read ``epoch_d`` and never
     subtract a time origin.
 
-    ``epoch_d`` places the clock origin on the scene clock, in days from the
-    scene epoch. It is a static host binary64 float
+    ``epoch`` is the field's own day zero, static host metadata: the field is
+    hardware, so its clock never reads a scene epoch. ``epoch_d`` places the
+    clock origin in days from ``epoch``. It is a static host binary64 float
     (``eqx.field(static=True, converter=float)``), never a leaf, and finite.
+    A caller states an event time on the field's epoch with
+    ``exposure.on_epoch(field.epoch).time_d``.
 
-    ``elapsed_s(time_d)`` is the only conversion from scene time and is not
-    overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
+    ``elapsed_s(time_d)`` is the only conversion from a time on ``epoch`` and is
+    not overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
     input precision. With a nonzero ``epoch_d`` it subtracts in binary64 and
     requires ``time_d`` to be binary64: a Python number, a NumPy float64 or
     integer array (subtracted on the host), or a JAX float64 array
@@ -192,11 +195,13 @@ class AbstractSpeckleField(eqx.Module):
 
     Attributes:
         grid: Native lambda/D sampling, including center, basis and Frame.
-        epoch_d: Clock origin in days from the scene epoch; static host
+        epoch: Day zero of the field's clock; static host metadata.
+        epoch_d: Clock origin in days from ``epoch``; static host
             metadata, read only by ``elapsed_s``.
     """
 
     grid: AbstractVar[PixelGrid]
+    epoch: AbstractVar[Epoch]
     epoch_d: AbstractVar[float]
 
     def _working_dtype(self, *values):
@@ -211,14 +216,14 @@ class AbstractSpeckleField(eqx.Module):
         return jax.dtypes.canonicalize_dtype(dtype)
 
     def elapsed_s(self, time_d: ArrayLike) -> Array:
-        """Convert scene time to seconds on this field's clock.
+        """Convert a time stated on ``epoch`` to seconds on this field's clock.
 
         The refusal is decided from static facts (the dtype of ``time_d`` and
         the host value of ``epoch_d``), so it holds at trace time inside
         ``jit``, ``vmap`` and ``grad``.
 
         Args:
-            time_d: Scene time in days from the scene epoch, scalar or array.
+            time_d: Time in days from ``epoch``, scalar or array.
                 Binary64 (a Python number, a NumPy float64 or integer array, or
                 a JAX float64 array) when ``epoch_d`` is
                 nonzero. Either byte order in a concrete call; native float64
@@ -349,19 +354,22 @@ class LinearSpeckleField(AbstractSpeckleField):
     coronagraph products; their stored reference grid is not itself a request
     to rescale a monochromatic coronagraph table.
 
-    ``epoch_d`` is placement metadata, a static host binary64 float,
-    keyword-only, default zero. ``coefficients(*, elapsed_s)`` is a function
+    ``epoch`` is a required static keyword. ``epoch_d`` is placement metadata,
+    a static host binary64 float counted from ``epoch``, keyword-only, default
+    zero. ``coefficients(*, elapsed_s)`` is a function
     of the field's own clock and does not read ``epoch_d``. Deep-contrast
     accuracy also requires x64 arrays; this class does not change global JAX
     precision.
 
     Attributes:
         response: Focal amplitudes and their photometric reference.
-        epoch_d: Clock origin in days from the scene epoch; static host
+        epoch: Day zero of the field's clock; static, keyword-only, required.
+        epoch_d: Clock origin in days from ``epoch``; static host
             metadata, keyword-only, default zero.
     """
 
     response: FocalResponse
+    epoch: Epoch = eqx.field(static=True, kw_only=True)
     epoch_d: float = eqx.field(static=True, converter=float, default=0.0, kw_only=True)
     _response_ndim: ClassVar[int] = 2
 
@@ -384,6 +392,8 @@ class LinearSpeckleField(AbstractSpeckleField):
             raise ValueError("grid must use lod with its own Frame")
         if self.response.e_nom.ndim != self._response_ndim:
             raise ValueError("response has the wrong number of wavelength axes")
+        if not isinstance(self.epoch, Epoch):
+            raise TypeError(f"epoch must be an Epoch, got {type(self.epoch).__name__}")
         if not math.isfinite(self.epoch_d):
             raise ValueError("epoch_d must be finite")
 

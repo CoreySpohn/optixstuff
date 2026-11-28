@@ -913,16 +913,24 @@ class Quadrature(eqx.Module):
 
     @property
     def digest(self) -> str:
-        """Hex digest of the bands, nodes and weights, for cache keys.
+        """Full 64-hex SHA-256 identity of the bands, nodes, weights and pieces.
 
-        Host-side only: the leaves must be concrete.
+        Every exact comparison and cache key uses this value. A hand-built rule
+        and a built rule with equal numbers differ, and so do two layouts with
+        equal numbers. Host-side only: the leaves must be concrete.
         """
         state = hashlib.sha256()
         for band in self.bands:
             state.update(np.array([band.low_nm, band.high_nm]).tobytes())
         state.update(np.asarray(self.nodes_nm, dtype=float).tobytes())
         state.update(np.asarray(self.weights_nm, dtype=float).tobytes())
-        return state.hexdigest()[:16]
+        state.update(repr(self.pieces).encode())
+        return state.hexdigest()
+
+    @property
+    def key(self) -> str:
+        """First 16 hex characters of ``digest``, for messages and reprs only."""
+        return self.digest[:16]
 
     @property
     def layout_digest(self) -> str | None:

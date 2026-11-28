@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.epoch import Epoch
 from hwoutils.provenance import build_stamps
 from hwoutils.testing import ulps
 
@@ -38,7 +39,14 @@ def measurement(precision):
         "electrons",
     )
     rule = Quadrature.build((Band(500, 550), Band(550, 600)), order=2)
-    exposure = Exposure(1.0, Pointing(0.0), rule, FramePlan(2.0, 3))
+    exposure = Exposure(
+        1.0,
+        Pointing(0.0),
+        FramePlan(2.0, 3),
+        epoch=Epoch(2460000.5),
+        instrument="eac1",
+        bands=rule.bands,
+    )
     return ExposureData(image, exposure)
 
 
@@ -188,7 +196,6 @@ def test_stack_events_and_take(events):
 def mismatches(measurement):
     """Pairs with one incompatible field for the homogeneous-stack checks."""
     image, exposure = measurement.image, measurement.exposure
-    rule = exposure.quadrature
     flags = np.zeros(image.data.shape, np.uint8)
     flag_policy = dict(
         flags=flags, flag_names=("warning", "bad"), invalid_flags=("bad",)
@@ -202,15 +209,13 @@ def mismatches(measurement):
         "dtype": dict(data=image.data.astype(jnp.float16)),
     }
     by_exposure = {
-        "bands": dict(quadrature=Quadrature.build(rule.bands[::-1], order=2)),
-        "layout_digest": dict(quadrature=Quadrature.build(rule.bands, order=3)),
+        "bands": dict(bands=exposure.bands[::-1]),
+        "instrument": dict(instrument="other"),
+        "epoch": dict(epoch=Epoch(2460001.5)),
         "plan": dict(plan=None),
         "offset_mas": dict(pointing=Pointing(0, [0, 0])),
         "exposure leaf shape": dict(plan=FramePlan([2.0, 2.0], 3)),
         "exposure leaf dtype": dict(plan=FramePlan(2.0, 3.0)),
-        "exposure.*structure": dict(
-            resolution=replace(exposure.resolution, quadratures=(rule,))
-        ),
     }
     by_data = {
         "variance": dict(variance=image.data),
@@ -251,12 +256,12 @@ def mismatches(measurement):
         "reconstruction",
         "dtype",
         "bands",
-        "layout_digest",
+        "instrument",
+        "epoch",
         "plan",
         "offset_mas",
         "exposure leaf shape",
         "exposure leaf dtype",
-        "exposure.*structure",
         "variance",
         "flags",
         "flag_names",

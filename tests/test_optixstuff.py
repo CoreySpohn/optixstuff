@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.epoch import Epoch
 from hwoutils.leaves import check_tree
 from hwoutils.testing import ulps
 
@@ -253,14 +254,16 @@ def test_pointing_requires_two_offset_components():
 def test_exposure_is_a_record_of_one_observation(precision):
     """Fails if Exposure loses a field, its ecliptic defaults, or its traced roll.
 
-    The record is a pytree whose roll is an array leaf that vmap can map, and
+    The event is a pytree whose roll is an array leaf that vmap can map, and
     the plan may be absent.
     """
-    from optixstuff.spectral import Band, Quadrature
+    from optixstuff.spectral import Band
 
-    quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
+    band = Band(500.0, 600.0)
     pointing = ox.Pointing(15)
-    exposure = ox.Exposure(time_d=3.0, pointing=pointing, quadrature=quadrature)
+    exposure = ox.Exposure(
+        time_d=3.0, pointing=pointing, epoch=Epoch(), instrument="eac1", bands=(band,)
+    )
     assert exposure.pointing is pointing
     assert not hasattr(exposure, "roll_deg")
     assert exposure.plan is None
@@ -304,6 +307,7 @@ def test_documented_host_surface_is_exported():
     assert not [name for name in dir(ox) if "rimary" in name]
     assert "performance_curves" in ox.__all__
     assert ox.performance_curves is performance_curves
+    assert "SpectralSampling" in ox.__all__
     assert callable(on_grid)
 
 
@@ -370,13 +374,26 @@ def test_exposure_time_is_a_strong_leaf_and_declares_no_reads(precision):
     """Exact dtype basis. Fails if a Python-float time stays a Python number,
     is weakly typed or has another dtype than the active one, or if the
     removed ``reads`` field is accepted again."""
-    from optixstuff.spectral import Band, Quadrature
+    from optixstuff.spectral import Band
 
-    quadrature = Quadrature.build((Band(500.0, 600.0),), order=2)
-    exposure = ox.Exposure(time_d=1.0, pointing=ox.Pointing(0.0), quadrature=quadrature)
+    bands = (Band(500.0, 600.0),)
+    exposure = ox.Exposure(
+        time_d=1.0,
+        pointing=ox.Pointing(0.0),
+        epoch=Epoch(),
+        instrument="eac1",
+        bands=bands,
+    )
     assert isinstance(exposure.time_d, jax.Array)
     assert exposure.time_d.dtype == precision
     assert not exposure.time_d.weak_type
     assert exposure.time_d in jax.tree.leaves(exposure)
     with pytest.raises(TypeError):
-        ox.Exposure(0.0, ox.Pointing(0.0), quadrature, reads=("star",))
+        ox.Exposure(
+            0.0,
+            ox.Pointing(0.0),
+            epoch=Epoch(),
+            instrument="eac1",
+            bands=bands,
+            reads=("star",),
+        )

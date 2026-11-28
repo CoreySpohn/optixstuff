@@ -24,7 +24,7 @@ from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
 
-from optixstuff import Exposure, Pointing
+from optixstuff import SpectralSampling
 from optixstuff.spectral import (
     _RULE_CACHE,
     Band,
@@ -550,15 +550,15 @@ def test_resolution_finds_rules_by_digest_and_refuses_the_rest(phoenix):
         np.interp(np.asarray(exact_rule.nodes_nm), knots, values)
     )
 
-    exposure = Exposure(0.0, Pointing(0.0), rule, resolution=resolution)
+    sampling = SpectralSampling(rule, resolution)
     np.testing.assert_array_equal(
-        eqx.filter_jit(lambda e, t: e.resolution.rule(e.quadrature, t).apply(t.values))(
-            exposure, star
+        eqx.filter_jit(lambda s, t: s.resolution.rule(s.quadrature, t).apply(t.values))(
+            sampling, star
         ),
         read(resolution, star),
     )
     with pytest.raises(ValueError, match="another quadrature"):
-        Exposure(0.0, Pointing(0.0), exact_rule, resolution=resolution)
+        SpectralSampling(exact_rule, resolution)
 
     def shifted(a, b):
         u = Polynomial(

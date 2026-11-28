@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from hwoutils.constants import arcsec2rad
+from hwoutils.epoch import Epoch
 from hwoutils.numerics import eps
 from hwoutils.precision import complex_of
 from hwoutils.testing import precision_pair, ulps
@@ -1381,6 +1382,7 @@ def test_coverage_data_mask_contract():
 
     class Bare(AbstractSpeckleField):
         grid: PixelGrid = native
+        epoch: Epoch = eqx.field(static=True, default=Epoch())
         epoch_d: float = eqx.field(static=True, default=0.0)
 
         def spectral_breaks_nm(self):

@@ -36,6 +36,69 @@ The analytic path skips the images. `jaxedith.rates` takes a `PerformanceCurves`
 
 Because the two records are the same type, everything after them is shared. Neither producer applies detector yield: the record is photons, and `detector.electrons(rates)` applies quantum efficiency and survival once, at the nodes, before integrating each band. The two roads can differ in their rates, since one measures the coronagraph on images and the other reads summary curves, but they cannot differ in how a rate becomes a time.
 
+## When is an exposure
+
+An `Exposure` is the commanded event: `Exposure(time_d, pointing, plan=None, *, epoch, instrument, bands)`. It holds no scene, no observatory and no wavelength rule, so a scheduler can build one alone. `time_d` has one meaning: the start of photon collection, in days from `exposure.epoch`. It is never a midpoint and never days from a scene epoch. The epoch, the configuration name and the ordered commanded bands are static, so two events stack only when all three are equal.
+
+A frame plan collects on gates. Frame `k` (counting from zero) collects on `[k * (frame_time_s + r), k * (frame_time_s + r) + frame_time_s]`, where `r` is the read time when the read cannot overlap collection and zero when it can. Two 10 s frames with a 4 s read between them collect on `[0, 10]` and `[14, 24]`:
+
+```
+time      0         10   14        24   28
+gates     |==========|    |==========|
+reads                |----|          |----|
+                midpoint = 12 s, not 14 s
+```
+
+The midpoint of collection is 12 s after `time_d`. It is not half of `occupied_time_s`, which is 28 s here: the last read follows the last gate and collects nothing. `FramePlan.collection_span_s` and `FramePlan.collection_midpoint_s` take the gates as keywords, and `Exposure.collection_midpoint_s` does the same for an event:
+
+```python
+import optixstuff as ox
+
+plan = ox.FramePlan(10.0, 2)
+assert float(plan.collection_span_s(read_time_s=4.0, overlaps_read=False)) == 24.0
+assert float(plan.collection_midpoint_s(read_time_s=4.0, overlaps_read=False)) == 12.0
+assert float(plan.collection_midpoint_s(read_time_s=4.0, overlaps_read=True)) == 10.0
+```
+
+The result is an offset in seconds. Add it to an elapsed-seconds value, never to `time_d` in days, so that narrow execution keeps its resolution. An event with no plan is an instant, and its offset is zero. Zero frames have no midpoint and give NaN. The caller states the gates: a simulation may pass its detector's values, and archived data passes the values it recorded. A fitted `detector.read_time_s` is never the clock of archived data.
+
+A scene states times on its own epoch. `exposure.on_epoch(scene.epoch).time_d` restates the event on that epoch: the difference of the two epochs is formed on the host and added in binary64, or refused. A float32 `time_d` cannot carry a nonzero shift, so `on_epoch` raises `hwoutils.PrecisionError` for it, and the remedy is to build the event on the target epoch from the original host date. Hardware is not a scene. A speckle field has its own `epoch`, and a caller passes `exposure.on_epoch(field.epoch).time_d` to `field.elapsed_s`.
+
+One visit can serve two scenes on different epochs. The event is built once, on one epoch, and restated for each scene. Where the working precision is float32, the second restatement is refused and the event is rebuilt from the host date:
+
+```python
+import optixstuff as ox
+from hwoutils.epoch import Epoch
+from hwoutils.precision import PrecisionError
+
+plan = ox.FramePlan(10.0, 2)
+first_scene, second_scene = Epoch(2460000.5), Epoch(2461000.5)
+host_jd = 2460500.5
+visit = ox.Exposure(
+    first_scene.days(jd=host_jd),
+    ox.Pointing(0.0),
+    plan,
+    epoch=first_scene,
+    instrument="eac1",
+    bands=(ox.Band(500.0, 600.0),),
+)
+assert visit.on_epoch(first_scene) is visit
+try:
+    on_second = visit.on_epoch(second_scene)
+except PrecisionError:
+    on_second = ox.Exposure(
+        second_scene.days(jd=host_jd),
+        visit.pointing,
+        visit.plan,
+        epoch=second_scene,
+        instrument=visit.instrument,
+        bands=visit.bands,
+    )
+assert on_second.epoch == second_scene
+```
+
+Archived data states its own gates. The wavelength rule that serves an event is a separate object, the `SpectralSampling`, described in [grids and spectra](grids_and_spectra.md).
+
 ## One aperture, one budget
 
 Start with one aperture that already holds electrons per second, so no producer is involved. The planet delivers 0.05 electrons per second. The star leakage, local zodi and exozodi add 0.20, 0.02 and 0.03, spread over 12 pixels, and the detector adds dark current and clock-induced charge.

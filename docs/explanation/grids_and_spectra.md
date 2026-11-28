@@ -204,6 +204,14 @@ higher columns independently of roll. `PixelGrid.unit_to_pixel` converts the
 transformed coordinates on an arcsecond grid to pixel coordinates using
 the optical axis at `(center_x, center_y)`.
 
+## The event and its sampling
+
+An `Exposure` is the commanded event and holds no wavelength rule. The rule that serves it is a `SpectralSampling(quadrature, resolution)`, passed beside the event. `resolution` holds the operators that read the tabulated sources of a scene at the quadrature nodes, and is empty when there are none. The quadrature's nodes and weights stay JAX leaves, so a rule built by hand, even from tracers inside `jit` or `scan`, is a legal sampling and node gradients keep working; `SpectralSampling(quadrature)` is that hand-built form. The guard that a resolution was built for the same layout as its quadrature lives on the sampling.
+
+A builder records what it did. `reads` lists, as owner-qualified paths such as `scene.star`, the fitted values the build froze, and `built_at` records the facts that determined the sampling as typed stamps: the configuration name, the pupil identifiers, the spectral breaks, the field radius per band, the scene layout, the quadrature layout, the order and the precision. `SpectralSampling.check_event(exposure, selected=..., scene=...)` compares the ordered bands and the configuration name, and with the selected instrument view and the scene it recomputes the other facts and compares them. A fact that is unknown on either side is returned as unverified, never as a mismatch; two known and different facts raise `hwoutils.provenance.StampMismatchError`. A hand-built sampling has no stamps, so every fact is unverified.
+
+`Quadrature.digest` is the 64-hex SHA-256 identity of the bands, nodes, weights and piece layout, and every exact comparison uses it. A hand-built rule and a built rule with equal numbers differ, and so do two layouts with equal numbers. `Quadrature.key` is its first 16 characters, for messages only. `layout_digest` stays a static layout index that can be read under trace, so equal layouts with different digests are the normal state after a node edit.
+
 ## An image with its exposure
 
 An `ExposureData` holds an `Image`, its `Exposure`, and quality arrays on
@@ -230,6 +238,8 @@ and other per-row labels in an aligned `HostRecords` table.
 ```python
 import jax.numpy as jnp
 
+from hwoutils.epoch import Epoch
+
 from optixstuff import (
     Band,
     Exposure,
@@ -245,10 +255,18 @@ from optixstuff import (
 
 grid = PixelGrid.regular((3, 3), 0.125, "arcsec")
 rule = Quadrature.build((Band(500, 550),), order=2)
+epoch = Epoch(2460000.5)
 image = Image(jnp.ones((1, 3, 3)), grid, ("band",), Measure.integral(), "electrons")
-first = ExposureData(image, Exposure(0.0, Pointing(0.0), rule))
+first = ExposureData(
+    image,
+    Exposure(0.0, Pointing(0.0), epoch=epoch, instrument="eac1", bands=rule.bands),
+)
 mask = jnp.ones(grid.shape, dtype=bool).at[0, 0].set(False)
-second = ExposureData(image, Exposure(1.0, Pointing(0.0), rule), valid=mask)
+second = ExposureData(
+    image,
+    Exposure(1.0, Pointing(0.0), epoch=epoch, instrument="eac1", bands=rule.bands),
+    valid=mask,
+)
 
 events = stack_exposure_data((first, second))
 files = HostRecords("event", {"file": ("first.fits", "second.fits")})

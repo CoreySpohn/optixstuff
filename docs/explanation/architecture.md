@@ -262,8 +262,12 @@ writers that omitted this field. Regenerate those packs before loading.
 
 ## Exposure pointing
 
-An `Exposure` holds `Pointing(roll_deg, offset_mas=None)` alongside its
-observation time, wavelength quadrature, and optional frame plan. Construct an
+An `Exposure` is the commanded event. It holds `Pointing(roll_deg, offset_mas=None)`
+alongside its start time, an optional frame plan, and three static facts: the
+`epoch` that `time_d` counts from, the `instrument` configuration name and the
+commanded `bands`. The wavelength rule is a separate `SpectralSampling` passed
+beside it. A consumer that needs days from a scene epoch calls
+`exposure.on_epoch(scene.epoch).time_d` on the host. Construct an
 exposure with `pointing=Pointing(roll_deg)` for an on-axis target. The roll and
 any supplied offset are floating-point leaves, so a fit can address them at
 `exposure.pointing.roll_deg` and `exposure.pointing.offset_mas`.
@@ -388,14 +392,16 @@ observation is allowed, as is an explicit wide-band override.
 
 ## Speckle excess
 
-`AbstractSpeckleField` owns a native `lod` `grid` with its `Frame` and an
-`epoch_d` clock origin. It remains the interface for nonlinear implementations,
+`AbstractSpeckleField` owns a native `lod` `grid` with its `Frame`, a static
+`epoch` and an `epoch_d` clock origin. It remains the interface for nonlinear implementations,
 including replayed intensity cubes. `LinearSpeckleField` supplies the common
 law for coefficient-driven fields; subclasses implement
 `coefficients(*, elapsed_s)` and never read `epoch_d`. A field runs on its own
 clock: every method takes `elapsed_s`, seconds since the field's clock origin.
-`epoch_d` places that origin on the scene clock, in days from the scene epoch,
-and `field.elapsed_s(time_d)` is the one conversion from scene days. Wavelengths
+`epoch_d` places that origin in days from the field's own `epoch`, and
+`field.elapsed_s(time_d)` is the one conversion from a time stated on that
+epoch; a caller passes `exposure.on_epoch(field.epoch).time_d`. Hardware never
+reads a scene epoch. Wavelengths
 are nm and exposure durations are seconds.
 
 A `FocalResponse` stores the linear family's nominal amplitude density

@@ -5,7 +5,9 @@ NumPy (12 points per knot cell for the half-width band, 16 points per cell on
 a fine grid for the Airy ladder), never a call to the rule under test.
 """
 
+import hashlib
 import math
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -15,7 +17,7 @@ from hwoutils.testing import ulps
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
 
-from optixstuff.spectral import Band, Quadrature, Reduction, Transmission
+from optixstuff.spectral import Band, Quadrature, Reduction, Resolution, Transmission
 
 LO_NM, HI_NM, CENTER_NM = 375.0, 625.0, 500.0
 BAND = Band(LO_NM, HI_NM)
@@ -431,6 +433,63 @@ def test_rows_of_unequal_order_survive_padding_slicing_and_jit():
     other = Quadrature.build(bands, order=6, breaks_nm=(550.0,), field_lod=10.0)
     assert other.layout_digest != rule.layout_digest
     assert Quadrature(bands, rule.nodes_nm, rule.weights()).layout_digest is None
+
+
+def test_digest_is_the_full_identity_of_the_rule(monkeypatch):
+    """Fails if the digest drops the piece layout, is truncated, or is compared by key.
+
+    Set algebra on distinct objects, exact. Equal numbers with and without a
+    layout differ, and so do two layouts of equal numbers. Moving a node by
+    one ulp, changing a weight or permuting the nodes each gives another
+    64-hex digest while the static layout digest stays one value, and the
+    layout digest equals the hash of ``repr((bands, pieces))`` captured here
+    (its definition in the 7.0.0 release). An exact comparison uses the full
+    digest: two rules of one layout whose digests share the 16-hex key are
+    still told apart by ``Resolution.build``.
+    """
+    bands = (Band(480.0, 520.0),)
+    nodes = jnp.array([[483.0, 490.0, 500.0, 510.0, 517.0]])
+    weights = jnp.array([[3.0, 9.0, 12.0, 9.0, 7.0]])
+    pieces = (((480.0, 500.0, 2), (500.0, 520.0, 3)),)
+    base = Quadrature(bands, nodes, weights, pieces)
+    hand = Quadrature(bands, nodes, weights)
+    relaid = Quadrature(
+        bands, nodes, weights, (((480.0, 505.0, 2), (505.0, 520.0, 3)),)
+    )
+    assert base.digest != hand.digest and base.layout_digest != hand.layout_digest
+    assert base.digest != relaid.digest and base.layout_digest != relaid.layout_digest
+    assert base.digest == Quadrature(bands, nodes, weights, pieces).digest
+    edited = {
+        "permuted": replace(base, nodes_nm=nodes[:, ::-1]),
+        "node": replace(
+            base, nodes_nm=nodes.at[0, 2].set(jnp.nextafter(nodes[0, 2], 600.0))
+        ),
+        "weight": replace(base, weights_nm=weights.at[0, 2].add(1.0)),
+    }
+    digests = {base.digest, *(rule.digest for rule in edited.values())}
+    assert len(digests) == 4 and all(len(d) == 64 for d in digests)
+    assert {rule.layout_digest for rule in edited.values()} == {base.layout_digest}
+    assert len(base.key) == 16 and base.key == base.digest[:16]
+    expected = hashlib.sha256(repr((((480.0, 520.0),), pieces)).encode())
+    assert base.layout_digest == expected.hexdigest()[:16]
+
+    rule = Quadrature.build(bands, order=3)
+    moved = replace(rule, nodes_nm=rule.nodes_nm.at[0, 0].add(0.001))
+    assert moved.layout_digest == rule.layout_digest and moved.digest != rule.digest
+    with pytest.raises(ValueError, match="share a layout"):
+        Resolution.build((rule, moved))
+    monkeypatch.setattr(
+        Quadrature,
+        "digest",
+        property(
+            lambda self: (
+                "ab" * 8 + format(int(float(self.nodes_nm[0, 0]) * 1e6), "048x")
+            )
+        ),
+    )
+    assert rule.key == moved.key and rule.digest != moved.digest
+    with pytest.raises(ValueError, match="share a layout"):
+        Resolution.build((rule, moved))
 
 
 def test_invalid_rules_are_refused():

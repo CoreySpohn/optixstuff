@@ -57,6 +57,7 @@ from optixstuff.pupil import (
     check_pupil_matches_frame,
 )
 from optixstuff.rates import Rates
+from optixstuff.sampling import SpectralSampling
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 from optixstuff.spectral import Band, Quadrature, Reduction, Resolution
 
@@ -110,6 +111,7 @@ __all__ = [  # noqa: RUF022
     "SelectedInstrument",
     "SimplePupil",
     "SourcePSFs",
+    "SpectralSampling",
     "Telescope",
     "TransmissiveElement",
     "WarmEmission",

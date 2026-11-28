@@ -149,8 +149,8 @@ class ExposureData(eqx.Module):
             raise ValueError(
                 "image.leading_axes must be ordered as (draw, event, band)"
             )
-        if image.data.shape[-3] != len(self.exposure.quadrature.bands):
-            raise ValueError("image band axis must match exposure.quadrature.bands")
+        if image.data.shape[-3] != len(self.exposure.bands):
+            raise ValueError("image band axis must match exposure.bands")
         if not jnp.issubdtype(image.data.dtype, jnp.floating) and not (
             jnp.issubdtype(image.data.dtype, jnp.integer)
             and image.quantity in ELECTRON_COUNT_QUANTITIES
@@ -291,12 +291,9 @@ def _require_same_exposure_layout(
 ) -> None:
     """Check exposure metadata and array layout without comparing leaf values."""
     for field, left, right in (
-        ("bands", first.quadrature.bands, current.quadrature.bands),
-        (
-            "layout_digest",
-            first.quadrature.layout_digest,
-            current.quadrature.layout_digest,
-        ),
+        ("bands", first.bands, current.bands),
+        ("instrument", first.instrument, current.instrument),
+        ("epoch", first.epoch, current.epoch),
         ("plan presence", first.plan is None, current.plan is None),
         (
             "offset_mas presence",
