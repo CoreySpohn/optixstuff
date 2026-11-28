@@ -59,6 +59,8 @@ def test_exposure_data_construction(measurement):
     counts = replace(image, data=jnp.zeros(image.data.shape, dtype=jnp.int32))
     integer_data = ExposureData(counts, exposure)
     assert integer_data.image.data is counts.data
+    singular = replace(counts, quantity="electron")
+    assert ExposureData(singular, exposure).image.data is counts.data
     np.testing.assert_array_equal(integer_data.target_px(), measurement.target_px())
     with pytest.raises(ValueError, match=r"image\.data"):
         ExposureData(replace(counts, quantity="photons"), exposure)

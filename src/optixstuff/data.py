@@ -16,6 +16,9 @@ from hwoutils.provenance import Stamps
 from optixstuff.exposure import Exposure
 from optixstuff.grids import Image, SkyOrientation
 
+ELECTRON_COUNT_QUANTITIES = ("electron", "electrons")
+"""Image quantity spellings that name electron counts."""
+
 _AXES = ("draw", "event")
 _LEADING_AXES = (("band",), ("event", "band"), ("draw", "band"), (*_AXES, "band"))
 
@@ -150,7 +153,7 @@ class ExposureData(eqx.Module):
             raise ValueError("image band axis must match exposure.quadrature.bands")
         if not jnp.issubdtype(image.data.dtype, jnp.floating) and not (
             jnp.issubdtype(image.data.dtype, jnp.integer)
-            and image.quantity == "electrons"
+            and image.quantity in ELECTRON_COUNT_QUANTITIES
             and image.measure.kind == "integral"
             and self.variance is None
         ):

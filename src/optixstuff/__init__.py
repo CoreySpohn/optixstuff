@@ -17,7 +17,12 @@ from optixstuff.coronagraph import (
     SceneRender,
     SourcePSFs,
 )
-from optixstuff.data import ExposureData, HostRecords, stack_exposure_data
+from optixstuff.data import (
+    ELECTRON_COUNT_QUANTITIES,
+    ExposureData,
+    HostRecords,
+    stack_exposure_data,
+)
 from optixstuff.detector import (
     AbstractDetector,
     Detector,
@@ -69,6 +74,7 @@ __all__ = [  # noqa: RUF022
     "Band",
     "Circular",
     "ConstantThroughput",
+    "ELECTRON_COUNT_QUANTITIES",
     "Detector",
     "Exposure",
     "ExposureData",
