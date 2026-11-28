@@ -73,7 +73,7 @@ def _spectral_cases():
     return {
         "band": (band.contains_wavelength, (wave,), 0),
         "rebin": (
-            lambda x: rebin_bands(x, (band,), band.channels(2)),
+            lambda x: rebin_bands(x, (band,), band.split(2)),
             (values[:, 0],),
             4,
         ),

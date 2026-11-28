@@ -116,7 +116,7 @@ def test_unresolved_product_has_no_positive_width_tiles(monkeypatch):
     def fail_if_tiled(self, n, spacing):
         pytest.fail(f"Unresolved product requested {n} tiles")
 
-    monkeypatch.setattr(Band, "channels", fail_if_tiled)
+    monkeypatch.setattr(Band, "split", fail_if_tiled)
     model.check_bands((Band(600.0, 600.0),))
     for band in (Band(599.99999, 600.00001), product):
         with pytest.raises(ValueError, match="No positive-width tile fits"):

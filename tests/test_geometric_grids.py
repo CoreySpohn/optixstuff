@@ -23,7 +23,7 @@ def test_geometric_grids_and_bands():
         assert not replace(grid, center_y=np.nextafter(cy, math.inf)).is_geometric
     band = Band(400.0, 1600.0)
     assert band.geometric_center_nm == 800.0
-    channels = band.channels(3, "log")
+    channels = band.split(3, "log")
     edges = [channels[0].low_nm, *(channel.high_nm for channel in channels)]
     np.testing.assert_allclose(edges, 400 * 4 ** (np.arange(4) / 3), rtol=2e-15)
     np.testing.assert_allclose(

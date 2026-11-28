@@ -28,13 +28,12 @@ def _clear_caches():
     jax.clear_caches()
 
 
-@pytest.mark.parametrize("method", ("split", "channels"))
 @given(lo=st.floats(100, 599), hi=st.floats(600, 2000))
-def test_band_operations_preserve_supplied_edges(precision, method, lo, hi):
+def test_band_operations_preserve_supplied_edges(precision, lo, hi):
     """Fails if partitioning, building, slicing or integrating rounds an endpoint."""
     band = Band(lo, hi)
     for spacing in ("linear", "log"):
-        channels = getattr(band, method)(7, spacing)
+        channels = band.split(7, spacing)
         rule = Quadrature.build(channels, order=1)
         assert rule.bands[0].low_nm.hex() == lo.hex()
         assert rule.bands[-1].high_nm.hex() == hi.hex()
@@ -57,8 +56,7 @@ def test_band_operations_preserve_supplied_edges(precision, method, lo, hi):
     )
 
 
-@pytest.mark.parametrize("method", ("split", "channels"))
-def test_band_validates_geometry(method):
+def test_band_validates_geometry():
     """Fails if invalid edge order or spacing creates unusable quadrature geometry."""
     band = Band(410.1, 987.3)
     assert band == Band(np.float64(410.1), 987.3)
@@ -67,19 +65,20 @@ def test_band_validates_geometry(method):
         with pytest.raises(ValueError):
             Band(lo, hi)
     with pytest.raises(ValueError):
-        getattr(band, method)(0)
+        band.split(0)
     with pytest.raises(ValueError):
-        getattr(band, method)(3, "invalid")
+        band.split(3, "invalid")
 
 
-def test_split_and_channels_share_exact_edges():
+def test_split_gives_exact_edges_and_channels_is_gone():
     """One edge table gives exact contiguous bands with the original endpoints."""
     band = Band(410.1, 987.3)
     for spacing, space in (("linear", np.linspace), ("log", np.geomspace)):
         edges = space(band.low_nm, band.high_nm, 8)
         edges[0], edges[-1] = band.low_nm, band.high_nm
         expected = tuple(Band(lo, hi) for lo, hi in pairwise(edges))
-        assert band.split(7, spacing) == band.channels(7, spacing) == expected
+        assert band.split(7, spacing) == expected
+    assert not hasattr(Band, "channels")
 
 
 def test_split_quadrature_weights_and_piecewise_linear_integral():
@@ -234,8 +233,8 @@ def test_rebin_conserves_total_flux():
     Floating-point basis. Allow 16 operations for wavelength squaring,
     quadrature, overlap fractions and wavelength reductions.
     """
-    src_edges = Band(600.0, 700.0).channels(24, "log")
-    dst_edges = Band(600.0, 700.0).channels(8, "log")
+    src_edges = Band(600.0, 700.0).split(24, "log")
+    dst_edges = Band(600.0, 700.0).split(8, "log")
     q = Quadrature.build(src_edges, order=3)
     values = q.integrate(q.nodes_nm**2)
     exact = (700.0**3 - 600.0**3) / 3
@@ -253,9 +252,9 @@ def test_rebin_nested_grid_equals_reshape_sum():
     Floating-point basis. Allow eight operations for the two sums over four
     weighted source cells and the overlap scaling.
     """
-    edges = Band(600.0, 700.0).channels(8, "log")
+    edges = Band(600.0, 700.0).split(8, "log")
     n = len(edges)
-    edges_hi = tuple(sub for band in edges for sub in band.channels(4, "log"))
+    edges_hi = tuple(sub for band in edges for sub in band.split(4, "log"))
     vals = (jnp.arange(n * 4, dtype=float) + 1.0) ** 1.3
     out = rebin_bands(vals, edges_hi, edges)
     np.testing.assert_allclose(
@@ -269,8 +268,8 @@ def test_rebin_along_cube_axis():
     Floating-point basis. Allow 12 operations for overlap fractions and the
     two reductions over the source and target wavelength axes.
     """
-    src_edges = Band(600.0, 700.0).channels(12, "log")
-    dst_edges = Band(600.0, 700.0).channels(4, "log")
+    src_edges = Band(600.0, 700.0).split(12, "log")
+    dst_edges = Band(600.0, 700.0).split(4, "log")
     cube = jax.random.uniform(jax.random.PRNGKey(0), (12, 3, 2))
     out = rebin_bands(cube, src_edges, dst_edges, axis=0)
     assert out.shape == (4, 3, 2)
