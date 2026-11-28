@@ -2,7 +2,8 @@
 
 ## Spectral integration
 
-Supply wavelength intervals by their endpoints in nm. Build the quadrature
+Supply wavelength intervals by their endpoints in nm. Use `Band.split` to
+partition a band into contiguous intervals with linear or logarithmic spacing. Build the quadrature
 once on the host, then evaluate each spectrum on the same array of nodes.
 For example, the following integrates a piecewise-linear transmission curve
 and returns its mean response in two bands.
@@ -202,6 +203,61 @@ toward higher rows. A positive x pointing offset moves all sources toward
 higher columns independently of roll. `PixelGrid.unit_to_pixel` converts the
 transformed coordinates on an arcsecond grid to pixel coordinates using
 the optical axis at `(center_x, center_y)`.
+
+## An image with its exposure
+
+An `ExposureData` holds an `Image`, its `Exposure`, and quality arrays on
+the image's pixel grid. A boolean `valid` mask can cover the whole image or
+just the spatial plane. When unsigned `flags` are supplied, `flag_names`
+names their bits from least significant upward. A pixel is valid when none
+of the bits named in `invalid_flags` is set. Any supplied mask must agree
+with that rule.
+
+Variance is per pixel, in the square of the image quantity, and includes
+the noise terms the producer accounts for. When `variance` is `None`, the
+consumer supplies variance from its noise model. An integral electron image
+with omitted variance can retain integer detector counts. The exposure
+carries the roll and target offset. On an arcsecond grid, `target_px()` gives the
+commanded target position and `sky_to_pixel()` locates a sky coordinate
+relative to the target.
+
+Stack distinct exposures along `"event"`. Each event can have its own
+pointing, time and mask, with a shared grid and band layout. Repeat draws
+of the same exposure stack along `"draw"`, the outermost axis. Use `take`
+to select an event before transforming sky coordinates, and keep filenames
+and other per-row labels in an aligned `HostRecords` table.
+
+```python
+import jax.numpy as jnp
+
+from optixstuff import (
+    Band,
+    Exposure,
+    ExposureData,
+    HostRecords,
+    Image,
+    Measure,
+    PixelGrid,
+    Pointing,
+    Quadrature,
+    stack_exposure_data,
+)
+
+grid = PixelGrid.regular((3, 3), 0.125, "arcsec")
+rule = Quadrature.build((Band(500, 550),), order=2)
+image = Image(jnp.ones((1, 3, 3)), grid, ("band",), Measure.integral(), "electrons")
+first = ExposureData(image, Exposure(0.0, Pointing(0.0), rule))
+mask = jnp.ones(grid.shape, dtype=bool).at[0, 0].set(False)
+second = ExposureData(image, Exposure(1.0, Pointing(0.0), rule), valid=mask)
+
+events = stack_exposure_data((first, second))
+files = HostRecords("event", {"file": ("first.fits", "second.fits")})
+files.require_aligned(events)
+selected = events.take(1)
+assert files.row(1)["file"] == "second.fits"
+assert not selected.valid[0, 0, 0]
+assert selected.sky_to_pixel(0.0, 0.125) == (1.0, 2.0)
+```
 
 ## Measures and conservative integration
 

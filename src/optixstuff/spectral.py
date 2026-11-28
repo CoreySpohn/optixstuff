@@ -313,7 +313,7 @@ class Band:
             wavelength <= COARSEST(self.high_nm)
         )
 
-    def channels(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
+    def split(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
         """Partition into n bands using one shared edge table, including endpoints.
 
         Args:
@@ -334,6 +334,18 @@ class Band:
             raise ValueError("spacing must be 'linear' or 'log'")
         edges[0], edges[-1] = self.low_nm, self.high_nm
         return tuple(Band(lo, hi) for lo, hi in pairwise(edges))
+
+    def channels(self, n: int, spacing: str = "linear") -> tuple["Band", ...]:
+        """Partition into contiguous bands. Use :meth:`split` for new code.
+
+        Args:
+            n: Number of channels.
+            spacing: ``"linear"`` or ``"log"`` edge spacing.
+
+        Returns:
+            The ``n`` contiguous bands covering this band.
+        """
+        return self.split(n, spacing)
 
 
 def _overlap_fractions(src_lo, src_hi, dst_lo, dst_hi):

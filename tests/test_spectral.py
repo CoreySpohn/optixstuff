@@ -28,12 +28,13 @@ def _clear_caches():
     jax.clear_caches()
 
 
+@pytest.mark.parametrize("method", ("split", "channels"))
 @given(lo=st.floats(100, 599), hi=st.floats(600, 2000))
-def test_band_operations_preserve_supplied_edges(precision, lo, hi):
+def test_band_operations_preserve_supplied_edges(precision, method, lo, hi):
     """Fails if partitioning, building, slicing or integrating rounds an endpoint."""
     band = Band(lo, hi)
     for spacing in ("linear", "log"):
-        channels = band.channels(7, spacing)
+        channels = getattr(band, method)(7, spacing)
         rule = Quadrature.build(channels, order=1)
         assert rule.bands[0].low_nm.hex() == lo.hex()
         assert rule.bands[-1].high_nm.hex() == hi.hex()
@@ -56,7 +57,8 @@ def test_band_operations_preserve_supplied_edges(precision, lo, hi):
     )
 
 
-def test_band_validates_geometry():
+@pytest.mark.parametrize("method", ("split", "channels"))
+def test_band_validates_geometry(method):
     """Fails if invalid edge order or spacing creates unusable quadrature geometry."""
     band = Band(410.1, 987.3)
     assert band == Band(np.float64(410.1), 987.3)
@@ -65,9 +67,19 @@ def test_band_validates_geometry():
         with pytest.raises(ValueError):
             Band(lo, hi)
     with pytest.raises(ValueError):
-        band.channels(0)
+        getattr(band, method)(0)
     with pytest.raises(ValueError):
-        band.channels(3, "invalid")
+        getattr(band, method)(3, "invalid")
+
+
+def test_split_and_channels_share_exact_edges():
+    """One edge table gives exact contiguous bands with the original endpoints."""
+    band = Band(410.1, 987.3)
+    for spacing, space in (("linear", np.linspace), ("log", np.geomspace)):
+        edges = space(band.low_nm, band.high_nm, 8)
+        edges[0], edges[-1] = band.low_nm, band.high_nm
+        expected = tuple(Band(lo, hi) for lo, hi in pairwise(edges))
+        assert band.split(7, spacing) == band.channels(7, spacing) == expected
 
 
 def test_split_quadrature_weights_and_piecewise_linear_integral():

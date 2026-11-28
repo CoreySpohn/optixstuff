@@ -17,6 +17,7 @@ from optixstuff.coronagraph import (
     SceneRender,
     SourcePSFs,
 )
+from optixstuff.data import ExposureData, HostRecords, stack_exposure_data
 from optixstuff.detector import (
     AbstractDetector,
     Detector,
@@ -70,10 +71,12 @@ __all__ = [  # noqa: RUF022
     "ConstantThroughput",
     "Detector",
     "Exposure",
+    "ExposureData",
     "ExposureTime",
     "FocalResponse",
     "FramePlan",
     "HalfMaximum",
+    "HostRecords",
     "IdealDetector",
     "Image",
     "Instrument",
@@ -107,4 +110,5 @@ __all__ = [  # noqa: RUF022
     "performance_curves",
     "save_psflet_pack",
     "snr",
+    "stack_exposure_data",
 ]

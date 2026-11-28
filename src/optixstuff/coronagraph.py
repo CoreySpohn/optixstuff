@@ -233,12 +233,12 @@ class AbstractCoronagraph(eqx.Module):
                     / math.log1p(product.width_nm / product.low_nm)
                 ),
             )
-            tiles = band.channels(n, "log")
+            tiles = band.split(n, "log")
             while not all(
                 _within(t.width_nm / t.center_nm, product_width) for t in tiles
             ):
                 n += 1
-                tiles = band.channels(n, "log")
+                tiles = band.split(n, "log")
             intervals = ", ".join(f"{t.low_nm:.12g}-{t.high_nm:.12g} nm" for t in tiles)
             raise ValueError(message + f"Split into these tiles: {intervals}.")
 
