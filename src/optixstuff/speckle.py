@@ -8,15 +8,15 @@ unocculted stellar flux; coherent interference can make the excess negative.
 import abc
 import math
 from dataclasses import replace
-from typing import ClassVar, Literal, Never
+from typing import ClassVar, Literal
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
-from hwoutils.constants import d2s
-from hwoutils.precision import PrecisionError, float_dtype, like, require_float64
+from hwoutils.epoch import elapsed_seconds
+from hwoutils.precision import like
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
@@ -151,22 +151,6 @@ def _sensitivity_scale(response, wavelengths):
     raise ValueError("a tabulated response must be read at its wavelength nodes")
 
 
-def _reject_time_dtype(dtype: np.dtype, epoch_d: float) -> Never:
-    if dtype.itemsize < 8 and jnp.issubdtype(dtype.type, jnp.floating):
-        # The guard reads strong JAX leaves. Only the dtype is needed here.
-        try:
-            require_float64(
-                "Absolute epoch subtraction", jnp.empty(0, dtype=dtype.type)
-            )
-        except PrecisionError:
-            raise PrecisionError(
-                f"time_d of dtype {dtype} may have lost its offset from "
-                f"epoch_d={epoch_d!r}. Pass elapsed_s formed on the host from "
-                "the original times, or rebuild time_d in float64 from those times."
-            ) from None
-    raise ValueError(f"unsupported time_d dtype {dtype} for epoch_d={epoch_d!r}")
-
-
 class AbstractSpeckleField(eqx.Module):
     """Interface for deterministic time-driven speckles, including replayed cubes.
 
@@ -253,34 +237,9 @@ class AbstractSpeckleField(eqx.Module):
             PrecisionError: If a nonzero epoch receives a reduced-precision
                 floating time, or a traced float64 time cannot run in float64.
         """
-        epoch_d = self.epoch_d
-        if type(epoch_d) is not float:
-            raise TypeError("epoch_d must be a static host float, not a leaf")
-        if epoch_d == 0.0:
-            if isinstance(time_d, (tuple, list)):
-                time_d = jnp.asarray(time_d)
-            dtype = getattr(time_d, "dtype", None)
-            if dtype in (np.float32, np.float64) and not getattr(
-                time_d, "weak_type", False
-            ):
-                dtype = jax.dtypes.canonicalize_dtype(dtype)
-            else:
-                dtype = self._working_dtype(time_d)
-            return jnp.asarray(time_d, dtype=dtype) * d2s
-        dtype = float_dtype()
-        if isinstance(time_d, jax.Array):
-            if time_d.dtype != np.float64:
-                _reject_time_dtype(time_d.dtype, epoch_d)
-            if isinstance(time_d, jax.core.Tracer) or dtype == np.float64:
-                require_float64(
-                    "Traced epoch subtraction (or pass elapsed_s formed on the host)"
-                )
-                return (time_d - epoch_d) * d2s
-        host = np.asarray(time_d)
-        kind, size = host.dtype.kind, host.dtype.itemsize
-        if not (kind in "iu" or (kind == "f" and size == 8)):
-            _reject_time_dtype(host.dtype, epoch_d)
-        return jnp.asarray((host.astype(np.float64) - epoch_d) * d2s, dtype=dtype)
+        return elapsed_seconds(
+            time_d, origin_d=self.epoch_d, reference=self, what="elapsed_s"
+        )
 
     def data_mask(self) -> Array | None:
         """Cells of ``grid`` that hold data, or None when every cell does.
