@@ -4,7 +4,7 @@ Shared hardware objects, with standard values, for the HWO
 direct-imaging simulation suite.
 
 `optixstuff` is a **thin shared dependency** that defines the
-observatory's hardware as composable JAX modules: primary aperture,
+observatory's hardware as composable JAX modules: pupil,
 throughput-affecting elements, coronagraph backend, detector. It does
 not simulate, retrieve, or analyze anything in its own right; its job
 is to be the single source of truth for the hardware configuration
@@ -12,8 +12,8 @@ that downstream tools consume.
 
 Both {mod}`coronagraphoto` (2D image simulation) and
 [jaxEDITH](https://github.com/CoreySpohn/jaxedith) (analytic aperture
-rates) import the same {class}`~optixstuff.Instrument` class and the
-same detector / throughput / primary types from optixstuff; jaxEDITH
+rates) import the same {class}`~optixstuff.Observatory` class and the
+same detector / throughput / pupil types from optixstuff; jaxEDITH
 reads coronagraph performance as {class}`~optixstuff.PerformanceCurves`
 data. Change a value here and both downstream tools pick it up on the
 next import. Both end at an {class}`~optixstuff.Rates` record, which
@@ -33,7 +33,8 @@ follows both roads.
   {mod}`skyscapes`.
 - **Not a simulator.** Downstream tools ({mod}`coronagraphoto`,
   [jaxEDITH](https://github.com/CoreySpohn/jaxedith)) consume an
-  {class}`~optixstuff.Instrument` to produce images / count rates.
+  {class}`~optixstuff.SelectedInstrument` (from
+  {meth}`~optixstuff.Observatory.select`) to produce images / count rates.
 
 ## Ecosystem position
 
@@ -41,7 +42,7 @@ follows both roads.
 flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Observatory<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Analytic aperture rates"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
 
@@ -53,32 +54,40 @@ flowchart TB
 
 ## Quick start
 
-This example builds the hardware record around a coronagraph. The coronagraph
+This example builds an observatory around a coronagraph. The coronagraph
 comes from a provider such as a yippy `Coronagraph`; its lambda/D frame must
-describe the same telescope as the primary.
+describe the same telescope as the pupil.
 
 ```python notest
 from optixstuff import (
     Instrument,
-    SimplePrimary,
+    Observatory,
+    SimplePupil,
+    Telescope,
     IdealDetector,
     ConstantThroughput,
 )
 
-primary = SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+pupil = SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
 detector = IdealDetector(pixel_scale_arcsec=0.01, shape=(512, 512))
 throughput = ConstantThroughput(throughput=0.85)
 
-path = Instrument(
-    primary=primary,
-    attenuating_elements=(throughput,),
-    coronagraph=coronagraph,  # any AbstractCoronagraph
-    detector=detector,
+observatory = Observatory(
+    Telescope(pupil),
+    (
+        Instrument(
+            "imager",
+            attenuating_elements=(throughput,),
+            coronagraph=coronagraph,  # any AbstractCoronagraph
+            detector=detector,
+        ),
+    ),
 )
+selected = observatory.select("imager")
 
 # Throughput at a wavelength
-print(path.system_throughput(550.0))  # scalar throughput
-print(path.detector.quantum_efficiency(550.0))  # QE at 550 nm
+print(selected.system_throughput(550.0))  # scalar throughput
+print(selected.detector.quantum_efficiency(550.0))  # QE at 550 nm
 ```
 
 ## Installation
@@ -93,13 +102,15 @@ Built on [JAX](https://github.com/google/jax) and
 [Equinox](https://github.com/patrick-kidger/equinox), optixstuff
 provides:
 
-- **Abstract interfaces**: `AbstractPrimary`,
+- **Abstract interfaces**: `AbstractPupil`,
   `AbstractOpticalElement`, `AbstractCoronagraph`, `AbstractDetector`
-- **Concrete implementations**: `SimplePrimary`, `ConstantThroughput`,
+- **Concrete implementations**: `SimplePupil`, `ConstantThroughput`,
   `TransmissiveElement`, `IdealDetector`, `Detector`, `MultiBandCoronagraph`
-- **Container**: `Instrument`, a composable hardware configuration
-  passed to all downstream simulators, with an optional `WarmEmission`
-  for the warm telescope's thermal emission
+- **Containers**: `Telescope` (the pupil and the shared throughput),
+  `Instrument` (one named configuration, with an optional `WarmEmission`
+  for the warm telescope's thermal emission) and `Observatory`, whose
+  `select(name)` returns the `SelectedInstrument` view passed to all
+  downstream simulators
 
 Optical elements and coronagraphs accept fidelity axes (**wavelength**,
 **position**, and **time**) with defaults so simple implementations

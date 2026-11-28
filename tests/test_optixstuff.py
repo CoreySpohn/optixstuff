@@ -12,30 +12,30 @@ import optixstuff as ox
 from optixstuff.spectral import Transmission, spectral_breaks
 
 
-class TestSimplePrimary:
-    def test_diameter(self, simple_primary):
-        assert simple_primary.diameter("circumscribed") == 6.0
+class TestSimplePupil:
+    def test_diameter(self, simple_pupil):
+        assert simple_pupil.diameter("circumscribed") == 6.0
 
     def test_area_no_obscuration(self):
-        p = ox.SimplePrimary(
+        p = ox.SimplePupil(
             circumscribed_diameter_m=2.0, collecting_area_m2=3.141592653589793
         )
         expected = jnp.pi * 1.0**2
         assert jnp.isclose(p.collecting_area_m2, expected)
 
-    def test_area_with_obscuration(self, simple_primary):
+    def test_area_with_obscuration(self, simple_pupil):
         expected = jnp.pi * 3.0**2 * (1.0 - 0.14**2)
-        assert jnp.isclose(simple_primary.collecting_area_m2, expected)
+        assert jnp.isclose(simple_pupil.collecting_area_m2, expected)
 
     def test_area_with_shape_factor(self):
-        p = ox.SimplePrimary(
+        p = ox.SimplePupil(
             circumscribed_diameter_m=6.0, collecting_area_m2=3.141592653589793 * 9 * 0.9
         )
         expected = jnp.pi * 3.0**2 * 0.9
         assert jnp.isclose(p.collecting_area_m2, expected)
 
-    def test_is_equinox_module(self, simple_primary):
-        assert isinstance(simple_primary, eqx.Module)
+    def test_is_equinox_module(self, simple_pupil):
+        assert isinstance(simple_pupil, eqx.Module)
 
 
 class TestConstantThroughputElement:
@@ -53,8 +53,25 @@ class TestConstantThroughputElement:
         assert jnp.allclose(result, 0.8 * jnp.ones((10, 10)))
 
 
+def _select(pupil, detector, elements=(), coronagraph=None, **kwargs):
+    """Observatory of one configuration "imager", returned as its selected view."""
+    observatory = ox.Observatory(
+        ox.Telescope(pupil),
+        (
+            ox.Instrument(
+                "imager",
+                attenuating_elements=elements,
+                coronagraph=coronagraph,
+                detector=detector,
+                **kwargs,
+            ),
+        ),
+    )
+    return observatory.select("imager")
+
+
 class TestInstrument:
-    def test_transmission_elements_compose(self, simple_primary, simple_detector):
+    def test_transmission_elements_compose(self, simple_pupil, simple_detector):
         """Fails if held responses lose knots, attenuation or parameter gradients.
 
         Exact algebra: at 550 nm the linear response is (0.2+0.8)/2;
@@ -64,11 +81,8 @@ class TestInstrument:
         interpolation, scalar attenuation and its analytic transpose.
         """
         element = ox.TransmissiveElement(Transmission([500, 600], [0.2, 0.8]))
-        path = ox.Instrument(
-            primary=simple_primary,
-            attenuating_elements=(element, ox.ConstantThroughput(0.4)),
-            coronagraph=None,
-            detector=simple_detector,
+        path = _select(
+            simple_pupil, simple_detector, (element, ox.ConstantThroughput(0.4))
         )
         expected = (0.2 + 0.8) / 2 * 0.4
         np.testing.assert_allclose(
@@ -78,6 +92,7 @@ class TestInstrument:
             atol=float(ulps(8, expected)),
         )
         np.testing.assert_array_equal(spectral_breaks(path), [500, 600])
+        assert path.instrument.name == "imager"
         np.testing.assert_allclose(
             element.apply(jnp.array([[2.0, 3.0]]), 550),
             jnp.array([[2.0, 3.0]]) * ((0.2 + 0.8) / 2),
@@ -86,7 +101,7 @@ class TestInstrument:
         )
         gradient = eqx.filter_grad(lambda p: p.system_throughput(550.0))(path)
         np.testing.assert_allclose(
-            gradient.attenuating_elements[0].transmission.transmission,
+            gradient.instrument.attenuating_elements[0].transmission.transmission,
             [0.4 / 2, 0.4 / 2],
             rtol=0,
             atol=float(ulps(8, 0.2)),
@@ -95,7 +110,7 @@ class TestInstrument:
         assert path.system_throughput(601.0) == 0
 
     def test_flux_scale_multiplies_the_effective_area(
-        self, simple_primary, simple_detector, precision
+        self, simple_pupil, simple_detector, precision
     ):
         """Fails if the scale misses the effective area or defaults to anything but one.
 
@@ -103,18 +118,13 @@ class TestInstrument:
         compared at 0 ULP (a product by exactly one changes no bit); invalid
         scales must raise.
         """
-        kwargs = dict(
-            primary=simple_primary,
-            attenuating_elements=(ox.ConstantThroughput(0.4),),
-            coronagraph=None,
-            detector=simple_detector,
-        )
-        plain = ox.Instrument(**kwargs)
+        elements = (ox.ConstantThroughput(0.4),)
+        plain = _select(simple_pupil, simple_detector, elements)
         assert float(plain.flux_scale) == 1.0
-        area = simple_primary.collecting_area_m2
+        area = simple_pupil.collecting_area_m2
         expected = jnp.asarray(area * plain.system_throughput(550.0), dtype=precision)
         np.testing.assert_array_equal(plain.effective_area_m2(550.0), expected)
-        scaled = ox.Instrument(**kwargs, flux_scale=1.25)
+        scaled = _select(simple_pupil, simple_detector, elements, flux_scale=1.25)
         np.testing.assert_allclose(
             scaled.effective_area_m2(jnp.array([500.0, 600.0])),
             1.25 * area * 0.4 * jnp.ones(2),
@@ -122,12 +132,12 @@ class TestInstrument:
         )
         for bad in (0.0, -1.0, np.nan, np.inf):
             with pytest.raises(ValueError, match="flux_scale"):
-                ox.Instrument(**kwargs, flux_scale=bad)
+                _select(simple_pupil, simple_detector, elements, flux_scale=bad)
         grad = eqx.filter_grad(lambda i: i.effective_area_m2(550.0))(plain)
-        np.testing.assert_allclose(grad.flux_scale, area * 0.4, rtol=1e-6)
+        np.testing.assert_allclose(grad.instrument.flux_scale, area * 0.4, rtol=1e-6)
 
     def test_warm_emission_is_planck_times_emissivity_times_area(
-        self, simple_primary, simple_detector
+        self, simple_pupil, simple_detector
     ):
         """Fails if the thermal rate drops a factor or is on by default.
 
@@ -140,54 +150,50 @@ class TestInstrument:
         """
         from hwoutils.constants import c, h, k_B
 
-        kwargs = dict(
-            primary=simple_primary,
-            attenuating_elements=(ox.ConstantThroughput(0.4),),
-            coronagraph=None,
-            detector=simple_detector,
-        )
+        elements = (ox.ConstantThroughput(0.4),)
         wavelength = np.array([500.0, 1000.0, 2000.0])
         assert not np.any(
-            ox.Instrument(**kwargs).thermal_photon_rate_per_sr(wavelength)
+            _select(simple_pupil, simple_detector, elements).thermal_photon_rate_per_sr(
+                wavelength
+            )
         )
         warm = ox.WarmEmission(temperature_K=290.0, effective_emissivity=0.638)
-        instrument = ox.Instrument(**kwargs, warm_emission=warm, flux_scale=1.7)
+        instrument = _select(
+            simple_pupil,
+            simple_detector,
+            elements,
+            warm_emission=warm,
+            flux_scale=1.7,
+        )
         lam_m = wavelength * 1e-9
         exponent = h * c / (lam_m * k_B * 290.0)
         radiance = 2 * c / lam_m**4 / np.expm1(exponent) * 1e-9
         np.testing.assert_allclose(
             instrument.thermal_photon_rate_per_sr(wavelength),
-            radiance * 0.638 * simple_primary.collecting_area_m2,
+            radiance * 0.638 * simple_pupil.collecting_area_m2,
             rtol=float(ulps(8, 1 + exponent.max())),
             atol=0,
         )
-        off = ox.Instrument(
-            **kwargs, warm_emission=ox.WarmEmission(290.0, 0.0)
+        off = _select(
+            simple_pupil,
+            simple_detector,
+            elements,
+            warm_emission=ox.WarmEmission(290.0, 0.0),
         ).thermal_photon_rate_per_sr(wavelength)
         assert not np.any(off)
         for bad in ((0.0, 0.5), (np.nan, 0.5), (290.0, 1.2), (290.0, -0.1)):
             with pytest.raises(ValueError):
                 ox.WarmEmission(*bad)
 
-    def test_system_throughput_single_element(self, simple_primary, simple_detector):
+    def test_system_throughput_single_element(self, simple_pupil, simple_detector):
         el = ox.ConstantThroughput(throughput=0.7)
-        path = ox.Instrument(
-            primary=simple_primary,
-            attenuating_elements=(el,),
-            coronagraph=None,
-            detector=simple_detector,
-        )
+        path = _select(simple_pupil, simple_detector, (el,))
         assert path.system_throughput(500.0) == pytest.approx(0.7)
 
-    def test_system_throughput_two_elements(self, simple_primary, simple_detector):
+    def test_system_throughput_two_elements(self, simple_pupil, simple_detector):
         el1 = ox.ConstantThroughput(throughput=0.8)
         el2 = ox.ConstantThroughput(throughput=0.9)
-        path = ox.Instrument(
-            primary=simple_primary,
-            attenuating_elements=(el1, el2),
-            coronagraph=None,
-            detector=simple_detector,
-        )
+        path = _select(simple_pupil, simple_detector, (el1, el2))
         assert path.system_throughput(500.0) == pytest.approx(0.72)
 
 
@@ -285,6 +291,17 @@ def test_documented_host_surface_is_exported():
     from optixstuff.coronagraph import on_grid
     from optixstuff.performance import performance_curves
 
+    for name in (
+        "Telescope",
+        "Observatory",
+        "SelectedInstrument",
+        "AbstractPupil",
+        "SimplePupil",
+        "SegmentedPupil",
+        "check_pupil_matches_frame",
+    ):
+        assert name in ox.__all__
+    assert not [name for name in dir(ox) if "rimary" in name]
     assert "performance_curves" in ox.__all__
     assert ox.performance_curves is performance_curves
     assert callable(on_grid)
@@ -301,7 +318,7 @@ def test_instrument_declares_the_detector_half_diagonal_as_its_field():
     detector with 0.2 lambda/D pixels at 550 nm on a 6 m aperture has a
     half-diagonal of 0.2 * 80 = 16 lambda/D at 550 nm, and the same angle is
     16 * 550 / 450 lambda/D at the center of a 450 nm band. The result holds
-    with a coronagraph (its frame) and without one (the primary). Tolerance 1e-12
+    with a coronagraph (its frame) and without one (the pupil). Tolerance 1e-12
     relative, basis floating-point arithmetic on a few products. The half-width
     (12.8 lambda/D at 550 nm) is 20 percent smaller, far outside it.
     """
@@ -312,12 +329,10 @@ def test_instrument_declares_the_detector_half_diagonal_as_its_field():
     diameter = 6.0
     scale = 0.2 * _arcsec_per_lod(550.0, diameter)
     detector = ox.IdealDetector(pixel_scale_arcsec=scale, shape=(96, 128))
-    primary = ox.SimplePrimary(
-        circumscribed_diameter_m=diameter, collecting_area_m2=28.0
-    )
+    pupil = ox.SimplePupil(circumscribed_diameter_m=diameter, collecting_area_m2=28.0)
     elements = (ox.ConstantThroughput(throughput=1.0),)
-    bare = ox.Instrument(primary, elements, None, detector)
-    framed = ox.Instrument(primary, elements, table_coronagraph(diameter), detector)
+    bare = _select(pupil, detector, elements)
+    framed = _select(pupil, detector, elements, table_coronagraph(diameter))
     for instrument in (bare, framed):
         for center, expected in ((550.0, 16.0), (450.0, 16.0 * 550.0 / 450.0)):
             band = Band(0.9 * center, 1.1 * center)
@@ -339,10 +354,8 @@ def test_quadrature_build_takes_the_instrument_field_when_asked():
     detector = ox.IdealDetector(
         pixel_scale_arcsec=0.2 * _arcsec_per_lod(550.0, 6.0), shape=(96, 128)
     )
-    primary = ox.SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
-    instrument = ox.Instrument(
-        primary, (ox.ConstantThroughput(throughput=1.0),), None, detector
-    )
+    pupil = ox.SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+    instrument = _select(pupil, detector, (ox.ConstantThroughput(throughput=1.0),))
     band = Band(495.0, 605.0)
     declared = Quadrature.build((band,), instrument, field_lod=None)
     explicit = Quadrature.build(

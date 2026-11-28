@@ -108,9 +108,9 @@ def _reduction_case(kind):
 
 
 def _grid_case(entry):
-    frame = ox.SimplePrimary(
-        circumscribed_diameter_m=6.0, collecting_area_m2=28.0
-    ).frame(500.0)
+    frame = ox.SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0).frame(
+        500.0
+    )
     source = ox.PixelGrid.focal(5, 0.5, frame)
     target = ox.PixelGrid.regular((3, 4), 0.4, "lod", frame=frame)
     data = 1 + jnp.arange(25, dtype=jnp.float64).reshape(5, 5) / 32
@@ -410,9 +410,12 @@ def _optics_case(entry):
     table = Transmission([550.0, 800.0], [0.5, 1.0])
     element = ox.TransmissiveElement(table)
     lenslet = _lenslet(dispersion_coeffs=jnp.array([2.0, 100.0, 0.0]))
-    model = make_instrument(synthetic_coronagraph(n=8))
+    model = make_instrument(synthetic_coronagraph(n=8)).select("imager")
     warm = ox.WarmEmission(jnp.array(290.0), jnp.array(0.125))
-    warm_model = make_instrument(model.coronagraph, warm_emission=warm)
+    warm_model = make_instrument(model.coronagraph, warm_emission=warm).select("imager")
+    telescope = ox.Telescope(
+        model.pupil, attenuating_elements=(ox.ConstantThroughput(0.75), element)
+    )
     speckle = make_linear_speckle()
     elapsed = jnp.array(0.5)
     quadrature = ox.Quadrature.build((ox.Band(550.0, 800.0),), order=3)
@@ -449,10 +452,28 @@ def _optics_case(entry):
             (ox.ConstantThroughput(jnp.array(0.75)), wavelength),
             0,
         ),
-        "system_throughput": (ox.Instrument.system_throughput, (model, wavelength), 2),
-        "effective_area": (ox.Instrument.effective_area_m2, (model, wavelength), 3),
+        "telescope_throughput": (
+            ox.Telescope.throughput,
+            (telescope, wavelength),
+            8,
+        ),
+        "telescope_throughput_empty": (
+            ox.Telescope.throughput,
+            (ox.Telescope(model.pupil), wavelength),
+            0,
+        ),
+        "system_throughput": (
+            ox.SelectedInstrument.system_throughput,
+            (model, wavelength),
+            2,
+        ),
+        "effective_area": (
+            ox.SelectedInstrument.effective_area_m2,
+            (model, wavelength),
+            3,
+        ),
         "thermal_none": (
-            ox.Instrument.thermal_photon_rate_per_sr,
+            ox.SelectedInstrument.thermal_photon_rate_per_sr,
             (model, wavelength),
             0,
         ),
@@ -611,6 +632,8 @@ def _optics_case(entry):
                 "optical_apply",
                 "optical_throughput",
                 "constant_throughput",
+                "telescope_throughput",
+                "telescope_throughput_empty",
                 "system_throughput",
                 "effective_area",
                 "thermal_none",
@@ -937,8 +960,8 @@ def test_detector_preserves_integer_counts_until_floating_use(
 @pytest.mark.parametrize("compile_forward", [False, True], ids=["eager", "jit"])
 def test_float64_wavelength_list(compile_forward):
     """A binary64 wavelength list returns two binary64 zeros."""
-    model = make_instrument(synthetic_coronagraph(n=4))
-    fn = ox.Instrument.thermal_photon_rate_per_sr
+    model = make_instrument(synthetic_coronagraph(n=4)).select("imager")
+    fn = ox.SelectedInstrument.thermal_photon_rate_per_sr
     run = eqx.filter_jit(fn) if compile_forward else fn
     assert run(model, [np.float64(500), np.float64(501)]).dtype == np.float64
     np.testing.assert_array_equal(

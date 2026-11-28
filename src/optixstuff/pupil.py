@@ -1,23 +1,32 @@
-"""Primary apertures with explicit diameter conventions and collecting areas."""
+"""Pupil geometry with explicit diameter conventions and collecting areas."""
 
 import abc
+import math
 from math import sqrt
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from equinox import AbstractVar
 
 from optixstuff.grids import Frame
 
 
-class AbstractPrimary(eqx.Module):
+class AbstractPupil(eqx.Module):
     """Aperture geometry in metres, independent of its optical consumers.
+
+    The pupil also names the calibrated prescription it stands for, when it
+    declares one: ``pupil_id`` is a short identifier or ``None`` for unknown.
+    Two known and different identifiers refuse to pair a coronagraph product
+    with this pupil.
 
     Attributes:
         collecting_area_m2: Collecting area in square meters.
+        pupil_id: Identifier of the declared prescription, or None.
     """
 
     collecting_area_m2: AbstractVar[float]
+    pupil_id: str | None = eqx.field(default=None, static=True, kw_only=True)
 
     @abc.abstractmethod
     def diameter(self, convention: str) -> float:
@@ -31,7 +40,7 @@ class AbstractPrimary(eqx.Module):
         """
 
     def frame(self, reference_wavelength_nm, convention="circumscribed") -> Frame:
-        """Build static lambda/D geometry from this primary's declared diameter.
+        """Build static lambda/D geometry from this pupil's declared diameter.
 
         Args:
             reference_wavelength_nm: Reference wavelength in nm of the lambda/D scale.
@@ -43,7 +52,7 @@ class AbstractPrimary(eqx.Module):
         return Frame(reference_wavelength_nm, self.diameter(convention), convention)
 
 
-class SimplePrimary(AbstractPrimary):
+class SimplePupil(AbstractPupil):
     """An aperture with independently supplied diameters and collecting area.
 
     All dimensions are metres. For a filled circular aperture only, the
@@ -61,7 +70,12 @@ class SimplePrimary(AbstractPrimary):
     collecting_area_m2: float
 
     def __init__(
-        self, *, circumscribed_diameter_m, collecting_area_m2, inscribed_diameter_m=None
+        self,
+        *,
+        circumscribed_diameter_m,
+        collecting_area_m2,
+        inscribed_diameter_m=None,
+        pupil_id=None,
     ):
         """Store both diameter conventions and the independently measured area.
 
@@ -70,7 +84,10 @@ class SimplePrimary(AbstractPrimary):
             collecting_area_m2: Collecting area in square meters.
             inscribed_diameter_m: Inscribed diameter in meters; defaults to the
                 circumscribed diameter.
+            pupil_id: Identifier of the declared prescription, a non-empty
+                string, or None for unknown.
         """
+        self.pupil_id = _check_pupil_id(pupil_id)
         self.circumscribed_diameter_m = circumscribed_diameter_m
         self.inscribed_diameter_m = (
             circumscribed_diameter_m
@@ -101,10 +118,17 @@ class SimplePrimary(AbstractPrimary):
             One-line summary string.
         """
         return (
-            f"SimplePrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
+            f"SimplePupil(D_circ={self.circumscribed_diameter_m:.3g} m, "
             f"D_insc={self.inscribed_diameter_m:.3g} m, "
             f"area={self.collecting_area_m2:.3g} m^2)"
         )
+
+
+def _check_pupil_id(pupil_id):
+    """Return ``pupil_id`` when it is None or a non-empty string."""
+    if pupil_id is not None and (not isinstance(pupil_id, str) or not pupil_id):
+        raise ValueError("pupil_id must be None or a non-empty string")
+    return pupil_id
 
 
 def _hex_axial_coords(n_rings):
@@ -117,7 +141,7 @@ def _hex_axial_coords(n_rings):
     ]
 
 
-class SegmentedPrimary(AbstractPrimary):
+class SegmentedPupil(AbstractPupil):
     """Complete rings of flat-top hexagons, including the centre segment.
 
     Write a=segment_point_to_point_m/2, p=sqrt(3)*a+gap and n=n_rings.
@@ -159,6 +183,7 @@ class SegmentedPrimary(AbstractPrimary):
         segment_point_to_point_m,
         segment_gap_m=0.0,
         segment_shape="hexagon",
+        pupil_id=None,
     ):
         """Derive diameters and area from the full hexagonal segment geometry.
 
@@ -167,7 +192,10 @@ class SegmentedPrimary(AbstractPrimary):
             segment_point_to_point_m: Vertex-to-vertex size of one segment in meters.
             segment_gap_m: Gap between neighboring segments in meters.
             segment_shape: Segment shape; only ``"hexagon"`` is supported.
+            pupil_id: Identifier of the declared prescription, a non-empty
+                string, or None for unknown.
         """
+        self.pupil_id = _check_pupil_id(pupil_id)
         if segment_shape != "hexagon":
             raise ValueError("segment_shape must be hexagon")
         if int(n_rings) != n_rings or n_rings < 0:
@@ -237,8 +265,43 @@ class SegmentedPrimary(AbstractPrimary):
             One-line summary string.
         """
         return (
-            f"SegmentedPrimary(D_circ={self.circumscribed_diameter_m:.3g} m, "
+            f"SegmentedPupil(D_circ={self.circumscribed_diameter_m:.3g} m, "
             f"D_insc={self.inscribed_diameter_m:.3g} m, "
             f"{self.n_segments} hexagon segs, {self.n_rings} rings, "
             f"area={self.collecting_area_m2:.3g} m^2)"
+        )
+
+
+_FRAME_DIAMETER_RTOL = 1e-6  # tol: algorithm, 1 ppm relative diameter mismatch
+
+
+def check_pupil_matches_frame(pupil, frame, *, source="coronagraph"):
+    """Raise when a lambda/D frame was measured for another pupil diameter.
+
+    The frame carries the diameter its angular scale was computed for, in the
+    convention it names; a pupil of another diameter would take the angular
+    scale from one telescope and the collecting area from another. Traced
+    diameters are skipped.
+
+    Args:
+        pupil: The pupil whose diameter is checked.
+        frame: The ``Frame`` of the coronagraph tables or curves.
+        source: What carries the frame, for the error message.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If the pupil diameter differs from ``frame.diameter_m``.
+    """
+    supplied = pupil.diameter(frame.diameter_convention)
+    if isinstance(supplied, jax.core.Tracer):
+        return
+    if not math.isclose(
+        float(supplied), frame.diameter_m, rel_tol=_FRAME_DIAMETER_RTOL, abs_tol=0.0
+    ):
+        raise ValueError(
+            f"pupil {frame.diameter_convention} diameter {float(supplied)} m "
+            f"differs from the {source}'s lambda/D frame ({frame.diameter_m} m); "
+            f"build the pupil with the {source}'s diameters"
         )

@@ -13,7 +13,7 @@ import pytest
 from hypothesis import settings
 
 import optixstuff as ox
-from optixstuff import SimplePrimary
+from optixstuff import SimplePupil
 from optixstuff.apertures import DEFAULT_APERTURE_RULE
 from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.performance import PerformanceCurves
@@ -86,7 +86,7 @@ class GaussianTableCoronagraph(ox.AbstractTableCoronagraph):
         self.grid = PixelGrid.focal(
             n,
             0.5,
-            SimplePrimary(
+            SimplePupil(
                 circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
             ).frame(500.0),
         )
@@ -184,29 +184,45 @@ def synthetic_coronagraph(n=24, *, rules=()):
     return GaussianTableCoronagraph(n, rules=rules)
 
 
-# Hardware-container tests need a coronagraph whose frame matches the primary.
+# Hardware-container tests need a coronagraph whose frame matches the pupil.
 def table_coronagraph(diameter_m=6.0):
     return GaussianTableCoronagraph(diameter_m=diameter_m)
 
 
-def make_instrument(coronagraph, **kwargs):
-    """Hardware record around a coronagraph, with a primary of its diameter."""
-    diameter_m = coronagraph.frame.diameter_m
-    return ox.Instrument(
-        primary=SimplePrimary(
-            circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0
-        ),
-        attenuating_elements=(ox.ConstantThroughput(throughput=1.0, name="optics"),),
-        coronagraph=coronagraph,
-        detector=ox.Detector(pixel_scale_arcsec=0.01, shape=(512, 512), qe=0.9),
+def make_telescope(diameter_m=6.0, **kwargs):
+    """Telescope with a simple circular pupil of the given diameter."""
+    return ox.Telescope(
+        SimplePupil(circumscribed_diameter_m=diameter_m, collecting_area_m2=28.0),
         **kwargs,
     )
 
 
+def make_instrument(coronagraph, **kwargs):
+    """Observatory with one configuration named "imager" around a coronagraph.
+
+    The pupil has the coronagraph's diameter. Extra keywords go to the
+    configuration; read it with ``observatory.select("imager")``.
+    """
+    return ox.Observatory(
+        make_telescope(coronagraph.frame.diameter_m),
+        (
+            ox.Instrument(
+                "imager",
+                attenuating_elements=(
+                    ox.ConstantThroughput(throughput=1.0, name="optics"),
+                ),
+                coronagraph=coronagraph,
+                detector=ox.Detector(pixel_scale_arcsec=0.01, shape=(512, 512), qe=0.9),
+                **kwargs,
+            ),
+        ),
+    )
+
+
 @pytest.fixture
-def simple_primary():
-    """A basic 6m primary mirror with 14% obscuration."""
-    return ox.SimplePrimary(
+def simple_pupil():
+    """A basic 6m pupil with 14% obscuration."""
+    return ox.SimplePupil(
         circumscribed_diameter_m=6.0,
         collecting_area_m2=3.141592653589793 * 9 * (1 - 0.14**2),
     )
@@ -250,8 +266,8 @@ def make_linear_speckle(epoch_d=0.0):
     """Small asymmetric complex field in the active precision."""
     import jax.numpy as jnp
 
-    primary = ox.SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
-    grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=primary.frame(500.0))
+    pupil = ox.SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+    grid = PixelGrid.regular((3, 4), 0.37, "lod", frame=pupil.frame(500.0))
     y, x = np.indices(grid.shape)
     return SinusoidalSpeckle(
         ox.FocalResponse(

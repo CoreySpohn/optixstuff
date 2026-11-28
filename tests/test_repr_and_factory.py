@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import equinox as eqx
 import pytest
-from conftest import make_instrument, table_coronagraph
+from conftest import make_instrument, make_telescope, table_coronagraph
 
 import optixstuff as ox
 
@@ -12,9 +12,9 @@ import optixstuff as ox
 class TestReprs:
     """Spot-checks: each leaf repr contains the class name + a key field."""
 
-    def test_simple_primary(self, simple_primary):
-        s = repr(simple_primary)
-        assert "SimplePrimary" in s
+    def test_simple_pupil(self, simple_pupil):
+        s = repr(simple_pupil)
+        assert "SimplePupil" in s
         assert "D_circ=6" in s
         assert "area=" in s
 
@@ -45,9 +45,9 @@ class TestReprs:
         assert "test_filter" in s
         assert "throughput=0.8" in s
 
-    def test_optical_path_is_tree_shaped(self, simple_primary, simple_detector):
+    def test_optical_path_is_tree_shaped(self, simple_pupil, simple_detector):
         path = ox.Instrument(
-            primary=simple_primary,
+            "imager",
             attenuating_elements=(
                 ox.ConstantThroughput(throughput=0.9, name="m1"),
                 ox.ConstantThroughput(throughput=0.8, name="m2"),
@@ -57,20 +57,17 @@ class TestReprs:
         )
         s = repr(path)
         lines = s.split("\n")
-        assert lines[0] == "Instrument"
+        assert lines[0] == "Instrument 'imager'"
         # Each child indented.
-        assert any(line.startswith("  primary:") for line in lines)
         assert any(line.startswith("  attenuating_elements:") for line in lines)
         assert any(line.startswith("    [0]") for line in lines)
         assert any(line.startswith("    [1]") for line in lines)
         assert any(line.startswith("  coronagraph:") for line in lines)
         assert any(line.startswith("  detector:") for line in lines)
 
-    def test_optical_path_empty_attenuating_chain(
-        self, simple_primary, simple_detector
-    ):
+    def test_optical_path_empty_attenuating_chain(self, simple_pupil, simple_detector):
         path = ox.Instrument(
-            primary=simple_primary,
+            "imager",
             attenuating_elements=(),
             coronagraph=table_coronagraph(),
             detector=simple_detector,
@@ -88,23 +85,25 @@ class TestInstrument:
         leaves = eqx.filter(path, eqx.is_array)
         assert leaves is not None
 
-    def test_primary_must_match_the_coronagraph_frame(self):
+    def test_pupil_must_match_the_coronagraph_frame(self):
         coro = table_coronagraph()
         with pytest.raises(ValueError, match="frame"):
-            ox.Instrument(
-                primary=ox.SimplePrimary(
-                    circumscribed_diameter_m=8.0, collecting_area_m2=28.0
+            ox.Observatory(
+                make_telescope(8.0),
+                (
+                    ox.Instrument(
+                        "imager",
+                        coronagraph=coro,
+                        detector=ox.IdealDetector(
+                            pixel_scale_arcsec=0.01, shape=(8, 8)
+                        ),
+                    ),
                 ),
-                attenuating_elements=(),
-                coronagraph=coro,
-                detector=ox.IdealDetector(pixel_scale_arcsec=0.01, shape=(8, 8)),
             )
-        assert make_instrument(coro).coronagraph is coro
+        assert make_instrument(coro).select("imager").coronagraph is coro
 
     def test_public_check_names_the_source(self):
         coro = table_coronagraph()
-        primary = ox.SimplePrimary(
-            circumscribed_diameter_m=8.0, collecting_area_m2=28.0
-        )
+        pupil = ox.SimplePupil(circumscribed_diameter_m=8.0, collecting_area_m2=28.0)
         with pytest.raises(ValueError, match="differs from the curves"):
-            ox.check_primary_matches_frame(primary, coro.frame, source="curves")
+            ox.check_pupil_matches_frame(pupil, coro.frame, source="curves")

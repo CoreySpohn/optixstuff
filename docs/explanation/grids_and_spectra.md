@@ -43,7 +43,7 @@ A piece that holds no cycles keeps exactly `order` nodes; otherwise it gets
 `max(order, 2 * ceil((order + 3 * cycles) / 2))` nodes. The default of zero
 suits a response read at one band-center separation for every node, such as
 a performance curve. An image out to the corner of a 128 by 128 detector at
-0.25 lambda/D reads separations up to 22.6 lambda/D. An `Instrument` declares
+0.25 lambda/D reads separations up to 22.6 lambda/D. A `SelectedInstrument` declares
 the radius its detector spans through `spectral_field_lod(band)`, the detector
 half-diagonal in lambda/D at the band center, and `field_lod=None` takes it.
 For a smooth response, a caller who wants the rings of a source at separation

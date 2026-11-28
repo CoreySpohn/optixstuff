@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from equinox import AbstractVar
 from hwoutils.numerics import COARSEST
+from hwoutils.provenance import build_stamps, require_stamps
 
 from optixstuff.grids import (
     Frame,
@@ -23,6 +24,7 @@ from optixstuff.grids import (
     integrate_footprints,
     resample,
 )
+from optixstuff.pupil import check_pupil_matches_frame
 from optixstuff.spectral import Band, same_wavelength, spectral_breaks
 
 # Under-blur grows with the difference of squared fractional widths. For a 10%
@@ -180,6 +182,45 @@ class AbstractCoronagraph(eqx.Module):
     frame: AbstractVar[Frame]
     bandpass: AbstractVar[Band | None]
     band_averaged: AbstractVar[bool]
+
+    @property
+    def pupil_id(self) -> str | None:
+        """Identifier of the pupil prescription the product was computed for.
+
+        None, the default, is unknown. A product that declares its prescription
+        overrides this property.
+        """
+        return None
+
+    def for_telescope(self, telescope) -> "AbstractCoronagraph":
+        """Bind this product to a telescope, refusing a pupil it cannot serve.
+
+        The lambda/D frame of the product must match the diameter of the
+        telescope pupil, and two known, different pupil identifiers refuse the
+        pairing. The default does host checks only and returns ``self``, so a
+        calibrated product serves its baseline unchanged. A subclass that
+        rebinds its structure to the telescope returns the bound product and
+        returns ``self`` when nothing changed.
+
+        Args:
+            telescope: The ``Telescope`` that supplies the pupil.
+
+        Returns:
+            The product bound to the telescope.
+
+        Raises:
+            ValueError: If the frame diameter differs from the pupil diameter.
+            StampMismatchError: If both pupil identifiers are known and differ.
+        """
+        check_pupil_matches_frame(
+            telescope.pupil, self.frame, source=type(self).__name__
+        )
+        require_stamps(
+            build_stamps(pupil_id=self.pupil_id),
+            build_stamps(pupil_id=telescope.pupil.pupil_id),
+            what="pupil prescription",
+        )
+        return self
 
     def scale_wavelength_nm(self, wavelength_nm, band_center_nm):
         """Select the observing band center for a band average or the node otherwise.
@@ -653,3 +694,20 @@ class MultiBandCoronagraph(AbstractCoronagraph):
     def frame(self):
         """Native frame for the reference performance record."""
         return self.coronagraph_at(None).frame
+
+    def for_telescope(self, telescope) -> "MultiBandCoronagraph":
+        """Bind every child to a telescope, keeping the dispatch layout.
+
+        Args:
+            telescope: The ``Telescope`` that supplies the pupil.
+
+        Returns:
+            ``self`` when every child returned itself, else a new product holding
+            the bound children and the same reference wavelength.
+        """
+        bound = tuple(model.for_telescope(telescope) for model in self.coronagraphs)
+        if all(new is old for new, old in zip(bound, self.coronagraphs, strict=True)):
+            return self
+        return MultiBandCoronagraph(
+            bound, reference_wavelength_nm=self.reference_wavelength_nm
+        )

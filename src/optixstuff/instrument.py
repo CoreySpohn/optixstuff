@@ -1,8 +1,7 @@
-"""Instrument container -- the universal hardware configuration."""
+"""Instrument -- one named hardware configuration behind a shared telescope."""
 
 from __future__ import annotations
 
-import functools
 import math
 
 import equinox as eqx
@@ -19,44 +18,11 @@ from optixstuff.disperser import AbstractDisperser
 from optixstuff.grids import Frame
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
+    check_element_names,
+    check_name,
 )
-from optixstuff.primary import AbstractPrimary
 from optixstuff.speckle import AbstractSpeckleField
 from optixstuff.spectral import spectral_breaks
-
-_FRAME_DIAMETER_RTOL = 1e-6  # tol: algorithm, 1 ppm relative diameter mismatch
-
-
-def check_primary_matches_frame(primary, frame, *, source="coronagraph"):
-    """Raise when a lambda/D frame was measured for another telescope diameter.
-
-    The frame carries the diameter its angular scale was computed for, in the
-    convention it names; a primary of another diameter would take the angular
-    scale from one telescope and the collecting area from another. Traced
-    diameters are skipped.
-
-    Args:
-        primary: The primary whose diameter is checked.
-        frame: The ``Frame`` of the coronagraph tables or curves.
-        source: What carries the frame, for the error message.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If the primary diameter differs from ``frame.diameter_m``.
-    """
-    supplied = primary.diameter(frame.diameter_convention)
-    if isinstance(supplied, jax.core.Tracer):
-        return
-    if not math.isclose(
-        float(supplied), frame.diameter_m, rel_tol=_FRAME_DIAMETER_RTOL, abs_tol=0.0
-    ):
-        raise ValueError(
-            f"primary {frame.diameter_convention} diameter {float(supplied)} m "
-            f"differs from the {source}'s lambda/D frame ({frame.diameter_m} m); "
-            f"build the primary with the {source}'s diameters"
-        )
 
 
 class WarmEmission(eqx.Module):
@@ -116,25 +82,49 @@ class WarmEmission(eqx.Module):
         )
 
 
-class Instrument(eqx.Module):
-    """Universal hardware container for a coronagraphic telescope.
+def train_throughput(elements, wavelength_nm):
+    """Product of the throughputs of one train of elements.
 
-    Bundles a primary mirror, ordered chain of attenuating elements,
-    a coronagraph, and a detector into a single configuration object.
-    This is the interface passed to simulators (coronagraphoto) and IFS
-    instruments (coronachrome).
+    Args:
+        elements: Tuple of optical elements.
+        wavelength_nm: Wavelength in nanometers, scalar or an array.
+
+    Returns:
+        The product, shaped like ``wavelength_nm``. The empty train gives ones
+        of the wavelength's dtype, weak when the wavelength is a Python scalar.
+    """
+    if not elements:
+        return jnp.ones_like(jnp.asarray(wavelength_nm))
+    result = 1.0
+    for element in elements:
+        result = result * element.get_throughput(wavelength_nm)
+    return result
+
+
+class Instrument(eqx.Module):
+    """One named hardware configuration behind a shared telescope.
+
+    A configuration holds what one observing mode adds to the telescope: its
+    own train of attenuating elements (filters, relay optics), a coronagraph,
+    a detector and the optional disperser, speckle field and warm emission. It
+    does not know the pupil; the :class:`~optixstuff.Observatory` pairs it with
+    the telescope, and the reads that need the pupil take ``telescope=``. Read a
+    configuration through ``observatory.select(name)``, which returns the
+    :class:`~optixstuff.SelectedInstrument` view with every read in one place.
 
     Attributes:
-        primary: Primary mirror description.
-        attenuating_elements: Ordered tuple of throughput elements
-            between the primary and coronagraph (mirrors, filters, etc.).
-        coronagraph: Coronagraph slot (the image capability).
+        name: Name of the configuration, unique in its observatory: a letter or
+            underscore followed by letters, digits, underscores and hyphens.
+        attenuating_elements: Ordered tuple of throughput elements of this
+            configuration (filters, relay optics), after the telescope's own.
+        coronagraph: Coronagraph slot (the image capability), or None for a
+            curve-only configuration.
         detector: Focal-plane detector model.
         disperser: Optional IFS disperser descriptor; None for imaging mode.
         speckle: Optional time-varying speckle field (the stochastic
             wavefront-error residual on top of the deterministic
             coronagraph leakage floor); None for a perfect-wavefront path.
-        flux_scale: Dimensionless factor on every photon rate the instrument
+        flux_scale: Dimensionless factor on every photon rate the configuration
             collects from the sky, default one: the absolute flux calibration.
             It acts in :meth:`effective_area_m2`, the one place the collecting
             area and throughput are combined. Thermal emission does not carry
@@ -142,46 +132,35 @@ class Instrument(eqx.Module):
             rate record and need not rebuild one.
         warm_emission: Optional :class:`WarmEmission` of the warm telescope,
             owned here because it describes the assembled warm optical train
-            and not the primary or any one element (swap the primary and the
-            same train still radiates). None, the default, is no thermal
-            emission.
+            and not the pupil or any one element. None, the default, is no
+            thermal emission.
     """
 
-    primary: AbstractPrimary
-    attenuating_elements: tuple[AbstractOpticalElement, ...]
-    coronagraph: AbstractCoronagraph | None
-    detector: AbstractDetector
-    disperser: AbstractDisperser | None = None
-    speckle: AbstractSpeckleField | None = None
-    flux_scale: Array = eqx.field(default=1.0, converter=jnp.asarray)
-    warm_emission: WarmEmission | None = None
+    name: str = eqx.field(static=True)
+    attenuating_elements: tuple[AbstractOpticalElement, ...] = eqx.field(
+        default=(), converter=tuple, kw_only=True
+    )
+    coronagraph: AbstractCoronagraph | None = eqx.field(default=None, kw_only=True)
+    detector: AbstractDetector = eqx.field(kw_only=True)
+    disperser: AbstractDisperser | None = eqx.field(default=None, kw_only=True)
+    speckle: AbstractSpeckleField | None = eqx.field(default=None, kw_only=True)
+    flux_scale: Array = eqx.field(default=1.0, converter=jnp.asarray, kw_only=True)
+    warm_emission: WarmEmission | None = eqx.field(default=None, kw_only=True)
 
     def __check_init__(self):
-        """Reject a primary whose diameter disagrees with the coronagraph's frame.
+        """Validate the name, the element names and the flux scale.
 
-        Coronagraph tables are computed for one telescope: their lambda/D frame
-        carries its diameter. Pairing them with a primary of another diameter
-        would take the angular scale from one telescope and the collecting area
-        from another. Rescaling a coronagraph to a new telescope is a modelling
-        choice the caller makes explicitly, not a silent default.
-
-        The flux scale must be finite and positive when concrete.
-
-        Returns:
-            None.
+        The frame check against the pupil belongs to the observatory, which
+        knows the pupil. The flux scale must be finite and positive when
+        concrete.
         """
+        check_name(self.name, "instrument configuration")
+        check_element_names(self.attenuating_elements)
         scale = self.flux_scale
         if not isinstance(scale, jax.core.Tracer) and not bool(
             jnp.all(jnp.isfinite(scale) & (scale > 0))
         ):
             raise ValueError("flux_scale must be finite and positive")
-        if self.coronagraph is None:
-            return
-        coronagraphs = getattr(self.coronagraph, "coronagraphs", None) or (
-            self.coronagraph,
-        )
-        for coronagraph in coronagraphs:
-            check_primary_matches_frame(self.primary, coronagraph.frame)
 
     def check_bands(self, bands, *, allow_wide_bands=False) -> None:
         """Check the observing bands against the installed coronagraph product.
@@ -193,21 +172,28 @@ class Instrument(eqx.Module):
         if self.coronagraph is not None:
             self.coronagraph.check_bands(bands, allow_wide_bands=allow_wide_bands)
 
-    def spectral_breaks_nm(self) -> np.ndarray:
-        """Combine the breaks of the optical train and detector yield.
+    def spectral_breaks_nm(self, *, telescope, detector) -> np.ndarray:
+        """Combine the breaks of this configuration's train and detector yield.
+
+        The telescope's own breaks are added by the selected view, not here.
+
+        Args:
+            telescope: The ``Telescope`` of the observatory; unused by this
+                default, accepted so every configuration hook has one signature.
+            detector: The detector to read, as resolved by the view.
 
         Returns:
-            Sorted union of the break wavelengths in nm of the optical train, detector,
-            coronagraph, disperser and speckle field.
+            Sorted union of the break wavelengths in nm of the optical train,
+            detector, coronagraph, disperser and speckle field.
         """
         optional = (self.coronagraph, self.disperser, self.speckle)
         return spectral_breaks(
             *self.attenuating_elements,
-            self.detector,
+            detector,
             *(model for model in optional if model is not None),
         )
 
-    def spectral_field_lod(self, band) -> float:
+    def spectral_field_lod(self, band, *, telescope, detector) -> float:
         """Field radius the detector spans, in lambda/D at the center of ``band``.
 
         The half-diagonal of the detector: the largest separation from the
@@ -215,8 +201,8 @@ class Instrument(eqx.Module):
         pattern at that separation slides across a band by more chromatic cycles
         than one nearer the center, so ``Quadrature.build`` gives the band more
         nodes the larger this is. The detector is fixed in angle, so the value
-        is converted at the band center; it is larger for a bluer band. An
-        instrument that reads a smaller field overrides this method, or the
+        is converted at the band center; it is larger for a bluer band. A
+        configuration that reads a smaller field overrides this method, or the
         caller passes ``field_lod`` to ``Quadrature.build``. The separation is
         measured from the axis. For a smooth response, a caller who wants the
         rings of a source at separation ``q`` resolved everywhere passes the
@@ -225,23 +211,26 @@ class Instrument(eqx.Module):
 
         Args:
             band: The wavelength band whose center sets the lambda/D scale.
+            telescope: The ``Telescope`` whose pupil sets the lambda/D scale
+                when there is no coronagraph.
+            detector: The detector whose half-diagonal is read.
 
         Returns:
             The detector half-diagonal in lambda/D at the band center.
         """
-        ny, nx = self.detector.shape
-        half_diagonal_arcsec = (
-            0.5 * math.hypot(ny, nx) * self.detector.pixel_scale_arcsec
-        )
+        ny, nx = detector.shape
+        half_diagonal_arcsec = 0.5 * math.hypot(ny, nx) * detector.pixel_scale_arcsec
         if self.coronagraph is None:
-            diameter_m = float(self.primary.diameter("circumscribed"))
+            diameter_m = float(telescope.pupil.diameter("circumscribed"))
             frame = Frame(band.center_nm, diameter_m, "circumscribed")
         else:
             frame = self.coronagraph.frame
         return half_diagonal_arcsec / float(frame.lod_to_arcsec(band.center_nm))
 
-    def system_throughput(self, wavelength_nm: float) -> float:
-        """Total throughput of all attenuating elements.
+    def throughput(self, wavelength_nm: float) -> float:
+        """Throughput of this configuration's own attenuating elements.
+
+        The telescope's train is not included; the selected view multiplies both.
 
         Args:
             wavelength_nm: Wavelength in nanometers.
@@ -249,14 +238,10 @@ class Instrument(eqx.Module):
         Returns:
             Combined fractional throughput in [0, 1].
         """
-        return functools.reduce(
-            lambda acc, el: acc * el.get_throughput(wavelength_nm),
-            self.attenuating_elements,
-            1.0,
-        )
+        return train_throughput(self.attenuating_elements, wavelength_nm)
 
-    def effective_area_m2(self, wavelength_nm: float) -> float:
-        """Collecting area times system throughput times the flux scale.
+    def effective_area_m2(self, wavelength_nm: float, *, telescope) -> float:
+        """Collecting area times both throughput trains times the flux scale.
 
         The photon rate collected from a source of unit flux density is this
         area times that flux density. Image and aperture rates both take it
@@ -264,35 +249,38 @@ class Instrument(eqx.Module):
 
         Args:
             wavelength_nm: Wavelength in nanometers, scalar or an array.
+            telescope: The ``Telescope`` with the pupil and its own train.
 
         Returns:
             Effective area in square meters, shaped like ``wavelength_nm``.
         """
         return (
-            self.primary.collecting_area_m2
-            * self.system_throughput(wavelength_nm)
+            telescope.pupil.collecting_area_m2
+            * telescope.throughput(wavelength_nm)
+            * self.throughput(wavelength_nm)
             * self.flux_scale
         )
 
-    def thermal_photon_rate_per_sr(self, wavelength_nm: float) -> float:
+    def thermal_photon_rate_per_sr(self, wavelength_nm: float, *, telescope) -> float:
         """Photon rate of the warm telescope's own emission per steradian.
 
         The radiance of :class:`WarmEmission` times the geometric collecting
-        area of the primary, in photons/s/nm/sr. It does not carry the system
-        throughput, because the effective emissivity already includes the
+        area of the pupil, in photons/s/nm/sr. It does not carry either
+        throughput train, because the effective emissivity already includes the
         cold transmission, nor the flux scale, which calibrates sky photons.
         Multiply by the aperture solid angle for the rate in an aperture. Zero
         when ``warm_emission`` is None.
 
         Args:
             wavelength_nm: Wavelength in nanometers, scalar or an array.
+            telescope: The ``Telescope`` whose pupil sets the area.
 
         Returns:
             Photons/s/nm/sr, shaped like ``wavelength_nm``.
         """
         if isinstance(wavelength_nm, (tuple, list)):
             wavelength_nm = jnp.asarray(wavelength_nm)
-        area = self.primary.collecting_area_m2
+        area = telescope.pupil.collecting_area_m2
         if self.warm_emission is None:
             dtype = jnp.result_type(wavelength_nm, area, self.flux_scale, 1.0)
             return jnp.zeros(jnp.shape(wavelength_nm), dtype=dtype)
@@ -312,10 +300,7 @@ class Instrument(eqx.Module):
         Returns:
             Multi-line summary string.
         """
-        lines = [
-            "Instrument",
-            indent("primary: " + repr(self.primary)),
-        ]
+        lines = [f"Instrument {self.name!r}"]
         if self.attenuating_elements:
             lines.append("  attenuating_elements:")
             for i, el in enumerate(self.attenuating_elements):

@@ -84,7 +84,7 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
     limit; the band is admitted.
     """
     model = GaussianTableCoronagraph(bandpass=Band(475, 525), band_averaged=True)
-    instrument = make_instrument(model)
+    instrument = make_instrument(model).select("imager")
     wide = Band(467.5, 532.5)
     with pytest.raises(ValueError) as exc:
         Quadrature.build([wide], instrument)
@@ -103,7 +103,9 @@ def test_wide_observing_bands_require_tiles_or_opt_in():
     edge = GaussianTableCoronagraph(bandpass=Band(382, 418), band_averaged=True)
     limit = Band(377.5, 422.5)
     assert limit.width_nm / limit.center_nm > 1.25 * (36 / 400)
-    assert Quadrature.build([limit], make_instrument(edge)).bands == (limit,)
+    assert Quadrature.build([limit], make_instrument(edge).select("imager")).bands == (
+        limit,
+    )
 
 
 def test_unresolved_product_has_no_positive_width_tiles(monkeypatch):
@@ -335,3 +337,38 @@ def test_jit_and_gradient(table):
     derivative = jax.grad(f)(s)
     assert np.isfinite(derivative)
     np.testing.assert_allclose(derivative, (f(s + h) - f(s - h)) / (2 * h), rtol=0.002)
+
+
+def test_for_telescope_returns_the_same_product_or_refuses():
+    """Fails if the default binding copies a product or lets a mismatch through.
+
+    Contract, exact. A product of the pupil's diameter and an unknown identifier
+    comes back as the same object; another diameter raises on the frame, and
+    two known, different identifiers raise a stamp mismatch naming both.
+    """
+    from hwoutils.provenance import StampMismatchError
+
+    model = GaussianTableCoronagraph()
+    telescope = ox.Telescope(
+        ox.SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0)
+    )
+    assert model.pupil_id is None
+    assert model.for_telescope(telescope) is model
+    wide = ox.Telescope(
+        ox.SimplePupil(circumscribed_diameter_m=6.5, collecting_area_m2=28.0)
+    )
+    with pytest.raises(ValueError, match="GaussianTableCoronagraph"):
+        model.for_telescope(wide)
+
+    class Declared(GaussianTableCoronagraph):
+        @property
+        def pupil_id(self):
+            return "old"
+
+    other = ox.Telescope(
+        ox.SimplePupil(
+            circumscribed_diameter_m=6.0, collecting_area_m2=28.0, pupil_id="new"
+        )
+    )
+    with pytest.raises(StampMismatchError, match=r"old.*new"):
+        Declared().for_telescope(other)

@@ -31,11 +31,8 @@ from optixstuff.detector import (
 from optixstuff.disperser import AbstractDisperser, LensletDisperser
 from optixstuff.exposure import Exposure, FramePlan, Pointing, frames_for_time
 from optixstuff.grids import Image, Measure, PixelGrid
-from optixstuff.instrument import (
-    Instrument,
-    WarmEmission,
-    check_primary_matches_frame,
-)
+from optixstuff.instrument import Instrument, WarmEmission
+from optixstuff.observatory import Observatory, SelectedInstrument, Telescope
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -47,12 +44,17 @@ from optixstuff.performance import (
     SampledProfile,
     performance_curves,
 )
-from optixstuff.primary import AbstractPrimary, SegmentedPrimary, SimplePrimary
 from optixstuff.psflet_pack import (
     TEMPLATE_ORIGIN,
     PsfletPack,
     load_psflet_pack,
     save_psflet_pack,
+)
+from optixstuff.pupil import (
+    AbstractPupil,
+    SegmentedPupil,
+    SimplePupil,
+    check_pupil_matches_frame,
 )
 from optixstuff.rates import Rates
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
@@ -66,7 +68,7 @@ __all__ = [  # noqa: RUF022
     "AbstractDisperser",
     "AbstractImagingCoronagraph",
     "AbstractOpticalElement",
-    "AbstractPrimary",
+    "AbstractPupil",
     "AbstractSceneCoronagraph",
     "AbstractSpeckleField",
     "AbstractTableCoronagraph",
@@ -90,6 +92,7 @@ __all__ = [  # noqa: RUF022
     "LinearSpeckleField",
     "Measure",
     "MultiBandCoronagraph",
+    "Observatory",
     "PerformanceCurves",
     "PixelGrid",
     "Pointing",
@@ -103,13 +106,15 @@ __all__ = [  # noqa: RUF022
     "Resolution",
     "SampledProfile",
     "SceneRender",
-    "SegmentedPrimary",
-    "SimplePrimary",
+    "SegmentedPupil",
+    "SelectedInstrument",
+    "SimplePupil",
     "SourcePSFs",
+    "Telescope",
     "TransmissiveElement",
     "WarmEmission",
     "__version__",
-    "check_primary_matches_frame",
+    "check_pupil_matches_frame",
     "exposure_time",
     "frames_for_time",
     "load_psflet_pack",

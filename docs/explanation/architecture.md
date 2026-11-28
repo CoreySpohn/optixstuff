@@ -6,12 +6,29 @@ provides and the three-axis design (wavelength / position / time).
 
 ## The role of optixstuff
 
-`optixstuff` provides **composable hardware objects** (primary,
-throughput elements, coronagraph backend, detector) and a container
-(`Instrument`) that bundles them. The hardware objects hold attributes
+`optixstuff` provides **composable hardware objects** (pupil,
+throughput elements, coronagraph backend, detector) and three containers
+that bundle them: a `Telescope` (the pupil and the throughput every mode
+shares), named `Instrument` configurations (what one observing mode adds
+to the telescope) and an `Observatory` that holds one telescope and its
+configurations. The hardware objects hold attributes
 like quantum efficiency curves, throughput, dark-current
 rates, and pixel scales; downstream tools query those attributes to
 do their own work.
+
+One screen maps who owns what and which call takes which:
+
+| Object | Owns | Built by | Taken by |
+|---|---|---|---|
+| `AbstractPupil` (`SimplePupil`, `SegmentedPupil`) | collecting area, diameters, optional `pupil_id` | you | `Telescope` |
+| `Telescope` | one pupil, the shared mirror-coating train | you | `Observatory` |
+| `Instrument` | one named configuration: its train, coronagraph, detector, disperser, speckle field, flux scale, warm emission | you | `Observatory` |
+| `Observatory` | one telescope and the tuple of configurations | you | `Observatory.select(name)` |
+| `SelectedInstrument` | two references, a telescope and one configuration; no leaf of its own | `observatory.select(name)` | rate, image and exposure-time calls |
+
+An `Exposure` holds only the name of the configuration it observes with; the
+caller selects it. A `SelectedInstrument` is built on use and is never stored
+in a model, an `Exposure` or a record.
 
 It (generally) does **not** simulate. There is no "simulate this observation"
 entry point in optixstuff. Instead:
@@ -35,15 +52,17 @@ flowchart TB
     AUE[AbstractUniformElement]
     CT[ConstantThroughput]
     ST[TransmissiveElement]
-    AP[AbstractPrimary]
-    SP[SimplePrimary]
+    AP[AbstractPupil]
+    SP[SimplePupil]
     AC[AbstractCoronagraph]
     IMG[AbstractImagingCoronagraph]
     SCENE[AbstractSceneCoronagraph]
     AD[AbstractDetector]
     ID[IdealDetector]
     D[Detector]
-    OP["<b>Instrument</b><br/>(container)"]
+    TEL["<b>Telescope</b>"]
+    OP["<b>Instrument</b><br/>(named configuration)"]
+    OBS["<b>Observatory</b>"]
 
     AOE --> AUE
     AUE --> CT
@@ -54,7 +73,10 @@ flowchart TB
     AD --> ID
     AD --> D
 
-    SP -.-> OP
+    SP -.-> TEL
+    CT -.-> TEL
+    TEL -.-> OBS
+    OP -.-> OBS
     CT -.-> OP
     ST -.-> OP
     AC -.-> OP
@@ -63,15 +85,16 @@ flowchart TB
 ```
 
 Five families of abstract base + concrete implementations, composed
-into a single `Instrument`:
+into a `Telescope` and named `Instrument` configurations, held by one
+`Observatory`:
 
 | Family | Abstract base | Concrete examples |
 |---|---|---|
-| Primary aperture | `AbstractPrimary` | `SimplePrimary` |
+| Pupil geometry | `AbstractPupil` | `SimplePupil`, `SegmentedPupil` |
 | Throughput-affecting element | `AbstractOpticalElement` | `ConstantThroughput`, `TransmissiveElement` |
 | Coronagraph backend | `AbstractCoronagraph` | `AbstractTableCoronagraph` providers, `MultiBandCoronagraph` |
 | Detector | `AbstractDetector` | `IdealDetector`, `Detector` |
-| Composition container | (none) | `Instrument` |
+| Composition containers | (none) | `Telescope`, `Instrument`, `Observatory` |
 
 ## What throughput elements stand in for
 
@@ -91,31 +114,38 @@ mirror, secondary, deformable mirror, fold mirrors, polarisers,
 bandpass filters, dichroics, lenses), each with its own throughput
 curve. In optixstuff they all enter the radiometric model the same
 way: "a wavelength-dependent fraction that scales the incoming flux."
-The `Instrument` holds a `tuple[AbstractOpticalElement, ...]` whose
-effective throughput is the product of every element's
-`get_throughput(wavelength_nm)`:
+The `Telescope` holds the `tuple[AbstractOpticalElement, ...]` every mode
+shares (mirror coatings) and each `Instrument` holds the one of its own
+(filters, relay optics). A train's throughput is the product of its elements'
+`get_throughput(wavelength_nm)`. An element may carry an optional `name`,
+which addresses it in a model path; an unnamed element is addressed by
+position, and explicit names must be unique within a train:
 
 This example requires measured throughput curves and a configured coronagraph and detector.
 
 ```python notest
 from optixstuff.spectral import Transmission
 
-path = Instrument(
-    primary=SimplePrimary(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
+telescope = Telescope(
+    SimplePupil(circumscribed_diameter_m=6.0, collecting_area_m2=28.0),
     attenuating_elements=(
         ConstantThroughput(throughput=0.95),  # primary coating
         ConstantThroughput(throughput=0.95),  # secondary mirror
+    ),
+)
+imager = Instrument(
+    "imager",
+    attenuating_elements=(
         ConstantThroughput(throughput=0.97),  # fold mirror
-        TransmissiveElement(
-            Transmission(wavelengths_nm, mirror_R)
-        ),  # measured mirror reflectivity
         TransmissiveElement(Transmission(wavelengths_nm, filter_T)),  # bandpass filter
     ),
     coronagraph=...,
     detector=...,
 )
+observatory = Observatory(telescope, (imager,))
+selected = observatory.select("imager")
 
-print(path.system_throughput(550.0))  # product across all elements
+print(selected.system_throughput(550.0))  # telescope train times the mode's train
 ```
 
 The abstraction lets you swap real-instrument throughput curves in
@@ -133,55 +163,86 @@ subclasses share the same `electrons`, `mean_and_variance`, and `draw`
 contract. `IdealDetector` supplies QE one; `Detector` supplies constant
 or measured spectral QE. Frame duration belongs to `FramePlan`.
 
-## Instrument as a composable container
+## Observatory, configurations and the selected view
 
-`Instrument` is an `eqx.Module` (PyTree-registered) that holds the
-hardware configuration:
+`Observatory` is an `eqx.Module` (PyTree-registered) that holds one
+`Telescope` and a tuple of named `Instrument` configurations. A configuration
+holds what one observing mode adds to the telescope and does not know the pupil.
+This sketch lists the fields in a readable order and is not the class definition.
 
-```python
+```python notest
 import equinox as eqx
 from jaxtyping import Array
 from optixstuff import (
-    AbstractDisperser,
-    AbstractSpeckleField,
-    AbstractPrimary,
-    AbstractOpticalElement,
     AbstractCoronagraph,
     AbstractDetector,
+    AbstractDisperser,
+    AbstractOpticalElement,
+    AbstractSpeckleField,
 )
 
 
 class Instrument(eqx.Module):
-    primary: AbstractPrimary
-    attenuating_elements: tuple[AbstractOpticalElement, ...]
-    coronagraph: AbstractCoronagraph | None
+    name: str  # unique in the observatory, a valid model-path key
+    attenuating_elements: tuple[AbstractOpticalElement, ...] = ()
+    coronagraph: AbstractCoronagraph | None = None
     detector: AbstractDetector
     disperser: AbstractDisperser | None = None
     speckle: AbstractSpeckleField | None = None
     flux_scale: Array = 1.0  # dimensionless flux calibration
+    # every field after name is keyword-only
 ```
 
 The disperser and speckle slots are optional: a disperser marks an IFS
 configuration and a speckle field adds time-varying leakage on top of the
-coronagraph's deterministic floor. The container exposes four quantities used
-by the readers.
+coronagraph's deterministic floor. A configuration with no coronagraph is a
+curve-only configuration.
 
-- `system_throughput(wavelength_nm)`: product of all element
-  throughputs at a wavelength
+Callers do not read a configuration directly. `observatory.select(name)`
+returns a `SelectedInstrument`, a view that holds exactly two references (the
+telescope and the configuration) and no leaf of its own. It is derived on
+every call, so a gradient with respect to the observatory flows through it to
+the owner, and the pupil area, for one, exists once however many configurations
+there are. The view answers the quantities the readers use.
+
+- `system_throughput(wavelength_nm)`: the telescope's train times the
+  configuration's train at a wavelength
 - `effective_area_m2(wavelength_nm)`: collecting area times that
-  throughput times `flux_scale`, the one place the three are combined; a
+  throughput times `flux_scale`, the one place they are combined; a
   simulator multiplies a source's photon flux density by it. `flux_scale` is
   the dimensionless absolute flux calibration, one by default, linear in every
   rate
 - `detector.quantum_efficiency(wavelength_nm)`: detector QE at that wavelength
-- `spectral_breaks_nm()`: union of the element, coronagraph, detector, disperser
-  and speckle breaks for host quadrature construction
+- `spectral_breaks_nm()`: union of the telescope, element, coronagraph,
+  detector, disperser and speckle breaks for host quadrature construction
+- `coronagraph`: the configuration's coronagraph bound to the telescope with
+  `for_telescope`, which refuses a product whose lambda/D frame has another
+  diameter than the pupil or whose declared `pupil_id` differs from the
+  pupil's; two unknown identifiers are not a match (`pupil_match` reports
+  `"unverified"`)
+- `owner_path(attribute)`: where the accessor reads, relative to the
+  observatory, such as `instruments[imager].detector`, for fit footprints
 
-That's it. The container does not own simulation logic; it just holds
-hardware. Simulators (coronagraphoto, jaxEDITH) consume the container,
-query its throughput and QE, and produce rates. `snr` and `exposure_time`
-reduce those rates to science-level outputs. [How an exposure time is
-computed](exposure_time.md) follows both producers to that reduction.
+The detector, and every other component of a configuration, is read through the
+view in library code, so a later change to where a component lives touches no
+consumer.
+
+Edit an observatory with `eqx.tree_at`, then select. A raw assignment is not
+revalidated until the next `select`, which repeats the pupil checks.
+This example needs a built observatory.
+
+```python notest
+bigger = eqx.tree_at(lambda o: o.telescope.pupil.collecting_area_m2, observatory, 30.0)
+selected = bigger.select("imager")  # checked here, before any trace
+```
+
+Two configurations built from one detector (or coronagraph) object hold
+independent copies of its leaves: changing the detector of one leaves the other
+unchanged. The container does not own simulation logic; it just holds hardware.
+Simulators (coronagraphoto, jaxEDITH) consume the view, query its throughput and
+QE, and produce rates. `snr` and `exposure_time` reduce those rates to
+science-level outputs. [How an exposure time is computed](exposure_time.md)
+follows both producers to that reduction.
 
 ## PSFlet template packs
 
@@ -252,8 +313,8 @@ time with `frames_for_time`.
 
 ## Aperture frames, images, and performance records
 
-A primary stores collecting area independently of its two diameter conventions.
-`primary.frame(reference_wavelength_nm, convention="circumscribed")` creates a
+A pupil stores collecting area independently of its two diameter conventions.
+`pupil.frame(reference_wavelength_nm, convention="circumscribed")` creates a
 shared `Frame` without asking the consumer to repeat a diameter conversion.
 For segmented apertures the inscribed circle follows the scalloped outer outline,
 bridging perimeter gaps; the internal segment gaps reduce collecting area only

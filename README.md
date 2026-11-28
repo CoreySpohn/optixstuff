@@ -24,7 +24,7 @@ truth for the hardware configuration that downstream tools consume.
 (lenslet-IFS dispersion + spectral extraction), and
 [jaxEDITH](https://github.com/CoreySpohn/jaxedith)
 (analytic aperture rates for exposure-time calculations) import the same
-`Instrument` class and the same detector / throughput / primary types from
+`Observatory` class and the same detector / throughput / pupil types from
 optixstuff; jaxEDITH reads coronagraph performance as `PerformanceCurves`
 data, not from the coronagraph slot. Change a value here and every downstream
 tool picks it up on the next import. The S/N and exposure-time reduction of a
@@ -42,7 +42,7 @@ follows both.
 - **Not a scene model.** Stars, planets, disks, and zodi live in
   [skyscapes](https://github.com/CoreySpohn/skyscapes).
 - **Not a simulator.** Downstream tools (coronagraphoto, coronachrome, jaxEDITH)
-  consume an `Instrument` to produce images, dispersed IFS frames, or count rates.
+  consume a `SelectedInstrument` to produce images, dispersed IFS frames, or count rates.
   The calculator here only reduces rates they produce to S/N or time.
 
 ## Architecture
@@ -50,30 +50,33 @@ follows both.
 Built on [JAX](https://github.com/google/jax) and
 [Equinox](https://github.com/patrick-kidger/equinox), `optixstuff` provides:
 
-- **Abstract interfaces** - `AbstractPrimary`, `AbstractOpticalElement`,
+- **Abstract interfaces** - `AbstractPupil`, `AbstractOpticalElement`,
   `AbstractCoronagraph`, `AbstractDetector`, `AbstractDisperser`
-- **Concrete implementations** - `SimplePrimary`, `SegmentedPrimary` (carries
+- **Concrete implementations** - `SimplePupil`, `SegmentedPupil` (carries
   hex segment geometry for a diffraction backend), `ConstantThroughput`,
   `IdealDetector`, `Detector` (with optional wavelength-dependent QE),
   `LensletDisperser`
-- **Container** - `Instrument`, a composable hardware configuration passed to all
-  simulators
+- **Containers** - `Telescope`, named `Instrument` configurations and an
+  `Observatory`; `observatory.select(name)` returns the `SelectedInstrument`
+  view passed to all simulators
 
 Optical elements and coronagraphs accept fidelity axes - **wavelength**, **position**, and
 **time** - with defaults so that simple implementations can ignore unused axes while
 future high-fidelity models (wavelength-dependent coatings, position-dependent vignetting,
 time-dependent detector degradation) can use them without breaking the interface.
 
-### Primary geometry and coronagraph grids
+### Pupil geometry and coronagraph grids
 
-Primaries expose `diameter("circumscribed")`, `diameter("inscribed")`, and
-`collecting_area_m2`. Build a lambda/D frame with `primary.frame(500.0)`.
-`SimplePrimary` takes both diameters and collecting area as keyword arguments;
-`SegmentedPrimary` derives them from segment size, gap, and ring count.
-`Instrument` raises `ValueError` when its primary's diameter differs from the
-diameter of the coronagraph's lambda/D frame, so the tables and the collecting
-area describe one telescope. A yippy `Coronagraph` carries the matching
-`primary`.
+Pupils expose `diameter("circumscribed")`, `diameter("inscribed")`, and
+`collecting_area_m2`. Build a lambda/D frame with `pupil.frame(500.0)`.
+`SimplePupil` takes both diameters and collecting area as keyword arguments;
+`SegmentedPupil` derives them from segment size, gap, and ring count. Either
+may name the calibrated prescription it stands for with `pupil_id`.
+`Observatory` raises `ValueError` when its pupil's diameter differs from the
+diameter of a coronagraph's lambda/D frame, so the tables and the collecting
+area describe one telescope, and a known `pupil_id` that differs from the
+coronagraph's raises as well. A yippy `Coronagraph` carries the matching
+pupil.
 
 Coronagraph images use `optixstuff.grids.Image` and an explicit target `PixelGrid`.
 Coordinates are `(x, y)`, arrays are `(..., y, x)`, and even-grid centres fall
@@ -197,7 +200,7 @@ for noise parameters, gain statistics, and readout overlap.
 flowchart TB
     physopt["<b>Physical optics</b><br/>dLux / HCIPy / PROPER<br/>E-fields -> PSFs"]
     provider["<b>Image provider</b><br/>PSF interpolation"]
-    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Instrument<br/>Throughput chains / QE / Noise rates"]
+    optix["<b>optixstuff</b><br/>Telescope / Coronagraph / Detector / Observatory<br/>Throughput chains / QE / Noise rates"]
     jaxedith["<b>jaxEDITH</b><br/>Analytic aperture rates"]
     corono["<b>coronagraphoto</b><br/>2D image simulation<br/>Multi-epoch scenes"]
     coronachrome["<b>coronachrome</b><br/>Lenslet-IFS dispersion<br/>Spectral extraction"]

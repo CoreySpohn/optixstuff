@@ -548,11 +548,14 @@ def test_construction_and_optical_path(linear_speckle):
     with pytest.raises(ValueError, match="epoch_d"):
         replace(field, epoch_d=np.inf)
     assert isinstance(field, SinusoidalSpeckle)
-    path = make_instrument(table_coronagraph(), speckle=field)
+    path = make_instrument(table_coronagraph(), speckle=field).select("imager")
     assert path.speckle is field
-    assert any(line.startswith("  speckle:") for line in repr(path).splitlines())
-    default = make_instrument(table_coronagraph())
-    assert default.speckle is None and "speckle:" not in repr(default)
+    assert any(
+        line.startswith("  speckle:") for line in repr(path.instrument).splitlines()
+    )
+    default = make_instrument(table_coronagraph()).select("imager")
+    assert default.speckle is None
+    assert "speckle:" not in repr(default.instrument)
 
 
 def test_realize_accepts_python_sequences(linear_speckle):
