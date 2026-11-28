@@ -164,7 +164,9 @@ class AbstractSpeckleField(eqx.Module):
     clock origin in days from ``epoch``. It is a static host binary64 float
     (``eqx.field(static=True, converter=float)``), never a leaf, and finite.
     A caller states an event time on the field's epoch with
-    ``exposure.on_epoch(field.epoch).time_d``.
+    ``exposure.on_epoch(field.epoch).time_d``. In the float32 lane that call
+    refuses a nonzero shift, so use the event epoch as the field epoch (with a
+    zero ``epoch_d``) or run the float64 lane.
 
     ``elapsed_s(time_d)`` is the only conversion from a time on ``epoch`` and is
     not overridden. With ``epoch_d == 0`` it returns ``time_d * d2s`` in the
@@ -195,7 +197,8 @@ class AbstractSpeckleField(eqx.Module):
 
     Attributes:
         grid: Native lambda/D sampling, including center, basis and Frame.
-        epoch: Day zero of the field's clock; static host metadata.
+        epoch: Day zero of the field's clock; static host metadata. In the
+            float32 lane, use the event epoch.
         epoch_d: Clock origin in days from ``epoch``; static host
             metadata, read only by ``elapsed_s``.
     """
@@ -203,6 +206,13 @@ class AbstractSpeckleField(eqx.Module):
     grid: AbstractVar[PixelGrid]
     epoch: AbstractVar[Epoch]
     epoch_d: AbstractVar[float]
+
+    def __check_init__(self):
+        """Require an ``Epoch`` and a finite clock origin in every subclass."""
+        if not isinstance(self.epoch, Epoch):
+            raise TypeError(f"epoch must be an Epoch, got {type(self.epoch).__name__}")
+        if not math.isfinite(self.epoch_d):
+            raise ValueError("epoch_d must be finite")
 
     def _working_dtype(self, *values):
         """Type weak observation inputs from the field and explicit inputs."""
@@ -392,10 +402,6 @@ class LinearSpeckleField(AbstractSpeckleField):
             raise ValueError("grid must use lod with its own Frame")
         if self.response.e_nom.ndim != self._response_ndim:
             raise ValueError("response has the wrong number of wavelength axes")
-        if not isinstance(self.epoch, Epoch):
-            raise TypeError(f"epoch must be an Epoch, got {type(self.epoch).__name__}")
-        if not math.isfinite(self.epoch_d):
-            raise ValueError("epoch_d must be finite")
 
     @abc.abstractmethod
     def coefficients(self, *, elapsed_s: ArrayLike) -> Array:

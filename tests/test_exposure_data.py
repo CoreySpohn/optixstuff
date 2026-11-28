@@ -192,6 +192,23 @@ def test_stack_events_and_take(events):
     assert eqx.tree_equal(draws.take(1).take(0, axis="draw"), events[1])
 
 
+def test_stack_accepts_events_for_one_instant_on_different_splits(events):
+    """Fails if two epochs for one instant stay unequal metadata and block a stack.
+
+    ``Epoch(2460000.0, 0.5)`` and ``Epoch(2460000.5)`` name one instant. The
+    events carry equal treedefs, stack on the event axis, and the stacked
+    exposure holds the first event's epoch. Exact.
+    """
+    first, second = events
+    other = replace(second.exposure, epoch=Epoch(2460000.0, 0.5))
+    assert first.exposure.epoch == other.epoch
+    assert jax.tree.structure(first.exposure) == jax.tree.structure(other)
+    moved = replace(second, exposure=other)
+    stacked = stack_exposure_data((first, moved))
+    assert stacked.exposure.epoch == first.exposure.epoch
+    assert stacked.exposure.on_epoch(first.exposure.epoch) is stacked.exposure
+
+
 @pytest.fixture(scope="module")
 def mismatches(measurement):
     """Pairs with one incompatible field for the homogeneous-stack checks."""

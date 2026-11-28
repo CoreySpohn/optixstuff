@@ -1,7 +1,5 @@
 """Observation pointing and whole-frame detector integration plans."""
 
-import re
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,9 +10,8 @@ from hwoutils.leaves import as_float_leaf, as_leaf, is_traced
 from hwoutils.precision import PrecisionError, require_float64
 
 from optixstuff.grids import SkyOrientation
+from optixstuff.optical_elements import check_name
 from optixstuff.spectral import Band
-
-_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 
 
 def _band_shape(first, second):
@@ -325,8 +322,7 @@ class Exposure(eqx.Module):
         """Require typed static fields and a plan that fits the bands."""
         if not isinstance(self.epoch, Epoch):
             raise TypeError(f"epoch must be an Epoch, got {type(self.epoch).__name__}")
-        if not isinstance(self.instrument, str) or not _NAME.fullmatch(self.instrument):
-            raise ValueError(f"invalid instrument name {self.instrument!r}")
+        check_name(self.instrument, "instrument")
         if not self.bands or not all(isinstance(band, Band) for band in self.bands):
             raise ValueError("bands must be a nonempty tuple of Band")
         if self.plan is not None and jnp.ndim(self.time_d) == 0:
@@ -343,10 +339,9 @@ class Exposure(eqx.Module):
     def on_epoch(self, epoch: Epoch) -> "Exposure":
         """State the same instant on another day zero.
 
-        Equal epochs return the event itself. Two epochs for one instant with a
-        different split return an event on the other epoch with the same
-        ``time_d``. Otherwise the shift is added in binary64 on the host, or on
-        the device for a float64 tracer, or the call is refused.
+        Equal epochs (the same instant on the same scale, see ``Epoch``) return
+        the event itself. Otherwise the shift is added in binary64 on the host,
+        or on the device for a float64 tracer, or the call is refused.
 
         Args:
             epoch: The target epoch, on the same time scale.
@@ -364,18 +359,17 @@ class Exposure(eqx.Module):
             return self
         shift = self.epoch.days_between(epoch)
         time_d = self.time_d
-        if shift != 0.0:
-            if time_d.dtype != np.float64:
-                raise PrecisionError(
-                    f"time_d of dtype {time_d.dtype} may have lost its offset "
-                    f"of {shift!r} d between the two epochs. Build the event on "
-                    "the target epoch from the original host date."
-                )
-            if isinstance(time_d, jax.core.Tracer):
-                require_float64("Traced epoch shift (or build the event on the target)")
-                time_d = time_d + shift
-            else:
-                time_d = np.asarray(time_d, dtype=np.float64) + np.float64(shift)
+        if time_d.dtype != np.float64:
+            raise PrecisionError(
+                f"time_d of dtype {time_d.dtype} may have lost its offset "
+                f"of {shift!r} d between the two epochs. Build the event on "
+                "the target epoch from the original host date."
+            )
+        if isinstance(time_d, jax.core.Tracer):
+            require_float64("Traced epoch shift (or build the event on the target)")
+            time_d = time_d + shift
+        else:
+            time_d = np.asarray(time_d, dtype=np.float64) + np.float64(shift)
         return Exposure(
             time_d,
             self.pointing,

@@ -13,15 +13,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from conftest import make_instrument, make_linear_speckle, table_coronagraph
+from conftest import (
+    GaussianTableCoronagraph,
+    make_instrument,
+    make_linear_speckle,
+    table_coronagraph,
+)
 from hwoutils.epoch import Epoch
 from hwoutils.leaves import check_tree
 from hwoutils.precision import PrecisionError
-from hwoutils.provenance import StampMismatchError
+from hwoutils.provenance import Digest, StampMismatchError
 from hwoutils.testing import ulps
 
 import optixstuff as ox
-from optixstuff.sampling import build_facts
+from optixstuff import build_facts
 
 EPOCH = Epoch(2460000.5, 0.0, "tdb")
 # The same instant as EPOCH on a different day zero: EPOCH is 1000 d after SHIFTED.
@@ -108,23 +113,21 @@ def test_on_epoch_adds_the_shift_exactly_and_round_trips():
     )
 
 
-def test_on_epoch_for_one_instant_on_a_different_split_changes_only_the_epoch(
-    precision,
-):
-    """Fails if a split-equivalent epoch is returned stale, or the leaf is touched.
+def test_on_epoch_for_one_instant_on_a_different_split_returns_the_event(precision):
+    """Fails if a split-equivalent epoch is treated as a shift, or the leaf moves.
 
     Two epochs for one instant with different splits (``jd1 + jd2`` of
-    2460000.5 + 0.25 and 2460000.75 + 0) are unequal metadata. The event comes
-    back on the other epoch with a bit-identical leaf in either precision. A
-    scale mismatch raises. Exact.
+    2460000.5 + 0.25 and 2460000.75 + 0) are equal, so the event is returned
+    itself with its bit-identical leaf in either precision, and the two events
+    have equal treedefs. A scale mismatch raises. Exact.
     """
     first, second = Epoch(2460000.5, 0.25), Epoch(2460000.75, 0.0)
-    assert first != second and first.days_between(second) == 0.0
+    assert first == second and first.days_between(second) == 0.0
     e = event(5.0 + K, epoch=first)
-    moved = e.on_epoch(second)
-    assert moved is not e and moved.epoch is second
-    np.testing.assert_array_equal(moved.time_d, e.time_d)
-    assert moved.time_d.dtype == precision
+    assert e.on_epoch(second) is e
+    assert e.time_d.dtype == precision
+    other = event(5.0 + K, epoch=second)
+    assert jax.tree.structure(e) == jax.tree.structure(other)
     with pytest.raises(ValueError, match="scale"):
         e.on_epoch(Epoch(2460000.75, 0.0, "utc"))
     with pytest.raises(ValueError, match="scale"):
@@ -402,20 +405,71 @@ class _Table:
         self.knot_digest, self.spectral_degree = digest, degree
 
 
-def _view(pupil="p1", child_pupils=None, breaks=(540.0,), lod=9.0):
-    """Duck-typed selected view with the reads the checks use."""
+def _declared(pupil_id, **kwargs):
+    """Table coronagraph that declares ``pupil_id``."""
+
+    class Declared(GaussianTableCoronagraph):
+        @property
+        def pupil_id(self):
+            return pupil_id
+
+    return Declared(**kwargs)
+
+
+class _View(ox.SelectedInstrument):
+    """A real view whose breaks and field radius are set by the test."""
+
+    breaks: tuple = eqx.field(static=True, default=(540.0,))
+    lod: float = eqx.field(static=True, default=9.0)
+
+    def spectral_breaks_nm(self):
+        return np.asarray(self.breaks)
+
+    def spectral_field_lod(self, band):
+        return self.lod
+
+
+_SAME = object()
+
+
+def _view(pupil="p1", child_pupils=None, breaks=(540.0,), lod=9.0, coronagraph=_SAME):
+    """A selected view with declared pupil identifiers (None for unknown).
+
+    A declared coronagraph identifier must match a declared telescope one, so
+    the product defaults to the telescope's.
+    """
     if child_pupils is None:
-        coronagraph = SimpleNamespace(pupil_id="c1")
+        product = _declared(pupil if coronagraph is _SAME else coronagraph)
     else:
-        coronagraph = SimpleNamespace(
-            coronagraphs=tuple(SimpleNamespace(pupil_id=c) for c in child_pupils)
+        product = ox.MultiBandCoronagraph(
+            [
+                _declared(c, bandpass=ox.Band(450.0 + 100.0 * i, 550.0 + 100.0 * i))
+                for i, c in enumerate(child_pupils)
+            ]
         )
-    return SimpleNamespace(
-        pupil=SimpleNamespace(pupil_id=pupil),
-        coronagraph=coronagraph,
-        spectral_breaks_nm=lambda: np.asarray(breaks),
-        spectral_field_lod=lambda band: lod,
+    observatory = ox.Observatory(
+        ox.Telescope(
+            ox.SimplePupil(
+                circumscribed_diameter_m=6.0, collecting_area_m2=28.0, pupil_id=pupil
+            )
+        ),
+        (
+            ox.Instrument(
+                "eac1",
+                coronagraph=product,
+                detector=ox.Detector(pixel_scale_arcsec=0.01, shape=(8, 8), qe=0.9),
+            ),
+        ),
     )
+    chosen = observatory.select("eac1")
+    return _View(chosen.telescope, chosen.instrument, breaks=breaks, lod=lod)
+
+
+class _Table:
+    """Static digest facts of a tabulated source."""
+
+    def __init__(self, digest, degree=1):
+        self.knot_digest, self.spectral_degree = digest, degree
 
 
 def _scene(*digests):
@@ -424,8 +478,95 @@ def _scene(*digests):
 
 def _built(view=None, scene=None, **kwargs):
     rule = ox.Quadrature.build(BANDS, order=3)
-    stamps = build_facts(BANDS, instrument="eac1", selected=view, scene=scene, **kwargs)
+    stamps = build_facts(rule, instrument="eac1", selected=view, scene=scene, **kwargs)
     return ox.SpectralSampling(rule, built_at=stamps), rule
+
+
+_SINGLE = (
+    "coronagraph.children",
+    "coronagraph.pupil_id",
+    "instrument",
+    "telescope.pupil_id",
+)
+
+
+def test_hardware_facts_use_owner_path_labels_for_single_and_multiband_views():
+    """Fails if a label keeps the flat spelling, a child is dropped, or a wrong
+    object is read as an unknown.
+
+    Exact. A single product writes exactly ``instrument``, ``telescope.pupil_id``,
+    ``coronagraph.children`` (``int:0``) and ``coronagraph.pupil_id``; a two-child
+    product writes ``int:2`` and one ``coronagraph.child{i}.pupil_id`` per child;
+    an undeclared identifier is ``unknown``; no label holds ``_pupil_id``. The
+    instrument, the observatory and None are not views and raise ``TypeError``.
+    """
+    single = dict(ox.hardware_facts(_view()))
+    assert single == {
+        "coronagraph.children": "int:0",
+        "coronagraph.pupil_id": "str:p1",
+        "instrument": "str:eac1",
+        "telescope.pupil_id": "str:p1",
+    }
+    multi = dict(ox.hardware_facts(_view(pupil=None, child_pupils=("a", None))))
+    assert multi == {
+        "coronagraph.child0.pupil_id": "str:a",
+        "coronagraph.child1.pupil_id": "unknown",
+        "coronagraph.children": "int:2",
+        "instrument": "str:eac1",
+        "telescope.pupil_id": "unknown",
+    }
+    assert dict(ox.hardware_facts(_view(pupil=None)))["telescope.pupil_id"] == "unknown"
+    for facts in (single, multi):
+        assert not any("_pupil_id" in label for label in facts)
+    observatory = make_instrument(table_coronagraph())
+    for wrong in (observatory, observatory.instruments[0], None, SimpleNamespace()):
+        with pytest.raises(TypeError, match=r"Observatory\.select\(name\)"):
+            ox.require_selected(wrong)
+        with pytest.raises(TypeError, match=r"Observatory\.select\(name\)"):
+            ox.hardware_facts(wrong)
+    ox.require_selected(observatory.select("imager"))
+
+
+def test_quadrature_facts_stamp_full_digests_and_build_facts_stamps_the_layout():
+    """Fails if a digest is truncated, the layout is copied rather than computed,
+    or a caller can override it.
+
+    Exact. ``layout`` is the 64-hex ``layout_digest`` and ``quadrature`` the
+    64-hex ``digest`` only with ``values=True``; a hand-built rule has an unknown
+    layout; traced nodes give an unknown ``quadrature`` and a known ``layout``;
+    ``build_facts`` carries the same ``layout`` and refuses ``layout`` or
+    ``quadrature`` in ``extra`` and a non-view ``selected``.
+    """
+    rule = ox.Quadrature.build(BANDS, order=3)
+    assert len(rule.layout_digest) == 64 and Digest(rule.layout_digest)
+    assert dict(ox.quadrature_facts(rule)) == {"layout": f"sha256:{rule.layout_digest}"}
+    both = dict(ox.quadrature_facts(rule, values=True))
+    assert both == {
+        "layout": f"sha256:{rule.layout_digest}",
+        "quadrature": f"sha256:{rule.digest}",
+    }
+    hand = ox.Quadrature(BANDS, rule.nodes_nm, rule.weights())
+    assert dict(ox.quadrature_facts(hand, values=True))["layout"] == "unknown"
+    moved = eqx.tree_at(lambda q: q.nodes_nm, rule, rule.nodes_nm + 0.001)
+    assert (
+        dict(ox.quadrature_facts(moved, values=True))["quadrature"]
+        != both["quadrature"]
+    )
+
+    def traced(nodes):
+        q = eqx.tree_at(lambda r: r.nodes_nm, rule, nodes)
+        facts = dict(ox.quadrature_facts(q, values=True))
+        assert facts["quadrature"] == "unknown"
+        return nodes.sum() + int(facts["layout"] == both["layout"])
+
+    jax.jit(traced)(rule.nodes_nm)
+    stamps = dict(build_facts(rule, instrument="eac1", order=3))
+    assert stamps["layout"] == both["layout"] and "quadrature" not in stamps
+    for label in ("layout", "quadrature"):
+        with pytest.raises(ValueError, match=label):
+            build_facts(rule, instrument="eac1", **{label: "x"})
+    with pytest.raises(TypeError, match=r"Observatory\.select\(name\)"):
+        build_facts(rule, instrument="eac1", selected=SimpleNamespace())
 
 
 def test_check_event_compares_ordered_bands_and_the_configuration():
@@ -435,7 +576,7 @@ def test_check_event_compares_ordered_bands_and_the_configuration():
     Exact. Equal ordered bands pass with nothing unverified; reordered bands of
     unequal node count raise; a known different ``instrument`` stamp raises
     ``StampMismatchError``; a hand-built sampling is admitted with
-    ``("instrument",)`` unverified.
+    ``("instrument", "layout")`` unverified (it records neither).
     """
     sampling, _ = _built()
     assert sampling.check_event(event()) == ()
@@ -448,19 +589,37 @@ def test_check_event_compares_ordered_bands_and_the_configuration():
     with pytest.raises(ValueError, match="bands"):
         ox.SpectralSampling(uneven).check_event(event(bands=BANDS[::-1]))
     hand = ox.SpectralSampling(ox.Quadrature.build(BANDS, order=3))
-    assert hand.check_event(event()) == ("instrument",)
+    assert hand.check_event(event()) == ("instrument", "layout")
     assert hand.check_event(event(), selected=_view(), scene=_scene("k")) == tuple(
         sorted(
             (
-                "instrument",
-                "telescope_pupil_id",
-                "coronagraph_pupil_id",
+                *_SINGLE,
+                "layout",
                 "breaks_nm",
                 "field_lod",
                 "scene_layout",
             )
         )
     )
+
+
+def test_check_event_refuses_a_recorded_layout_of_another_rule():
+    """Fails if a hand-assembled sampling can name another layout, or a
+    hand-built rule is treated as a match.
+
+    Exact. A sampling whose stamps record the ``layout`` of a different band
+    layout raises ``StampMismatchError`` on ``layout``; one recorded from its own
+    rule passes; a hand-built rule's unknown layout is unverified.
+    """
+    rule = ox.Quadrature.build(BANDS, order=3)
+    other = ox.Quadrature.build(BANDS, order=3, breaks_nm=(550.0,))
+    assert other.layout_digest != rule.layout_digest
+    wrong = ox.SpectralSampling(rule, built_at=build_facts(other, instrument="eac1"))
+    with pytest.raises(StampMismatchError, match="layout"):
+        wrong.check_event(event())
+    hand = ox.Quadrature(BANDS, rule.nodes_nm, rule.weights())
+    blind = ox.SpectralSampling(hand, built_at=build_facts(hand, instrument="eac1"))
+    assert blind.check_event(event()) == ("layout",)
 
 
 def test_check_event_recomputes_the_hardware_and_scene_facts():
@@ -477,12 +636,13 @@ def test_check_event_recomputes_the_hardware_and_scene_facts():
     assert sampling.check_event(event(), selected=view) == ("scene_layout",)
     assert sampling.check_event(event(), scene=scene) == (
         "breaks_nm",
-        "coronagraph_pupil_id",
+        "coronagraph.children",
+        "coronagraph.pupil_id",
         "field_lod",
-        "telescope_pupil_id",
+        "telescope.pupil_id",
     )
     for changed, label in (
-        (_view(pupil="p2"), "telescope_pupil_id"),
+        (_view(pupil="p2"), "telescope.pupil_id"),
         (_view(breaks=(545.0,)), "breaks_nm"),
         (_view(lod=8.0), "field_lod"),
     ):
@@ -490,42 +650,56 @@ def test_check_event_recomputes_the_hardware_and_scene_facts():
             sampling.check_event(event(), selected=changed, scene=scene)
     with pytest.raises(StampMismatchError, match="scene_layout"):
         sampling.check_event(event(), selected=view, scene=_scene("k1", "other"))
+    declared, _ = _built(_view(pupil=None, coronagraph="c1"))
+    with pytest.raises(StampMismatchError, match=r"coronagraph\.pupil_id"):
+        declared.check_event(event(), selected=_view(pupil=None, coronagraph="c2"))
     unknown_pupil = _view(pupil=None)
-    assert "telescope_pupil_id" in sampling.check_event(
+    assert "telescope.pupil_id" in sampling.check_event(
         event(), selected=unknown_pupil, scene=scene
     )
     blind, _ = _built(_view(pupil=None), scene)
-    assert "telescope_pupil_id" in blind.check_event(
+    assert "telescope.pupil_id" in blind.check_event(
         event(), selected=view, scene=scene
     )
+    for wrong in (make_instrument(table_coronagraph()), SimpleNamespace()):
+        with pytest.raises(TypeError, match=r"Observatory\.select\(name\)"):
+            sampling.check_event(event(), selected=wrong)
 
 
 def test_check_event_stamps_an_explicit_field_override_and_reads_a_multiband_view():
     """Fails if an explicit override is compared to the derived radius, or a
-    multiband coronagraph shares one identifier.
+    multiband coronagraph shares one identifier or one child count.
 
     Exact. An explicit ``field_lod`` is stamped with its source and is not
     compared to the view (it is returned unverified); each child of a multiband
-    coronagraph is stamped under its own label and compared.
+    coronagraph is stamped under its own label and compared; a two-child
+    sampling checked against a single-product view raises on
+    ``coronagraph.children`` rather than returning unverified.
     """
     view = _view(lod=9.0)
-    sampling, _ = _built(view, field_lod=(2.5, 3.5))
+    sampling, rule = _built(view, field_lod=(2.5, 3.5))
     recorded = dict(sampling.built_at)
     assert recorded["field_lod_source"] == "str:explicit"
-    assert (
-        recorded["field_lod"]
-        != dict(build_facts(BANDS, instrument="eac1", selected=view))["field_lod"]
-    )
+    derived = dict(build_facts(rule, instrument="eac1", selected=view))["field_lod"]
+    assert recorded["field_lod"] != derived
     assert "field_lod" in sampling.check_event(event(), selected=_view(lod=1.0))
-    multi = _view(child_pupils=("a", "b"))
+    multi = _view(pupil=None, child_pupils=("a", "b"))
     sampling, _ = _built(multi)
     assert dict(sampling.built_at).keys() >= {
-        "child0.coronagraph_pupil_id",
-        "child1.coronagraph_pupil_id",
+        "coronagraph.child0.pupil_id",
+        "coronagraph.child1.pupil_id",
+        "coronagraph.children",
     }
-    assert sampling.check_event(event(), selected=multi) == ()
-    with pytest.raises(StampMismatchError, match=r"child1\.coronagraph_pupil_id"):
-        sampling.check_event(event(), selected=_view(child_pupils=("a", "z")))
+    assert sampling.check_event(event(), selected=multi) == ("telescope.pupil_id",)
+    with pytest.raises(StampMismatchError, match=r"child1\.pupil_id"):
+        sampling.check_event(
+            event(), selected=_view(pupil=None, child_pupils=("a", "z"))
+        )
+    with pytest.raises(StampMismatchError, match=r"coronagraph\.children"):
+        sampling.check_event(event(), selected=view)
+    single, _ = _built(view)
+    with pytest.raises(StampMismatchError, match=r"coronagraph\.children"):
+        single.check_event(event(), selected=multi)
 
 
 def test_check_event_accepts_a_sampling_built_from_the_selected_view():
@@ -539,13 +713,13 @@ def test_check_event_accepts_a_sampling_built_from_the_selected_view():
     observatory = make_instrument(table_coronagraph())
     exposure = event(instrument="imager")
     selected = observatory.select(exposure.instrument)
+    rule = ox.Quadrature.build(exposure.bands, selected)
     sampling = ox.SpectralSampling(
-        ox.Quadrature.build(exposure.bands, selected),
-        built_at=build_facts(exposure.bands, instrument="imager", selected=selected),
+        rule, built_at=build_facts(rule, instrument="imager", selected=selected)
     )
     unverified = sampling.check_event(exposure, selected=selected)
     assert "breaks_nm" not in unverified and "field_lod" not in unverified
-    assert "instrument" not in unverified
+    assert "instrument" not in unverified and "layout" not in unverified
 
 
 def test_sampling_nodes_are_live_leaves():

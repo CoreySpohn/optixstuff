@@ -5,6 +5,7 @@ import re
 import equinox as eqx
 import numpy as np
 from hwoutils.provenance import (
+    Digest,
     Stamps,
     build_stamps,
     merge_stamps,
@@ -12,17 +13,13 @@ from hwoutils.provenance import (
     stamp_value,
 )
 
+from optixstuff.coronagraph import MultiBandCoronagraph
 from optixstuff.exposure import Exposure
+from optixstuff.observatory import SelectedInstrument, require_selected
 from optixstuff.spectral import Band, Quadrature, Resolution
 
 _CHECKABLE = frozenset(
-    (
-        "telescope_pupil_id",
-        "coronagraph_pupil_id",
-        "breaks_nm",
-        "field_lod",
-        "scene_layout",
-    )
+    ("pupil_id", "children", "breaks_nm", "field_lod", "scene_layout", "layout")
 )
 _READ = re.compile(r"[A-Za-z_]\w*(?:[.\[].*)?")
 
@@ -35,25 +32,78 @@ def _host(read):
         return None
 
 
-def _hardware_facts(selected, bands) -> dict:
-    """Recompute the build facts that a selected instrument view determines."""
-    facts = {}
-    pupil = getattr(selected, "pupil", None)
-    facts["telescope_pupil_id"] = getattr(pupil, "pupil_id", None)
-    coronagraph = getattr(selected, "coronagraph", None)
-    children = getattr(coronagraph, "coronagraphs", None)
-    if children:
-        for i, child in enumerate(children):
-            facts[f"child{i}.coronagraph_pupil_id"] = getattr(child, "pupil_id", None)
+def hardware_facts(selected: SelectedInstrument) -> Stamps:
+    """Stamp the hardware identity a selected view determines.
+
+    The labels are ``instrument`` (the configuration name),
+    ``telescope.pupil_id``, ``coronagraph.children`` (the number of children of
+    a multiband product, ``int:0`` for a single product or none) and, for a
+    single product or none, ``coronagraph.pupil_id`` or, for a multiband
+    product, ``coronagraph.child{i}.pupil_id`` for every child. A pupil
+    identifier that is not declared is unknown. The stamps are computed from the
+    view in hand, never copied from another product.
+
+    Args:
+        selected: The view returned by ``Observatory.select(name)``.
+
+    Returns:
+        Sorted build stamps.
+
+    Raises:
+        TypeError: If ``selected`` is not a ``SelectedInstrument``.
+    """
+    require_selected(selected)
+    coronagraph = selected.coronagraph
+    facts = {
+        "instrument": selected.name,
+        "telescope.pupil_id": selected.pupil.pupil_id,
+    }
+    if isinstance(coronagraph, MultiBandCoronagraph):
+        facts["coronagraph.children"] = len(coronagraph.coronagraphs)
+        for i, child in enumerate(coronagraph.coronagraphs):
+            facts[f"coronagraph.child{i}.pupil_id"] = child.pupil_id
     else:
-        facts["coronagraph_pupil_id"] = getattr(coronagraph, "pupil_id", None)
-    facts["breaks_nm"] = _host(
-        lambda: tuple(float(x) for x in np.asarray(selected.spectral_breaks_nm()))
+        facts["coronagraph.children"] = 0
+        facts["coronagraph.pupil_id"] = (
+            None if coronagraph is None else coronagraph.pupil_id
+        )
+    return build_stamps(**facts)
+
+
+def quadrature_facts(quadrature: Quadrature, *, values: bool = False) -> Stamps:
+    """Stamp the identity of a quadrature.
+
+    ``layout`` is ``Quadrature.layout_digest`` (bands and pieces), static and
+    readable under trace; it is unknown for a hand-built rule. With
+    ``values=True`` the result also holds ``quadrature``, ``Quadrature.digest``
+    (adds nodes and weights), which is unknown when the leaves are traced. A
+    product that holds its quadrature stamps ``layout`` only.
+
+    Args:
+        quadrature: The rule.
+        values: Also stamp the value identity.
+
+    Returns:
+        Sorted build stamps with 64-hex SHA-256 digests.
+    """
+    layout = quadrature.layout_digest
+    facts = {"layout": None if layout is None else Digest(layout)}
+    if values:
+        value = _host(lambda: quadrature.digest)
+        facts["quadrature"] = None if value is None else Digest(value)
+    return build_stamps(**facts)
+
+
+def _view_facts(selected, bands) -> Stamps:
+    """Stamp the breaks and derived field radius of a view over ``bands``."""
+    return build_stamps(
+        breaks_nm=_host(
+            lambda: tuple(float(x) for x in np.asarray(selected.spectral_breaks_nm()))
+        ),
+        field_lod=_host(
+            lambda: tuple(float(selected.spectral_field_lod(band)) for band in bands)
+        ),
     )
-    facts["field_lod"] = _host(
-        lambda: tuple(float(selected.spectral_field_lod(band)) for band in bands)
-    )
-    return facts
 
 
 def _scene_layout(scene):
@@ -67,21 +117,22 @@ def _scene_layout(scene):
 
 
 def build_facts(
-    bands, *, instrument, selected=None, scene=None, field_lod=None, **extra
+    quadrature, /, *, instrument, selected=None, scene=None, field_lod=None, **extra
 ) -> Stamps:
     """Encode the host facts that determine a sampling, as build stamps.
 
-    A builder passes the result (merged with its own ``order``, ``layout``,
+    A builder passes the result (merged with its own ``order``,
     ``allow_wide_bands``, ``precision`` and ``producer`` facts) as ``built_at``;
-    ``SpectralSampling.check_event`` recomputes the same facts to compare.
+    ``SpectralSampling.check_event`` recomputes the same facts to compare. The
+    ``layout`` stamp is written here, from the quadrature in hand.
 
     Args:
-        bands: The commanded bands, in order.
+        quadrature: The rule the build produced; its bands are the commanded
+            bands, in order.
         instrument: Name of the configuration.
-        selected: The selected instrument view, or None when unavailable. It is
-            read for ``pupil.pupil_id``, ``coronagraph`` (and its
-            ``coronagraphs`` children) ``pupil_id``, ``spectral_breaks_nm()`` and
-            ``spectral_field_lod(band)``.
+        selected: The view returned by ``Observatory.select(name)``, or None
+            when unavailable. Its ``hardware_facts`` are stamped, with its
+            ``spectral_breaks_nm()`` and ``spectral_field_lod(band)``.
         scene: The scene whose ``spectral_tables()`` the resolution read, or None.
         field_lod: An explicit per-band field radius the build used. It is
             stamped with ``field_lod_source`` set to explicit; None records the
@@ -90,10 +141,20 @@ def build_facts(
 
     Returns:
         Sorted build stamps; a fact that is unavailable or traced is unknown.
+
+    Raises:
+        TypeError: If ``selected`` is neither None nor a ``SelectedInstrument``.
+        ValueError: If ``layout`` or ``quadrature`` is in ``extra``, or the
+            instrument name differs from the view's.
     """
+    clash = {"layout", "quadrature"} & extra.keys()
+    if clash:
+        raise ValueError(
+            f"{sorted(clash)} are stamped by build_facts from the quadrature; "
+            "do not pass them"
+        )
+    bands = quadrature.bands
     facts = {"instrument": instrument, **extra}
-    if selected is not None:
-        facts |= _hardware_facts(selected, tuple(bands))
     if field_lod is not None:
         facts["field_lod"] = tuple(
             float(x) for x in np.broadcast_to(np.asarray(field_lod, float), len(bands))
@@ -101,7 +162,14 @@ def build_facts(
         facts["field_lod_source"] = "explicit"
     if scene is not None:
         facts["scene_layout"] = _scene_layout(scene)
-    return build_stamps(**facts)
+    parts = [build_stamps(**facts), quadrature_facts(quadrature)]
+    if selected is not None:
+        hardware = hardware_facts(selected)
+        view = _view_facts(selected, bands)
+        if field_lod is not None:
+            view = tuple(item for item in view if item[0] != "field_lod")
+        parts += [hardware, view]
+    return merge_stamps(*parts)
 
 
 class SpectralSampling(eqx.Module):
@@ -154,24 +222,27 @@ class SpectralSampling(eqx.Module):
     ) -> tuple[str, ...]:
         """Check that this sampling serves a commanded event.
 
-        A host check on static facts, legal under trace. The ordered bands and
-        the configuration name are always compared. With ``selected`` the pupil
-        identifiers, spectral breaks and (when the build derived it) the
-        per-band field radius are recomputed from the view and compared; with
-        ``scene`` the scene layout is. Unknown on either side is unverified; two
-        known and different values raise. A label whose inputs are traced is
-        unverified. A hand-built sampling is admitted with every label
-        unverified.
+        A host check on static facts, legal under trace. The ordered bands, the
+        configuration name and the ``layout`` recomputed from the quadrature
+        are always compared. With ``selected`` the ``hardware_facts``, the
+        spectral breaks and (when the build derived it) the per-band field
+        radius are recomputed from the view and compared; with ``scene`` the
+        scene layout is. Unknown on either side is unverified; two known and
+        different values raise. A label whose inputs are traced is unverified.
+        A hand-built sampling is admitted with every label unverified.
 
         Args:
             exposure: The commanded event.
-            selected: The selected instrument view for the event, or None.
+            selected: The view returned by ``Observatory.select(name)``, or
+                None.
             scene: The scene the resolution was built for, or None.
 
         Returns:
             The labels that could not be verified, sorted.
 
         Raises:
+            TypeError: If ``selected`` is neither None nor a
+                ``SelectedInstrument``.
             ValueError: If the event bands differ from the sampling bands.
             StampMismatchError: If a recorded fact differs from the current one.
         """
@@ -181,14 +252,17 @@ class SpectralSampling(eqx.Module):
                 f"{exposure.bands!r} vs {self.bands!r}"
             )
         recorded = dict(self.built_at)
-        facts = _hardware_facts(selected, self.bands) if selected is not None else {}
-        explicit = recorded.get("field_lod_source") == stamp_value("explicit")
-        if explicit:
+        facts = dict(quadrature_facts(self.quadrature))
+        if selected is not None:
+            facts |= dict(hardware_facts(selected)) | dict(
+                _view_facts(selected, self.bands)
+            )
+        if recorded.get("field_lod_source") == stamp_value("explicit"):
             facts.pop("field_lod", None)
-        facts["instrument"] = exposure.instrument
+        facts["instrument"] = stamp_value(exposure.instrument)
         if scene is not None:
-            facts["scene_layout"] = _scene_layout(scene)
-        current = build_stamps(**facts)
+            facts["scene_layout"] = stamp_value(_scene_layout(scene))
+        current = tuple(sorted(facts.items()))
         compared = [label for label, _ in current]
         unverified = set(
             require_stamps(

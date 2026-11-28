@@ -922,15 +922,16 @@ class Quadrature(eqx.Module):
 
     @property
     def layout_digest(self) -> str | None:
-        """Hex digest of the bands and pieces, or None for a hand-made rule.
+        """Full 64-hex SHA-256 identity of the bands and pieces, or None.
 
-        Computed from static fields only, so it is available inside a traced
-        program.
+        None marks a hand-made rule. Computed from static fields only, so it is
+        available inside a traced program. It is the layout identity (see
+        ``digest`` for the value identity) and is stamped as ``layout``.
         """
         if self.pieces is None:
             return None
         bands = tuple((band.low_nm, band.high_nm) for band in self.bands)
-        return hashlib.sha256(repr((bands, self.pieces)).encode()).hexdigest()[:16]
+        return hashlib.sha256(repr((bands, self.pieces)).encode()).hexdigest()
 
     def integrate(self, values: jax.Array) -> jax.Array:
         """Sum values of shape (W, Q, ...) with the weights into (W, ...).

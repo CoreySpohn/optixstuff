@@ -374,6 +374,38 @@ def test_epoch_is_static_metadata_checked_by_the_kernel():
         swapped.elapsed_s(_EPOCHS_D[0] + 10 * s2d)
 
 
+@pytest.mark.parametrize("epoch", [None, 2460000.5, "tdb"])
+def test_every_speckle_field_checks_its_epoch_in_the_base_class(epoch):
+    """Fails if a subclass can skip the epoch type or the finite clock origin.
+
+    A subclass of the abstract base that defines no ``__check_init__`` of its
+    own (and the linear field) refuses a missing, float or text epoch with
+    ``TypeError`` and a non-finite ``epoch_d`` with ``ValueError``; a valid
+    epoch constructs. Exact.
+    """
+    grid = make_linear_speckle().grid
+
+    class Bare(ox.AbstractSpeckleField):
+        grid: PixelGrid
+        epoch: object
+        epoch_d: float = eqx.field(static=True, converter=float, default=0.0)
+
+        def spectral_breaks_nm(self):
+            return np.empty(0)
+
+        def realize(self, *, wavelength_nm, elapsed_s=0.0):
+            raise NotImplementedError
+
+    assert "__check_init__" not in vars(Bare)
+    with pytest.raises(TypeError, match="Epoch"):
+        Bare(grid, epoch)
+    with pytest.raises(TypeError, match="Epoch"):
+        make_linear_speckle(epoch=epoch if epoch is not None else 1.0)
+    with pytest.raises(ValueError, match="epoch_d"):
+        Bare(grid, Epoch(), epoch_d=float("nan"))
+    assert Bare(grid, Epoch(), 0.5).epoch_d == 0.5
+
+
 def test_image_geometry_jit_and_time_batching(linear_speckle, precision):
     """Fails if native sampling is stamped, metadata lost, or time axes collide.
 

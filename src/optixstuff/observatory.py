@@ -19,8 +19,27 @@ __all__ = [
     "Observatory",
     "SelectedInstrument",
     "Telescope",
-    "check_pupil_matches_frame",
+    "require_selected",
 ]
+
+
+def require_selected(selected) -> None:
+    """Refuse an object that is not the view returned by ``Observatory.select``.
+
+    A wrong object is a caller error, not an unknown fact, so every producer
+    and reader that takes the view uses this one refusal.
+
+    Args:
+        selected: The candidate view.
+
+    Raises:
+        TypeError: If ``selected`` is not a ``SelectedInstrument``.
+    """
+    if not isinstance(selected, SelectedInstrument):
+        raise TypeError(
+            "expected the view returned by Observatory.select(name), got "
+            f"{type(selected).__name__}; pass observatory.select(name)"
+        )
 
 
 class Telescope(eqx.Module):
@@ -60,18 +79,19 @@ class Telescope(eqx.Module):
         """
         return train_throughput(self.attenuating_elements, wavelength_nm)
 
-    def spectral_breaks_nm(self) -> tuple[float, ...]:
-        """Sorted union of the shared elements' break wavelengths.
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Sorted unique union of the shared elements' break wavelengths.
 
         Returns:
-            Break wavelengths in nm as host floats.
+            Break wavelengths in nm, a float64 array (empty for no breaks).
         """
         breaks = [
-            float(value)
+            np.asarray(element.spectral_breaks_nm(), dtype=np.float64).ravel()
             for element in self.attenuating_elements
-            for value in np.asarray(element.spectral_breaks_nm(), dtype=float)
         ]
-        return tuple(sorted(set(breaks)))
+        if not breaks:
+            return np.empty(0, dtype=np.float64)
+        return np.unique(np.concatenate(breaks))
 
 
 def _coronagraph_children(coronagraph):

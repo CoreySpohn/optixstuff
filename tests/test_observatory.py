@@ -204,7 +204,9 @@ def test_t5_telescope_breaks_reach_the_view_and_the_quadrature():
         (_config("a", (filt,)),),
     )
     view = observatory.select("a")
-    assert observatory.telescope.spectral_breaks_nm() == (500.0, 600.0)
+    np.testing.assert_array_equal(
+        observatory.telescope.spectral_breaks_nm(), [500.0, 600.0]
+    )
     np.testing.assert_array_equal(
         view.spectral_breaks_nm(), [500.0, 520.0, 600.0, 700.0]
     )
@@ -660,3 +662,28 @@ def test_make_instrument_fixture_builds_one_imager():
     observatory = make_instrument(GaussianTableCoronagraph())
     assert observatory.names == ("imager",)
     assert observatory.select("imager").pupil_match == "unverified"
+
+
+def test_telescope_breaks_are_a_sorted_unique_float64_array():
+    """Fails if the telescope returns a tuple or an unsorted or duplicated union.
+
+    Exact. Elements declaring breaks 550 and 500, and 500 and 600, give the
+    float64 array ``[500, 550, 600]``; no elements give an empty float64 array;
+    the return type matches the selected view's.
+    """
+
+    class Broken(ox.ConstantThroughput):
+        breaks: tuple = eqx.field(static=True, default=())
+
+        def spectral_breaks_nm(self):
+            return np.asarray(self.breaks)
+
+    first = Broken(throughput=0.9, name="a", breaks=(550.0, 500.0))
+    second = Broken(throughput=0.9, name="b", breaks=(500.0, 600.0))
+    breaks = ox.Telescope(_pupil(), attenuating_elements=(first, second))
+    got = breaks.spectral_breaks_nm()
+    assert isinstance(got, np.ndarray) and got.dtype == np.float64
+    np.testing.assert_array_equal(got, [500.0, 550.0, 600.0])
+    empty = ox.Telescope(_pupil()).spectral_breaks_nm()
+    assert isinstance(empty, np.ndarray) and empty.dtype == np.float64
+    assert empty.shape == (0,)

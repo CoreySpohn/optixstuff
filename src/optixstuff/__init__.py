@@ -32,7 +32,12 @@ from optixstuff.disperser import AbstractDisperser, LensletDisperser
 from optixstuff.exposure import Exposure, FramePlan, Pointing, frames_for_time
 from optixstuff.grids import Image, Measure, PixelGrid
 from optixstuff.instrument import Instrument, WarmEmission
-from optixstuff.observatory import Observatory, SelectedInstrument, Telescope
+from optixstuff.observatory import (
+    Observatory,
+    SelectedInstrument,
+    Telescope,
+    require_selected,
+)
 from optixstuff.optical_elements import (
     AbstractOpticalElement,
     AbstractUniformElement,
@@ -57,7 +62,12 @@ from optixstuff.pupil import (
     check_pupil_matches_frame,
 )
 from optixstuff.rates import Rates
-from optixstuff.sampling import SpectralSampling
+from optixstuff.sampling import (
+    SpectralSampling,
+    build_facts,
+    hardware_facts,
+    quadrature_facts,
+)
 from optixstuff.speckle import AbstractSpeckleField, FocalResponse, LinearSpeckleField
 from optixstuff.spectral import Band, Quadrature, Reduction, Resolution
 
@@ -116,11 +126,15 @@ __all__ = [  # noqa: RUF022
     "TransmissiveElement",
     "WarmEmission",
     "__version__",
+    "build_facts",
     "check_pupil_matches_frame",
     "exposure_time",
     "frames_for_time",
+    "hardware_facts",
     "load_psflet_pack",
     "performance_curves",
+    "quadrature_facts",
+    "require_selected",
     "save_psflet_pack",
     "snr",
     "stack_exposure_data",

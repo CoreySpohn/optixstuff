@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.provenance import Digest
 from hwoutils.testing import ulps
 from numpy.polynomial.legendre import leggauss
 from scipy.special import j1
@@ -471,7 +472,8 @@ def test_digest_is_the_full_identity_of_the_rule(monkeypatch):
     assert {rule.layout_digest for rule in edited.values()} == {base.layout_digest}
     assert len(base.key) == 16 and base.key == base.digest[:16]
     expected = hashlib.sha256(repr((((480.0, 520.0),), pieces)).encode())
-    assert base.layout_digest == expected.hexdigest()[:16]
+    assert len(base.layout_digest) == 64
+    assert Digest(base.layout_digest) and base.layout_digest == expected.hexdigest()
 
     rule = Quadrature.build(bands, order=3)
     moved = replace(rule, nodes_nm=rule.nodes_nm.at[0, 0].add(0.001))

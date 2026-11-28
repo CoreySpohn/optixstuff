@@ -302,8 +302,15 @@ def test_documented_host_surface_is_exported():
         "SimplePupil",
         "SegmentedPupil",
         "check_pupil_matches_frame",
+        "require_selected",
+        "hardware_facts",
+        "quadrature_facts",
+        "build_facts",
     ):
-        assert name in ox.__all__
+        assert name in ox.__all__ and callable(getattr(ox, name))
+    from optixstuff import observatory
+
+    assert "check_pupil_matches_frame" not in observatory.__all__
     assert not [name for name in dir(ox) if "rimary" in name]
     assert "performance_curves" in ox.__all__
     assert ox.performance_curves is performance_curves
